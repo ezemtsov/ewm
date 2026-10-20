@@ -336,11 +336,11 @@ impl Ewm {
 
     /// Move the focused frame to the next output in order, wrapping around.
     pub fn move_frame_to_next_output(&mut self) {
-        if let Some(next) = self
-            .focused_output()
-            .and_then(|cur| self.output_next_of(cur))
-        {
-            self.move_frame_to_output(self.focused_frame_id(), &next);
+        if let Some((id, next)) = self.focused_frame_id().zip(
+            self.focused_output()
+                .and_then(|cur| self.output_next_of(cur)),
+        ) {
+            self.move_frame_to_output(id, &next);
         }
     }
 

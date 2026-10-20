@@ -44,9 +44,9 @@ pub struct InterceptedKey {
 
 impl InterceptedKey {
     /// Whether this binding applies while `focused_surface_id` has focus.
-    pub fn in_scope(&self, focused_surface_id: u64) -> bool {
+    pub fn in_scope(&self, focused_surface_id: Option<u64>) -> bool {
         self.surface
-            .is_none_or(|surface| surface == focused_surface_id)
+            .is_none_or(|surface| Some(surface) == focused_surface_id)
     }
 
     /// Check if this key matches the given keysym and modifiers.

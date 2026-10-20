@@ -1136,10 +1136,9 @@ impl Ewm {
     /// Rename a workspace. Empty names clear the name. If `frame_surface_id`
     /// is absent, the currently focused frame is renamed.
     pub fn rename_workspace(&mut self, frame_surface_id: Option<u64>, name: String) -> bool {
-        let frame_surface_id = frame_surface_id.unwrap_or(self.focused_frame_id());
-        if frame_surface_id == 0 {
+        let Some(frame_surface_id) = frame_surface_id.or_else(|| self.focused_frame_id()) else {
             return false;
-        }
+        };
 
         let name = Self::workspace_name_from_rename(name);
         if let Some(name) = &name
@@ -2112,7 +2111,7 @@ impl Ewm {
                     },
                     app_id: Some(surface.app_id.clone()),
                     output,
-                    is_focused: focused == id,
+                    is_focused: focused == Some(id),
                     is_fullscreen: surface.fullscreen,
                 })
             })
@@ -2868,8 +2867,7 @@ impl State {
             if let Some(surface) = ewm.emacs_keyboard_redirect_focus() {
                 return Some(surface);
             }
-            let id = ewm.focused_surface_id();
-            ewm.window(id)
+            ewm.window(ewm.focused_surface_id()?)
                 .and_then(|w| w.wl_surface())
                 .map(|s| s.into_owned())
         });
@@ -3061,8 +3059,9 @@ impl State {
     fn update_shared_state(&self) {
         {
             let mut shared = module::shared_state().lock().unwrap();
-            shared.focused_surface_id = self.ewm.focused_surface_id();
-            shared.focused_frame_id = self.ewm.focused_frame_id();
+            // The module defuns report 0 for no focus.
+            shared.focused_surface_id = self.ewm.focused_surface_id().unwrap_or(0);
+            shared.focused_frame_id = self.ewm.focused_frame_id().unwrap_or(0);
             shared.pointer_location = self.ewm.pointer_location();
             shared.active_outputs = self.ewm.active_outputs_snapshot();
             shared.frame_origins = self.ewm.frame_origins_snapshot();

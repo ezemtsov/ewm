@@ -94,6 +94,7 @@ pub enum KeyAction {
     Action { action: Action, repeat: bool },
     /// Text input intercept: key plus original modifier snapshot for Emacs IM processing.
     TextInput {
+        surface_id: u64,
         keysym: u32,
         utf8: Option<String>,
         ctrl: bool,
@@ -108,11 +109,11 @@ pub enum KeyAction {
 /// Compositor state that decides where a key goes, resolved by the caller.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct KeyRouting {
-    /// The focused surface has an active text input that Emacs serves.
-    pub text_input_intercept: bool,
+    /// The focused surface, when Emacs serves its active text input.
+    pub text_input_surface: Option<u64>,
     pub focus_on_emacs: bool,
     pub fullscreen_active: bool,
-    pub focused_surface_id: u64,
+    pub focused_surface_id: Option<u64>,
 }
 
 /// The key event being classified.
@@ -242,7 +243,7 @@ pub enum SwipeAction {
 pub fn classify_swipe(
     bindings: &[InterceptedKey],
     fullscreen_active: bool,
-    focused_surface_id: u64,
+    focused_surface_id: Option<u64>,
     gestures: Gestures,
     fingers: u32,
     direction: SwipeDirection,
@@ -543,8 +544,9 @@ impl State {
             }
             Action::FocusOutput { dx, dy } => self.ewm.focus_output_direction(dx, dy),
             Action::MoveFrame { delta } => {
-                let id = self.ewm.focused_frame_id();
-                self.ewm.move_frame(id, delta);
+                if let Some(id) = self.ewm.focused_frame_id() {
+                    self.ewm.move_frame(id, delta);
+                }
                 self.refresh_pointer_after_layout();
             }
             Action::MoveFrameToNextOutput => {
@@ -675,7 +677,7 @@ impl State {
 
         // Undo temporary redirects before forwarding into fullscreen surfaces.
         if let Some((entry_id, surface_id)) = fullscreen_entry
-            && self.ewm.focused_surface_id() != surface_id
+            && self.ewm.focused_surface_id() != Some(surface_id)
         {
             self.ewm.set_focus_entry(
                 entry_id,
@@ -716,11 +718,13 @@ impl State {
         // lagging `is_active()` echo, so the relay stays off the per-key hot path
         // and the first key after activation isn't forwarded raw. An external
         // input method owns the keys, whatever Lisp asked for.
-        let text_input_intercept = self.ewm.text_input_intercept
-            && self.ewm.text_input_provider == TextInputProvider::Emacs
-            && self.ewm.active_text_input_surface_id() == Some(focused_surface_id);
+        let text_input_surface = focused_surface_id.filter(|&id| {
+            self.ewm.text_input_intercept
+                && self.ewm.text_input_provider == TextInputProvider::Emacs
+                && self.ewm.active_text_input_surface_id() == Some(id)
+        });
         let routing = KeyRouting {
-            text_input_intercept,
+            text_input_surface,
             focus_on_emacs,
             fullscreen_active,
             focused_surface_id,
@@ -776,7 +780,7 @@ impl State {
                 keyboard.input_forward(self, keycode.into(), key_state, serial, time, mods_changed);
                 if is_press && module::DEBUG_MODE.load(std::sync::atomic::Ordering::Relaxed) {
                     tracing::debug!(
-                        "key forward: keycode={} surface={}",
+                        "key forward: keycode={} surface={:?}",
                         keycode,
                         self.ewm.focused_surface_id()
                     );
@@ -784,6 +788,7 @@ impl State {
             }
 
             KeyAction::TextInput {
+                surface_id,
                 keysym,
                 utf8,
                 ctrl,
@@ -795,7 +800,7 @@ impl State {
                     keycode,
                     keysym,
                     utf8,
-                    surface_id: focused_surface_id,
+                    surface_id,
                     ctrl,
                     alt,
                     shift,
@@ -811,7 +816,7 @@ impl State {
 
             KeyAction::KeyboardRedirect(keysym_val) => {
                 tracing::info!(
-                    "intercept_redirect: keycode={} keysym=0x{:x} from surface {}",
+                    "intercept_redirect: keycode={} keysym=0x{:x} from surface {:?}",
                     keycode,
                     keysym_val,
                     self.ewm.focused_surface_id()
@@ -835,7 +840,7 @@ impl State {
 
             KeyAction::Command { key, repeat } => {
                 tracing::info!(
-                    "intercept_command: keycode={} key={} from surface {}",
+                    "intercept_command: keycode={} key={} from surface {:?}",
                     keycode,
                     key,
                     self.ewm.focused_surface_id()
@@ -2013,7 +2018,7 @@ pub fn classify_key(
     key: KeyInput<'_>,
 ) -> KeyAction {
     let KeyRouting {
-        text_input_intercept,
+        text_input_surface,
         focus_on_emacs,
         fullscreen_active,
         focused_surface_id,
@@ -2057,10 +2062,14 @@ pub fn classify_key(
         };
     }
 
-    if text_input_intercept && !focus_on_emacs && !key_changes_modifiers {
+    if let Some(surface_id) = text_input_surface
+        && !focus_on_emacs
+        && !key_changes_modifiers
+    {
         let utf8 = xkb::keysym_to_utf8(modified);
         let utf8 = (!utf8.is_empty() && !utf8.chars().all(char::is_control)).then_some(utf8);
         return KeyAction::TextInput {
+            surface_id,
             keysym: keysym_raw,
             utf8,
             ctrl: mods.ctrl,
@@ -2372,7 +2381,7 @@ impl State {
 
     /// Tap `keys` on the focused surface, or on none when `surface_id` names another.
     pub(crate) fn send_keys(&mut self, surface_id: Option<u64>, keys: Vec<ChordSpec>) {
-        if surface_id.is_none_or(|id| id == self.ewm.focused_surface_id()) {
+        if surface_id.is_none_or(|id| Some(id) == self.ewm.focused_surface_id()) {
             for key in keys {
                 let Some(code) = key
                     .key

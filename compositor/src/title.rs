@@ -33,7 +33,7 @@ impl Ewm {
                 .surfaces
                 .get(&id)
                 .is_some_and(|surface| !surface.mapped)
-            || self.focused_surface_id() == id
+            || self.focused_surface_id() == Some(id)
         {
             self.discard_pending_title_event(id);
             self.queue_event(Event::Title { id, app, title });

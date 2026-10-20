@@ -44,11 +44,11 @@ fn new_toplevel_skips_focused_floating_frame_for_tiled_host() {
     fix.ewm()
         .set_focus_entry(floating_entry_id, FocusSource::Test, Notify::None);
 
-    assert_eq!(fix.ewm_ref().focused_frame_id(), 200);
+    assert_eq!(fix.ewm_ref().focused_frame_id(), Some(200));
     assert_eq!(fix.ewm_ref().focused_entry_id(), Some(floating_entry_id));
     assert_eq!(
         fix.ewm_ref().focused_surface_id(),
-        floating_entry_surface_id
+        Some(floating_entry_surface_id)
     );
 
     fix.enable_event_capture();
@@ -154,7 +154,7 @@ fn removing_an_output_retires_its_unused_fillers() {
     assert_eq!(fix.ewm_ref().layout.frame_output(102), Some(HEAD_A));
     assert!(!fix.ewm_ref().layout.has_frame(101));
     // Focus left the dropped filler for the frame that did move.
-    assert_eq!(fix.ewm_ref().focused_frame_id(), 100);
+    assert_eq!(fix.ewm_ref().focused_frame_id(), Some(100));
 
     // A redock adopts nothing it was asked to delete.
     fix.add_output(HEAD_B, 1280, 720);
@@ -420,7 +420,7 @@ proptest! {
                     placed = true;
                     shown = true;
                     if pending == Some(true) {
-                        prop_assert_eq!(fix.focused_surface_id(), id);
+                        prop_assert_eq!(fix.focused_surface_id(), Some(id));
                     }
                     pending = None;
                 }
@@ -434,7 +434,7 @@ proptest! {
                 Step::Activate => {
                     fix.ewm().activate_or_defer_surface(id, FocusSource::Test);
                     if shown {
-                        prop_assert_eq!(fix.focused_surface_id(), id);
+                        prop_assert_eq!(fix.focused_surface_id(), Some(id));
                     }
                     pending = (!shown).then_some(true);
                 }

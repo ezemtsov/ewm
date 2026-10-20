@@ -576,7 +576,7 @@ impl Fixture {
     }
 
     /// Get the focused surface ID
-    pub fn focused_surface_id(&self) -> u64 {
+    pub fn focused_surface_id(&self) -> Option<u64> {
         self.state.ewm.focused_surface_id()
     }
 

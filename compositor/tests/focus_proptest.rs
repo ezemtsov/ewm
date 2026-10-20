@@ -257,7 +257,7 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
             if !is_output_mapped(fix, output_name) || frames.toplevels.contains_key(&surface_id) {
                 return;
             }
-            let unfocused = fix.ewm_ref().focused_surface_id() == 0;
+            let unfocused = fix.ewm_ref().focused_surface_id().is_none();
             frames.next_seq += 1;
             prepare_frame(output_name, frames.next_seq, None);
             let toplevel = fix.open_toplevel(&mut frames.client, "frame", Size::from((400, 300)));
@@ -274,7 +274,7 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
                 // The boot regression: the first frame takes focus by itself.
                 assert_eq!(
                     fix.ewm_ref().focused_frame_id(),
-                    sid,
+                    Some(sid),
                     "the first Emacs frame {sid} did not take focus",
                 );
             }
@@ -350,7 +350,7 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
             };
             let was_present = strip_frame_ids(fix).contains(&id);
             let prev_focused = fix.ewm_ref().focused_frame_id();
-            let expected_same_output_refocus = if prev_focused == id {
+            let expected_same_output_refocus = if prev_focused == Some(id) {
                 fix.ewm_ref()
                     .layout
                     .frame_location(id)
@@ -372,7 +372,7 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
             if let Some(expected) = expected_same_output_refocus {
                 assert_eq!(
                     fix.ewm_ref().focused_frame_id(),
-                    expected,
+                    Some(expected),
                     "destroy({}) did not refocus the same-output neighbour",
                     id,
                 );
@@ -383,11 +383,11 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
                     "invariant 12: destroy({}) left the id in some strip",
                     id,
                 );
-                if prev_focused != id {
+                if prev_focused != Some(id) {
                     assert_eq!(
                         fix.ewm_ref().focused_frame_id(),
                         prev_focused,
-                        "destroy({}) changed focus away from inactive frame {}",
+                        "destroy({}) changed focus away from inactive frame {:?}",
                         id,
                         prev_focused,
                     );
@@ -401,7 +401,7 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
             );
             fix.ewm().activate_or_defer_surface(id, FocusSource::Test);
             let ewm = fix.ewm_ref();
-            let focused = ewm.focused_surface_id() == id;
+            let focused = ewm.focused_surface_id() == Some(id);
             let pending = ewm.pending_activations().any(|pending| pending == id);
             // Only a surface with a record can wait. A layout-only id focuses or is dropped.
             assert_eq!(
@@ -421,13 +421,13 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
                 );
             }
             // Invariant 13: a view in the focused frame wins.
-            if focused {
-                assert_focused_frame_view(fix, id, prev.0);
+            if focused && let Some(frame) = prev.0 {
+                assert_focused_frame_view(fix, id, frame);
             }
         }
         Op::DestroySurface(id) => {
             let was_present = layout_surface_ids(fix).contains(&id);
-            let was_focused = fix.ewm_ref().focused_surface_id() == id;
+            let was_focused = fix.ewm_ref().focused_surface_id() == Some(id);
             let prev_focused_frame = fix.ewm_ref().focused_frame_id();
             let prev_focused_entry = fix.ewm_ref().focused_entry_id();
             let destroyed_entry_ids: HashSet<LayoutEntryId> = all_frames(fix)
@@ -471,7 +471,7 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
                 );
                 assert_ne!(
                     fix.ewm_ref().focused_surface_id(),
-                    id,
+                    Some(id),
                     "destroy({}) left keyboard focus on the dead surface",
                     id,
                 );
@@ -624,7 +624,7 @@ fn activation_prefers_the_focused_frame() {
             let ewm = fix.ewm_ref();
             assert_eq!(
                 ewm.focused_surface_id(),
-                SURFACE,
+                Some(SURFACE),
                 "membership={membership:#06b} focused={focused_frame}"
             );
             assert_focused_frame_view(&fix, SURFACE, focused_frame);
@@ -678,7 +678,7 @@ proptest! {
         prop_assert_eq!(refocus, Some(expected));
         fix.ewm()
             .set_focus_frame(refocus.unwrap(), FocusSource::ToplevelDestroyed, Notify::None);
-        prop_assert_eq!(fix.ewm_ref().focused_frame_id(), expected);
+        prop_assert_eq!(fix.ewm_ref().focused_frame_id(), Some(expected));
         prop_assert!(!strip_frame_ids(&fix).contains(&closing_id));
         let strip = fix.strip(OUTPUTS[0]);
         prop_assert_eq!(strip.active_frame_id(), Some(expected));
@@ -1063,7 +1063,7 @@ fn nav_setup() -> impl Strategy<Value = NavSetup> {
 }
 
 struct NavResult {
-    focused: u64,
+    focused: Option<u64>,
     pointer: (f64, f64),
 }
 
@@ -1110,7 +1110,7 @@ fn nav_run(setup: &NavSetup, dx: i32, dy: i32, cx: f64, cy: f64) -> NavResult {
     }
 }
 
-fn nav_round_trip(setup: &NavSetup, dx: i32, dy: i32) -> (u64, u64) {
+fn nav_round_trip(setup: &NavSetup, dx: i32, dy: i32) -> (Option<u64>, Option<u64>) {
     let mut fix = nav_build(setup);
     fix.ewm().focus_output_direction(dx, dy);
     let after_a = fix.ewm_ref().focused_frame_id();
@@ -1135,7 +1135,7 @@ proptest! {
         let b = nav_run(&setup, dx, dy, cx2, cy2);
         prop_assert_eq!(
             a.focused, b.focused,
-            "cursor-dependent: ({},{}) at ({},{}) -> {}, at ({},{}) -> {}",
+            "cursor-dependent: ({},{}) at ({},{}) -> {:?}, at ({},{}) -> {:?}",
             dx, dy, cx1, cy1, a.focused, cx2, cy2, b.focused,
         );
 
@@ -1145,7 +1145,7 @@ proptest! {
         let initial = setup.initial_focused_frame();
         if !matches!((dx, dy), (-1, 0) | (1, 0) | (0, -1) | (0, 1)) {
             prop_assert_eq!(
-                a.focused, initial,
+                a.focused, Some(initial),
                 "non-axial direction ({},{}) must no-op",
                 dx, dy,
             );
@@ -1153,8 +1153,8 @@ proptest! {
 
         let actives = setup.all_active_frames();
         prop_assert!(
-            actives.contains(&a.focused),
-            "outcome {} is not the active frame of any output (actives: {:?})",
+            a.focused.is_some_and(|id| actives.contains(&id)),
+            "outcome {:?} is not the active frame of any output (actives: {:?})",
             a.focused, actives,
         );
     }
@@ -1170,10 +1170,10 @@ proptest! {
         let (dx, dy) = dir;
         let initial = setup.initial_focused_frame();
         let (after_a, after_b) = nav_round_trip(&setup, dx, dy);
-        if after_a != initial {
+        if after_a != Some(initial) {
             prop_assert_eq!(
-                after_b, initial,
-                "round-trip ({},{}) then ({},{}) from {} went {} then {}",
+                after_b, Some(initial),
+                "round-trip ({},{}) then ({},{}) from {} went {:?} then {:?}",
                 dx, dy, -dx, -dy, initial, after_a, after_b,
             );
         }

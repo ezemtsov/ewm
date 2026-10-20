@@ -196,14 +196,14 @@ fn frames_survive_losing_every_output() {
     fix.remove_output(HEAD_B);
     assert!(fix.ewm_ref().layout.monitors().is_empty());
     assert_eq!(fix.ewm_ref().layout.homeless().ids(), vec![3, 4, 1, 2]);
-    assert_eq!(fix.ewm_ref().focused_frame_id(), 0);
+    assert_eq!(fix.ewm_ref().focused_frame_id(), None);
 
     // Lid open: the first output to map adopts every homeless frame.
     fix.add_output(HEAD_A, 1600, 900);
     assert_eq!(strip_ids(&fix, HEAD_A), vec![3, 4, 1, 2]);
     assert!(fix.ewm_ref().layout.homeless().tiled.is_empty());
     assert_eq!(fix.strip(HEAD_A).active_frame_id(), Some(2));
-    assert_eq!(fix.ewm_ref().focused_frame_id(), 2);
+    assert_eq!(fix.ewm_ref().focused_frame_id(), Some(2));
 
     // Dock again: HEAD_B's frames return home with their active restored.
     fix.add_output(HEAD_B, 1280, 720);
@@ -227,7 +227,7 @@ fn an_unplugged_middle_output_hands_its_frames_to_the_next_one() {
     fix.remove_output(HEAD_B);
     assert_eq!(strip_ids(&fix, HEAD_A), vec![1]);
     assert_eq!(strip_ids(&fix, HEAD_C), vec![4, 2, 3]);
-    assert_eq!(fix.ewm_ref().focused_frame_id(), 3);
+    assert_eq!(fix.ewm_ref().focused_frame_id(), Some(3));
 
     // The last output in order wraps round to the first.
     fix.remove_output(HEAD_C);
@@ -327,7 +327,7 @@ proptest! {
             + u64::from(active_indices[fallback] % (frame_counts[fallback] % 4));
         let disabled = fix.output(PROP_HEADS[installed]);
         fix.ewm().layout.detach_output(&disabled, None);
-        prop_assert_eq!(fix.ewm_ref().focused_frame_id(), fallback_active_id);
+        prop_assert_eq!(fix.ewm_ref().focused_frame_id(), Some(fallback_active_id));
     }
 
     #[test]
@@ -532,7 +532,7 @@ proptest! {
         let order: Vec<u64> = strip.frame_ids().collect();
         prop_assert_eq!(order, expected);
         prop_assert_eq!(strip.active_frame_id(), Some(focused));
-        prop_assert_eq!(fix.ewm_ref().focused_frame_id(), focused);
+        prop_assert_eq!(fix.ewm_ref().focused_frame_id(), Some(focused));
     }
 
     // A strip switch leaves the keyboard on a float it keeps on screen and takes it from one it
@@ -563,7 +563,7 @@ proptest! {
         let shown = if (0..len as i32).contains(&to) { ids[to as usize] } else { active };
         prop_assert_eq!(fix.strip(HEAD_A).active_frame_id(), Some(shown));
         let expected = if pinned && shown != active { shown } else { 200 };
-        prop_assert_eq!(fix.ewm_ref().focused_frame_id(), expected);
+        prop_assert_eq!(fix.ewm_ref().focused_frame_id(), Some(expected));
     }
 
     // Closing the focused float hands the keyboard to the topmost remaining float when that is
@@ -606,7 +606,7 @@ proptest! {
             Some((id, true)) => id,
             _ => active,
         };
-        prop_assert_eq!(fix.ewm_ref().focused_frame_id(), expected);
+        prop_assert_eq!(fix.ewm_ref().focused_frame_id(), Some(expected));
     }
 }
 
@@ -718,7 +718,7 @@ fn check_landed(
     layout: &Layout,
     dst: &Output,
     moved: &Moved,
-    focused: u64,
+    focused: Option<u64>,
     remembered: &mut BTreeMap<String, Option<u64>>,
 ) -> Result<(), TestCaseError> {
     let dst_name = dst.name();
@@ -730,16 +730,17 @@ fn check_landed(
     let returned = remembered
         .get_mut(&dst_name)
         .and_then(|slot| slot.take_if(|id| moved.ids.contains(id)));
-    if moved.ids.contains(&focused) {
+    if let Some(focused) = focused.filter(|id| moved.ids.contains(id)) {
         prop_assert_eq!(
             layout.focused_frame_id(),
-            focused,
+            Some(focused),
             "the keyboard follows its frame"
         );
         if on_strip(focused) {
             prop_assert_eq!(layout.active_frame_id(dst), Some(focused));
         }
-    } else if let Some(id) = returned.filter(|&id| on_strip(id) && !on_strip(focused)) {
+    } else if let Some(id) = returned.filter(|&id| on_strip(id) && !focused.is_some_and(&on_strip))
+    {
         prop_assert_eq!(
             layout.active_frame_id(dst),
             Some(id),

@@ -422,9 +422,9 @@ impl Layout {
             .and_then(Monitor::focused_frame)
     }
 
-    /// Surface id of the frame holding the keyboard, 0 without one.
-    pub fn focused_frame_id(&self) -> u64 {
-        self.focused_frame().map_or(0, |frame| frame.surface_id)
+    /// Surface id of the frame holding the keyboard.
+    pub fn focused_frame_id(&self) -> Option<u64> {
+        self.focused_frame().map(|frame| frame.surface_id)
     }
 
     /// The output whose frame holds the keyboard.
@@ -455,8 +455,8 @@ impl Layout {
     }
 
     /// A frame that moved keeps the keyboard.
-    fn follow_focus(&mut self, focused: u64, moved: &Moved) {
-        if moved.ids.contains(&focused) {
+    fn follow_focus(&mut self, focused: Option<u64>, moved: &Moved) {
+        if let Some(focused) = focused.filter(|id| moved.ids.contains(id)) {
             self.activate_frame(focused, None);
         }
     }

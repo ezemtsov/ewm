@@ -24,8 +24,12 @@ use ewm_core::{Action, InterceptDispatch, InterceptedKey, Trigger};
 use proptest::prelude::*;
 use smithay::input::keyboard::{Keysym, ModifiersState, keysyms};
 
+/// The focused surface whose text input Emacs serves in these tests.
+const SURFACE: u64 = 1;
+
 fn text_input_action(keysym: u32, utf8: Option<String>, mods: &ModifiersState) -> KeyAction {
     KeyAction::TextInput {
+        surface_id: SURFACE,
         keysym,
         utf8,
         ctrl: mods.ctrl,
@@ -87,10 +91,10 @@ fn classify(
     keysym: u32,
 ) -> KeyAction {
     let routing = KeyRouting {
-        text_input_intercept: text_input,
+        text_input_surface: text_input.then_some(SURFACE),
         focus_on_emacs,
         fullscreen_active,
-        focused_surface_id: 0,
+        focused_surface_id: None,
     };
     classify_key(
         intercepted_keys,
@@ -232,7 +236,7 @@ proptest! {
         };
         let keysym = keysyms::KEY_a + letter;
         let routing = KeyRouting {
-            text_input_intercept: true,
+            text_input_surface: Some(SURFACE),
             ..Default::default()
         };
         let action = classify_key(&[], routing, key_input(true, keysym, &mods));
@@ -248,10 +252,10 @@ proptest! {
     ) {
         prop_assume!(focus_on_emacs || key_changes_modifiers);
         let routing = KeyRouting {
-            text_input_intercept: true,
+            text_input_surface: Some(SURFACE),
             focus_on_emacs,
             fullscreen_active: false,
-            focused_surface_id: 0,
+            focused_surface_id: None,
         };
         let mods = ModifiersState::default();
         let action = classify_key(

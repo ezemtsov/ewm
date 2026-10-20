@@ -117,7 +117,7 @@ proptest! {
     ) {
         let ik = binding(fingers, direction, mods, false, dispatch);
         let bindings = std::slice::from_ref(&ik);
-        let action = classify_swipe(bindings, false, 0, gestures, fingers, direction, &mods);
+        let action = classify_swipe(bindings, false, None, gestures, fingers, direction, &mods);
         prop_assert_eq!(action, bound(&ik));
     }
 
@@ -131,7 +131,7 @@ proptest! {
     ) {
         let ik = binding(fingers, direction, mods, allow_fullscreen, InterceptDispatch::Command);
         let bindings = std::slice::from_ref(&ik);
-        let action = classify_swipe(bindings, true, 0, gestures, fingers, direction, &mods);
+        let action = classify_swipe(bindings, true, None, gestures, fingers, direction, &mods);
         let expected = if allow_fullscreen {
             bound(&ik)
         } else {
@@ -149,7 +149,7 @@ proptest! {
         gestures in gestures(),
     ) {
         let action =
-            classify_swipe(&[], fullscreen_active, 0, gestures, fingers, direction, &mods);
+            classify_swipe(&[], fullscreen_active, None, gestures, fingers, direction, &mods);
         prop_assert_eq!(action, built_in(gestures, fingers, direction));
     }
 
@@ -163,7 +163,7 @@ proptest! {
     ) {
         prop_assume!(bound_mods != held_mods);
         let ik = binding(fingers, direction, bound_mods, true, InterceptDispatch::Command);
-        let action = classify_swipe(&[ik], false, 0, gestures, fingers, direction, &held_mods);
+        let action = classify_swipe(&[ik], false, None, gestures, fingers, direction, &held_mods);
         prop_assert_eq!(action, built_in(gestures, fingers, direction));
     }
 
@@ -179,7 +179,7 @@ proptest! {
         let mut ik = binding(fingers, direction, mods, true, InterceptDispatch::Command);
         ik.surface = Some(surface);
         let bindings = std::slice::from_ref(&ik);
-        let action = classify_swipe(bindings, false, focused, gestures, fingers, direction, &mods);
+        let action = classify_swipe(bindings, false, Some(focused), gestures, fingers, direction, &mods);
         let expected = if surface == focused {
             bound(&ik)
         } else {

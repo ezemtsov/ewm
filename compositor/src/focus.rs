@@ -56,8 +56,8 @@ pub enum Notify {
 }
 
 impl Ewm {
-    /// The frame holding the keyboard, 0 without one.
-    pub fn focused_frame_id(&self) -> u64 {
+    /// The frame holding the keyboard.
+    pub fn focused_frame_id(&self) -> Option<u64> {
         self.layout.focused_frame_id()
     }
 
@@ -69,8 +69,8 @@ impl Ewm {
     }
 
     /// Surface id receiving keyboard input.
-    pub fn focused_surface_id(&self) -> u64 {
-        self.layout.focused_frame().map_or(0, |frame| {
+    pub fn focused_surface_id(&self) -> Option<u64> {
+        self.layout.focused_frame().map(|frame| {
             frame
                 .selected_entry_id
                 .and_then(|entry_id| frame.entry_surface_id(entry_id))
@@ -88,10 +88,10 @@ impl Ewm {
     }
 
     pub fn set_surface_urgent(&mut self, surface_id: u64, urgent: bool) -> bool {
-        if surface_id == 0 || (urgent && self.layout.has_frame(surface_id)) {
+        if urgent && self.layout.has_frame(surface_id) {
             return false;
         }
-        if urgent && self.focused_surface_id() == surface_id {
+        if urgent && self.focused_surface_id() == Some(surface_id) {
             return false;
         }
 
@@ -101,7 +101,10 @@ impl Ewm {
     }
 
     pub(crate) fn clear_focused_urgency(&mut self) {
-        for id in [self.focused_surface_id(), self.focused_frame_id()] {
+        for id in [self.focused_surface_id(), self.focused_frame_id()]
+            .into_iter()
+            .flatten()
+        {
             if let Some(surface) = self.surfaces.get_mut(&id) {
                 surface.urgent = false;
             }
@@ -109,11 +112,13 @@ impl Ewm {
     }
 
     pub fn mark_workspace_urgent(&mut self, frame_surface_id: Option<u64>) -> bool {
-        let frame_surface_id = frame_surface_id.unwrap_or(self.focused_frame_id());
-        if frame_surface_id == 0 || !self.layout.has_frame(frame_surface_id) {
+        let Some(frame_surface_id) = frame_surface_id.or_else(|| self.focused_frame_id()) else {
+            return false;
+        };
+        if !self.layout.has_frame(frame_surface_id) {
             return false;
         }
-        if self.focused_frame_id() == frame_surface_id {
+        if self.focused_frame_id() == Some(frame_surface_id) {
             return false;
         }
 
@@ -133,7 +138,7 @@ impl Ewm {
         let frame_id = location.frame.surface_id;
         module::record_focus(location.entry.surface_id().unwrap_or(frame_id), source);
         self.commit_focus(frame_id, Some(entry_id), entry_id, notify);
-        Some(self.focused_frame_id())
+        self.focused_frame_id()
     }
 
     /// Focus an Emacs frame, routing keyboard to its selected entry's surface if one exists.
@@ -189,7 +194,8 @@ impl Ewm {
 
     /// Check if focus is on an Emacs surface (for key interception decisions)
     pub fn is_focus_on_emacs(&self) -> bool {
-        self.layout.has_frame(self.focused_surface_id())
+        self.focused_surface_id()
+            .is_some_and(|id| self.layout.has_frame(id))
     }
 
     pub(crate) fn is_keyboard_focus_on_emacs(&self) -> bool {
@@ -200,11 +206,7 @@ impl Ewm {
 
     /// The focused Emacs frame's surface, for keyboard redirects.
     pub(crate) fn focused_emacs_frame_surface(&self) -> Option<WlSurface> {
-        let id = self.focused_frame_id();
-        if id == 0 || !self.layout.has_frame(id) {
-            return None;
-        }
-        self.window(id)?
+        self.window(self.focused_frame_id()?)?
             .wl_surface()
             .map(|surface| surface.into_owned())
     }
@@ -228,13 +230,9 @@ impl Ewm {
         if let Some(entry_id) = entry_id {
             self.set_focus_entry(entry_id, source, notify);
             true
-        } else if frame_id != 0 {
-            if self.layout.has_frame(frame_id) {
-                self.set_focus_frame(frame_id, source, notify);
-                true
-            } else {
-                false
-            }
+        } else if self.layout.has_frame(frame_id) {
+            self.set_focus_frame(frame_id, source, notify);
+            true
         } else {
             false
         }
@@ -253,7 +251,7 @@ impl Ewm {
 
     pub fn focus_target_ready(&self, id: u64) -> bool {
         let (frame_id, entry_id) = self.resolve_focus_target(id);
-        entry_id.is_some() || (frame_id != 0 && self.layout.has_frame(frame_id))
+        entry_id.is_some() || self.layout.has_frame(frame_id)
     }
 
     /// Focus the surface, or ask Emacs to show it again when no window does.
@@ -387,7 +385,7 @@ impl Ewm {
             }
             // Exclusive Bottom/Background (only when no toplevel has focus)
             let focused = self.focused_surface_id();
-            if focused == 0 || !self.surfaces.contains_key(&focused) {
+            if !focused.is_some_and(|id| self.surfaces.contains_key(&id)) {
                 if let Some(s) = excl_on_layer(output, Layer::Bottom) {
                     return Some(s);
                 }
@@ -404,22 +402,25 @@ impl Ewm {
     /// keyboard follows a frame the change hides.
     pub(crate) fn focus_strip_frame(&mut self, pick: impl FnOnce(usize) -> Option<usize>) {
         let focused = self.focused_frame_id();
-        let target = self.layout.frame_location(focused).and_then(|location| {
-            let strip = &location.monitor.strip;
-            let anchor = if location.floating {
-                Some(strip.active_idx())
-            } else {
-                strip.index_of(focused)
-            };
-            strip.frame_ids().nth(pick(anchor?)?)
-        });
+        let target = focused
+            .and_then(|focused| self.layout.frame_location(focused))
+            .and_then(|location| {
+                let strip = &location.monitor.strip;
+                let anchor = if location.floating {
+                    Some(strip.active_idx())
+                } else {
+                    Some(location.frame_idx)
+                };
+                strip.frame_ids().nth(pick(anchor?)?)
+            });
         if let Some(id) = target {
-            let before = self.focused_frame_id();
             let shown = self.layout.show_strip_frame(id);
             self.settle_shown(shown);
             // The change hid the frame holding the keyboard, Emacs follows it.
-            let after = self.focused_frame_id();
-            if after != before {
+            if let Some(after) = self
+                .focused_frame_id()
+                .filter(|&after| Some(after) != focused)
+            {
                 self.set_focus_frame(after, FocusSource::Action, Notify::Emacs);
             }
         }
@@ -427,20 +428,22 @@ impl Ewm {
 
     /// Move the keyboard from a float to the active strip frame, else to the topmost shown float.
     pub(crate) fn toggle_float_focus(&mut self) {
-        let focused = self.focused_frame_id();
-        let target = self.layout.frame_location(focused).and_then(|location| {
-            let monitor = location.monitor;
-            if location.floating {
-                monitor.strip.active_frame_id()
-            } else {
-                monitor
-                    .floating
-                    .frames()
-                    .iter()
-                    .find(|float| monitor.float_shown(float))
-                    .map(|float| float.surface_id)
-            }
-        });
+        let target = self
+            .focused_frame_id()
+            .and_then(|focused| self.layout.frame_location(focused))
+            .and_then(|location| {
+                let monitor = location.monitor;
+                if location.floating {
+                    monitor.strip.active_frame_id()
+                } else {
+                    monitor
+                        .floating
+                        .frames()
+                        .iter()
+                        .find(|float| monitor.float_shown(float))
+                        .map(|float| float.surface_id)
+                }
+            });
         if let Some(id) = target {
             self.set_focus_frame(id, FocusSource::Action, Notify::Emacs);
         }

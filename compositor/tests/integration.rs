@@ -364,7 +364,10 @@ fn frame_focus_switch_refreshes_stationary_pointer_after_transition() {
 
     fixture.dispatch();
 
-    assert_eq!(fixture.ewm_ref().focused_surface_id(), second_surface_id);
+    assert_eq!(
+        fixture.ewm_ref().focused_surface_id(),
+        Some(second_surface_id)
+    );
     assert_eq!(fixture.pointer_focus_surface_id(), Some(second_surface_id));
 }
 
@@ -628,7 +631,7 @@ fn disabling_output_migrates_entries_to_mapped_output() {
         .ewm()
         .set_focus_entry(nz(1), FocusSource::Test, Notify::None);
 
-    assert_eq!(fixture.ewm_ref().focused_surface_id(), surface_id);
+    assert_eq!(fixture.ewm_ref().focused_surface_id(), Some(surface_id));
     assert_eq!(fixture.ewm_ref().focused_entry_id(), Some(nz(1)));
     assert_eq!(
         fixture.ewm_ref().layout.frame_with_focus_id(nz(1_100)),

@@ -1143,7 +1143,7 @@ impl Ewm {
                 if let Some((_, data)) = floating.frame_with_data_mut(id) {
                     data.shadow_mut().update_render_elements(
                         size,
-                        focused_frame_id == id,
+                        focused_frame_id == Some(id),
                         CornerRadius::default(),
                         scale,
                         alpha,
@@ -1379,7 +1379,7 @@ pub fn render_frame_snapshot(
         let elements =
             render_window_without_popups(&surface.window, renderer, Point::from((0, 0)), scale, 1.);
         content.extend(elements.into_iter().map(ContentRenderElement::Surface));
-        let focused = ewm.focused_frame_id() == id;
+        let focused = ewm.focused_frame_id() == Some(id);
         if let Some((_, data)) = ewm
             .layout
             .floating_mut(&output)

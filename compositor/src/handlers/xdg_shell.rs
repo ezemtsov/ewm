@@ -421,7 +421,7 @@ impl Ewm {
         }
         // The first Emacs frame took the keyboard at placement. Sent after New so the lisp side
         // has assigned ewm-surface-id by the time the Focus event is processed.
-        if is_emacs && self.focused_frame_id() == id {
+        if is_emacs && self.focused_frame_id() == Some(id) {
             info!("Initial Emacs frame {} holds the keyboard", id);
             if let Some(focus_id) = self.layout.focus_id_of_frame(id) {
                 self.queue_event(Event::Focus {
@@ -442,7 +442,7 @@ impl Ewm {
 
     /// Drop toplevel `id`, returning the frame to refocus.
     pub fn handle_toplevel_destroyed_by_id(&mut self, id: u64) -> Option<u64> {
-        let was_focused = self.focused_frame_id() == id;
+        let was_focused = self.focused_frame_id() == Some(id);
         let close_was_active = module::take_pending_active_frame_close(id);
         let active_close = was_focused || close_was_active;
 
@@ -472,7 +472,7 @@ impl Ewm {
                 .into_iter()
                 .flatten()
                 .find_map(|output| self.layout.focused_frame_on(output))
-                .or_else(|| Some(self.focused_frame_id()).filter(|&id| id != 0));
+                .or_else(|| self.focused_frame_id());
             debug!("Toplevel {} destroyed: refocus -> {:?}", id, refocus);
             return refocus;
         }

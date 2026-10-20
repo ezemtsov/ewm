@@ -139,7 +139,7 @@ impl Ewm {
 
     fn focused_frame_entry_for_surface(&self, id: u64) -> Option<LayoutEntryLocation<'_>> {
         self.layout
-            .frame_location(self.focused_frame_id())?
+            .frame_location(self.focused_frame_id()?)?
             .entries()
             .find(|location| location.entry.surface_id() == Some(id))
     }
@@ -754,7 +754,9 @@ impl Ewm {
         self.layout.reconcile_fullscreen(committed);
         self.report_float_visibility(&shown);
         // A float going fullscreen takes the focus from its frame.
-        if let Some((_, entry_id)) = self.layout.fullscreen_float_over(self.focused_frame_id())
+        if let Some((_, entry_id)) = self
+            .focused_frame_id()
+            .and_then(|id| self.layout.fullscreen_float_over(id))
             && self.focused_entry_id() != Some(entry_id)
         {
             self.set_focus_entry(entry_id, FocusSource::FullscreenOver, Notify::Emacs);
@@ -789,7 +791,9 @@ impl Ewm {
             .strip
             .frame_of_float(frame)
             .and_then(|id| monitor.fullscreen_on(id))
-            .is_none_or(|id| id == frame.surface_id || frame.surface_id == self.focused_frame_id())
+            .is_none_or(|id| {
+                id == frame.surface_id || Some(frame.surface_id) == self.focused_frame_id()
+            })
     }
 
     /// `monitor`'s visible floats with their output-local slots, topmost first.
@@ -917,12 +921,14 @@ impl Ewm {
     }
 
     /// Settle on the focused frame's selected window once a merge changed it.
-    fn sync_focus_after_merge(&mut self, before: (u64, Option<LayoutEntryId>)) {
+    fn sync_focus_after_merge(&mut self, before: (Option<u64>, Option<LayoutEntryId>)) {
         let after = (self.focused_surface_id(), self.focused_entry_id());
         if after != before {
             self.clear_focused_urgency();
-            self.flush_pending_title_event(after.0);
-            module::record_focus(after.0, FocusSource::LayoutSelected);
+            if let Some(id) = after.0 {
+                self.flush_pending_title_event(id);
+                module::record_focus(id, FocusSource::LayoutSelected);
+            }
         }
     }
 
@@ -1201,7 +1207,7 @@ impl Ewm {
         let target = self
             .layout
             .focused_frame_on(output)
-            .filter(|&id| id != before);
+            .filter(|&id| Some(id) != before);
         if let Some(id) = target {
             if self.pointer_is_on_output(output) {
                 // The frame settles flush with the working area.

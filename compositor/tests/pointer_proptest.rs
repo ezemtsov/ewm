@@ -877,12 +877,12 @@ fn check_f1(h: &Harness) -> Result<(), TestCaseError> {
     );
     prop_assert_eq!(
         ewm.focused_frame_id(),
-        h.frame_sid,
+        Some(h.frame_sid),
         "F1: focused frame should own the plain entry",
     );
     prop_assert_eq!(
         ewm.focused_surface_id(),
-        h.frame_sid,
+        Some(h.frame_sid),
         "F1: keyboard routing should stay on the Emacs frame surface",
     );
     Ok(())

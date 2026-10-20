@@ -135,9 +135,7 @@ impl SessionLockHandler for State {
         info!("Session lock requested");
 
         // Save current focus to restore after unlock
-        if self.ewm.focused_surface_id() != 0 {
-            self.ewm.pre_lock_focus = Some(self.ewm.focused_surface_id());
-        }
+        self.ewm.pre_lock_focus = self.ewm.focused_surface_id();
 
         if self.ewm.output_state.is_empty() {
             // No outputs: lock immediately

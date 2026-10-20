@@ -211,7 +211,7 @@ fn float_fullscreens_in_place_over_the_active_frame() {
         assert!(ewm.render_above_top_layer(&output));
         assert_eq!(
             (ewm.focused_frame_id(), ewm.focused_entry_id()),
-            (500, Some(nz(7))),
+            (Some(500), Some(nz(7))),
             "the view did not take the focus"
         );
         assert_eq!(float_rect(&fix, &output, 500), before, "the float moved");
@@ -303,7 +303,7 @@ fn fullscreen_float_stays_with_its_frame() {
         let ewm = fix.ewm_ref();
         assert_eq!(
             (ewm.focused_frame_id(), ewm.focused_entry_id()),
-            (500, Some(nz(7))),
+            (Some(500), Some(nz(7))),
             "the frame kept the focus under the view"
         );
     }

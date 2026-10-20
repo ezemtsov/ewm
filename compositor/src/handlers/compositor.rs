@@ -170,8 +170,8 @@ impl CompositorHandler for State {
                 let focused = self.ewm.focused_surface_id();
                 let activate = self.ewm.surfaces[&id].activation_pending()
                     || match parent_id {
-                        Some(parent) => focused == parent,
-                        None => !self.ewm.pending_fullscreen(focused),
+                        Some(parent) => focused == Some(parent),
+                        None => !focused.is_some_and(|id| self.ewm.pending_fullscreen(id)),
                     };
                 let output = self.ewm.active_output();
                 let frame_surface_id = self.ewm.resolve_app_host_frame(parent_id, output);
@@ -285,7 +285,11 @@ impl Ewm {
         parent_id
             .and_then(|pid| self.frame_entry_for_surface(pid))
             .and_then(|(id, _)| tiled_frame_on(id, None))
-            .or_else(|| output.and_then(|o| tiled_frame_on(self.focused_frame_id(), Some(o))))
+            .or_else(|| {
+                output
+                    .zip(self.focused_frame_id())
+                    .and_then(|(o, id)| tiled_frame_on(id, Some(o)))
+            })
             .or_else(|| output.and_then(|o| self.layout.active_frame_id(o)))
     }
 }
