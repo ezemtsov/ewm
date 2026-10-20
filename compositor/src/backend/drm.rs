@@ -1697,7 +1697,7 @@ impl DrmBackendState {
             use crate::utils::get_monotonic_time;
 
             let output_scale = Scale::from(output.current_scale().fractional_scale());
-            let output_geo = ewm.space.output_geometry(output).unwrap_or_default();
+            let output_geo = ewm.layout.output_rect(output).unwrap_or_default();
             let output_pos = output_geo.loc;
             let output_size = output_geo.size;
 

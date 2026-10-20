@@ -143,6 +143,19 @@ impl Monitor {
         &self.name
     }
 
+    /// The output's rectangle in the global space, none before it has a mode.
+    pub fn rect(&self) -> Option<Rectangle<i32, Logical>> {
+        let mode = self.output.current_mode()?;
+        let size = self
+            .output
+            .current_transform()
+            .transform_size(mode.size)
+            .to_f64()
+            .to_logical(self.output.current_scale().fractional_scale())
+            .to_i32_ceil();
+        Some(Rectangle::new(self.output.current_location(), size))
+    }
+
     fn has_frame(&self, id: u64) -> bool {
         self.strip.index_of(id).is_some() || self.floating.has_frame(id)
     }
@@ -460,6 +473,11 @@ impl Layout {
             .iter()
             .find(|monitor| monitor.name == name)
             .map(Monitor::output)
+    }
+
+    /// The rectangle of `output` in the global space, none without a monitor or a mode.
+    pub fn output_rect(&self, output: &Output) -> Option<Rectangle<i32, Logical>> {
+        self.monitor_of(output)?.rect()
     }
 
     pub fn monitor_of(&self, output: &Output) -> Option<&Monitor> {

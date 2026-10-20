@@ -172,7 +172,7 @@ impl Ewm {
     /// Global origin of the frame at `location`.
     pub(crate) fn frame_origin(&self, location: FrameLocation<'_>) -> Option<Point<i32, Logical>> {
         let output = location.monitor.output();
-        let output_geo = self.space.output_geometry(output)?;
+        let output_geo = self.layout.output_rect(output)?;
         if location.floating {
             let (_, data) = location
                 .monitor
@@ -294,7 +294,7 @@ impl Ewm {
         &self,
         location: LayoutEntryLocation<'_>,
     ) -> Option<Rectangle<i32, Logical>> {
-        let output_geo = self.space.output_geometry(location.monitor.output())?;
+        let output_geo = location.monitor.rect()?;
         let origin = self.frame_origin(location.frame_location())?;
         Some(self.entry_rect_at(location, output_geo, origin))
     }
@@ -373,7 +373,7 @@ impl Ewm {
             return None;
         }
         let output = self.output_at(pos)?;
-        let output_geo = self.space.output_geometry(output)?;
+        let output_geo = self.layout.output_rect(output)?;
         Some((self.layout.monitor_of(output)?, output_geo))
     }
 
@@ -484,7 +484,7 @@ impl Ewm {
         let (pos, size) = (data.render_pos(), data.size());
         let center: Point<f64, Logical> = Point::from((pos.x + size.w / 2.0, pos.y + size.h / 2.0));
         let output = monitor.output();
-        let output_geo = self.space.output_geometry(output)?;
+        let output_geo = self.layout.output_rect(output)?;
         let working_area = self.get_working_area(output);
         let center = output_geo.loc.to_f64() + center;
         self.tiled_entry_under_matching(monitor, output_geo, working_area, center, |_| true)
@@ -609,7 +609,7 @@ impl Ewm {
 
     pub(crate) fn popup_surface_under(&self, pos: Point<f64, Logical>) -> Option<SurfaceHit> {
         let output = self.output_at(pos)?;
-        let output_geo = self.space.output_geometry(output)?;
+        let output_geo = self.layout.output_rect(output)?;
         for placement in crate::render::collect_popup_placements(self, output_geo, Some(output)) {
             let Some((surface, surface_offset)) = under_from_surface_tree(
                 &placement.surface,
@@ -641,7 +641,7 @@ impl Ewm {
                 let surface = entry.surface_id()?;
                 let state = self.surfaces.get(&surface)?;
                 let output = location.monitor.output().clone();
-                let output_geo = self.space.output_geometry(&output)?;
+                let output_geo = self.layout.output_rect(&output)?;
                 let origin = self.frame_origin(location.frame_location())?;
                 let place = Self::view_place(location, output_geo, origin);
                 let now = Fit {
@@ -1015,7 +1015,7 @@ impl Ewm {
     /// The output strictly under `pos`, with `pos` made relative to it.
     fn output_local_pos(&self, pos: Point<f64, Logical>) -> Option<(Output, Point<f64, Logical>)> {
         let output = self.output_containing(pos)?;
-        let geo = self.space.output_geometry(output)?;
+        let geo = self.layout.output_rect(output)?;
         Some((output.clone(), pos - geo.loc.to_f64()))
     }
 
@@ -1193,8 +1193,8 @@ impl Ewm {
             if self.pointer_is_on_output(output) {
                 // The frame settles flush with the working area.
                 let output_loc = self
-                    .space
-                    .output_geometry(output)
+                    .layout
+                    .output_rect(output)
                     .map_or(Point::default(), |geo| geo.loc);
                 let (px, py) = self.pointer_location();
                 let in_content = self

@@ -1428,7 +1428,7 @@ impl Ewm {
                 let mut dnd_scale = 1.0;
                 let mut dnd_transform = Transform::Normal;
                 for output in &self.sorted_outputs {
-                    let Some(geo) = self.space.output_geometry(output) else {
+                    let Some(geo) = self.layout.output_rect(output) else {
                         continue;
                     };
 
@@ -1488,7 +1488,7 @@ impl Ewm {
                 let mut dnd_scale = 1.0;
                 let mut dnd_transform = Transform::Normal;
                 for output in &self.sorted_outputs {
-                    let Some(geo) = self.space.output_geometry(output) else {
+                    let Some(geo) = self.layout.output_rect(output) else {
                         continue;
                     };
 
@@ -1639,7 +1639,7 @@ impl Ewm {
         // Inactive monitors have no framebuffer and a disabled output keeps
         // its surface off, so neither shows anything. Skip the backend and
         // let them satisfy the lock as if rendered.
-        let dark = !self.monitors_active || self.space.output_geometry(output).is_none();
+        let dark = !self.monitors_active || self.layout.output_rect(output).is_none();
         let res = if dark {
             backend::RenderResult::Skipped
         } else {
@@ -2373,7 +2373,7 @@ impl Ewm {
     /// Used for click-to-focus on layer surfaces with OnDemand keyboard interactivity.
     pub fn layer_under_point(&self, pos: Point<f64, Logical>) -> Option<DesktopLayerSurface> {
         let output = self.output_at(pos)?;
-        let output_geo = self.space.output_geometry(output)?;
+        let output_geo = self.layout.output_rect(output)?;
         let pos_within_output = pos - output_geo.loc.to_f64();
         let above_top_layer = self.render_above_top_layer(output);
 
@@ -2408,7 +2408,7 @@ impl Ewm {
     /// This ensures the input hit-testing order matches the visual render order.
     pub fn surface_under_point(&self, pos: Point<f64, Logical>) -> Option<SurfaceHit> {
         let output = self.output_at(pos);
-        let output_geo = output.and_then(|o| self.space.output_geometry(o));
+        let output_geo = output.and_then(|o| self.layout.output_rect(o));
         let above_top_layer = output.is_some_and(|o| self.render_above_top_layer(o));
 
         if let (Some(output), Some(geo)) = (output, output_geo) {
@@ -3281,16 +3281,14 @@ impl State {
     fn apply_output_config_for(&mut self, output_name: &str) {
         let pos: Point<f64, Logical> = self.ewm.pointer_location().into();
         let output = self.ewm.find_mapped_output(output_name);
-        let old_geo = output
-            .as_ref()
-            .and_then(|o| self.ewm.space.output_geometry(o));
+        let old_geo = output.as_ref().and_then(|o| self.ewm.layout.output_rect(o));
 
         self.backend.apply_output_config(&mut self.ewm, output_name);
 
         if let (Some(output), Some(old_geo)) = (&output, old_geo) {
             let point = Point::from((pos.x as i32, pos.y as i32));
             if old_geo.contains(point)
-                && let Some(new_geo) = self.ewm.space.output_geometry(output)
+                && let Some(new_geo) = self.ewm.layout.output_rect(output)
                 && old_geo != new_geo
             {
                 let rel_x = (pos.x - old_geo.loc.x as f64) / old_geo.size.w as f64;
@@ -3308,7 +3306,7 @@ impl State {
         let Some(output) = self.ewm.first_output().cloned() else {
             return;
         };
-        let Some(geo) = self.ewm.space.output_geometry(&output) else {
+        let Some(geo) = self.ewm.layout.output_rect(&output) else {
             return;
         };
         let center = crate::utils::center(geo).to_f64();
@@ -3639,7 +3637,7 @@ impl State {
                     .and_then(|output| output.current_mode());
                 let current_pos = current_output
                     .as_ref()
-                    .and_then(|output| self.ewm.space.output_geometry(output))
+                    .and_then(|output| self.ewm.layout.output_rect(output))
                     .map(|geo| (geo.loc.x, geo.loc.y))
                     .unwrap_or((0, 0));
 

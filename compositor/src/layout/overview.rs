@@ -294,8 +294,8 @@ impl Ewm {
             return Geometry::default();
         };
         let size = self
-            .space
-            .output_geometry(output)
+            .layout
+            .output_rect(output)
             .map(|geo| geo.size.to_f64())
             .unwrap_or_default();
         let scale = output.current_scale().fractional_scale();
@@ -333,7 +333,7 @@ impl Ewm {
         let Some(output) = self.output_at(pos).cloned() else {
             return;
         };
-        let Some(output_geo) = self.space.output_geometry(&output) else {
+        let Some(output_geo) = self.layout.output_rect(&output) else {
             return;
         };
         let pos_within_output = pos - output_geo.loc.to_f64();

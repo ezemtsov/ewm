@@ -429,7 +429,7 @@ impl State {
     {
         let device = event.device();
         let output = device.output().or(fallback_output)?;
-        let output_geo = self.ewm.space.output_geometry(output)?;
+        let output_geo = self.ewm.layout.output_rect(output)?;
         let transform = output.current_transform();
         let size = transform.invert().transform_size(output_geo.size);
         Some(
@@ -1777,7 +1777,7 @@ impl State {
         let mapped = self.output_for_tablet(&device.name());
         let (target_geo, transform) = match mapped {
             Some(output) => (
-                self.ewm.space.output_geometry(output)?,
+                self.ewm.layout.output_rect(output)?,
                 output.current_transform(),
             ),
             // Do not keep ratio for the unified mode as this is what OpenTabletDriver expects.

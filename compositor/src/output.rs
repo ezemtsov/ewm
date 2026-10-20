@@ -39,7 +39,7 @@ impl Ewm {
     /// Unmap a connected output while keeping its head available for
     /// output-management so it can be re-enabled later.
     pub(crate) fn disable_output(&mut self, output: &Output) {
-        if self.space.output_geometry(output).is_none() {
+        if self.layout.output_rect(output).is_none() {
             return;
         }
 
@@ -103,7 +103,7 @@ impl Ewm {
         let mut states = HashMap::new();
         for info in output_infos {
             let output = self.layout.output(&info.name);
-            let geo = output.and_then(|o| self.space.output_geometry(o));
+            let geo = output.and_then(|o| self.layout.output_rect(o));
 
             let enabled = self
                 .output_config
@@ -229,7 +229,7 @@ impl Ewm {
             return target;
         }
         if let Some(output) = self.output_containing(previous) {
-            let geom = self.space.output_geometry(output).unwrap();
+            let geom = self.layout.output_rect(output).unwrap();
             let x = target
                 .x
                 .clamp(geom.loc.x as f64, (geom.loc.x + geom.size.w - 1) as f64);
@@ -241,7 +241,7 @@ impl Ewm {
         let Some(output) = self.first_output() else {
             return target;
         };
-        let Some(geom) = self.space.output_geometry(output) else {
+        let Some(geom) = self.layout.output_rect(output) else {
             return target;
         };
         crate::utils::center(geom).to_f64()
@@ -272,7 +272,7 @@ impl Ewm {
     /// the perpendicular band and the closest center in the requested
     /// direction wins.
     fn output_in_direction(&self, current: &Output, dx: i32, dy: i32) -> Option<Output> {
-        let cur = self.space.output_geometry(current)?;
+        let cur = self.layout.output_rect(current)?;
         let horizontal = match (dx.signum(), dy.signum()) {
             (-1 | 1, 0) => true,
             (0, -1 | 1) => false,
@@ -294,7 +294,7 @@ impl Ewm {
 
         self.space
             .outputs()
-            .filter_map(|o| self.space.output_geometry(o).map(|g| (o, g)))
+            .filter_map(|o| self.layout.output_rect(o).map(|g| (o, g)))
             .filter_map(|(output, geo)| {
                 if !geo.overlaps(band) {
                     return None;
@@ -347,7 +347,7 @@ impl Ewm {
     pub fn recalculate_output_size(&mut self) {
         let (total_width, total_height) =
             self.space.outputs().fold((0i32, 0i32), |(w, h), output| {
-                if let Some(geo) = self.space.output_geometry(output) {
+                if let Some(geo) = self.layout.output_rect(output) {
                     (w.max(geo.loc.x + geo.size.w), h.max(geo.loc.y + geo.size.h))
                 } else {
                     (w, h)
@@ -359,7 +359,7 @@ impl Ewm {
     pub(crate) fn active_outputs_snapshot(&self) -> Vec<module::ActiveOutput> {
         self.mapped_monitors()
             .filter_map(|monitor| {
-                let geo = self.space.output_geometry(monitor.output())?;
+                let geo = monitor.rect()?;
                 let working_area = monitor.working_area;
                 Some(module::ActiveOutput {
                     name: monitor.name().to_string(),
@@ -413,7 +413,7 @@ impl Ewm {
             height: working_area.size.h,
         });
 
-        if self.space.output_geometry(output).is_some() {
+        if self.layout.output_rect(output).is_some() {
             self.attach_output(output);
             self.introspect_windows_dirty = true;
         }
@@ -429,7 +429,7 @@ impl Ewm {
         });
         let current_scale = output.current_scale().fractional_scale();
         let current_transform = output.current_transform();
-        let current_geo = self.space.output_geometry(output).unwrap_or_default();
+        let current_geo = self.layout.output_rect(output).unwrap_or_default();
         self.sync_sorted_outputs();
         if let Some(strip) = self.layout.strip_mut(output) {
             strip.update_config(current_scale);

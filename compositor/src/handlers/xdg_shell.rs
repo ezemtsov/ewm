@@ -339,7 +339,7 @@ impl Ewm {
         let location = self.preferred_entry_for_surface(id)?;
         let entry = location.entry;
         let output = location.monitor.output();
-        let output_geo = self.space.output_geometry(output)?;
+        let output_geo = self.layout.output_rect(output)?;
 
         if location.entry.fullscreen() {
             return Some(Rectangle::from_size(output_geo.size));
@@ -360,7 +360,7 @@ impl Ewm {
     /// Working area in an Emacs frame's own coordinates.
     fn frame_popup_target_rect(&self, id: u64) -> Option<Rectangle<i32, Logical>> {
         let output = self.layout.frame_location(id)?.monitor.output();
-        let output_geo = self.space.output_geometry(output)?;
+        let output_geo = self.layout.output_rect(output)?;
         let working_area = self.get_working_area(output);
         let origin = self.emacs_frame_origin(id)?;
         Some(Rectangle::new(
@@ -413,8 +413,8 @@ impl Ewm {
             return;
         };
         let output_geo = self
-            .space
-            .output_geometry(output)
+            .layout
+            .output_rect(output)
             .unwrap_or_else(|| Rectangle::from_size(self.output_size));
 
         let mut target = Rectangle::from_size(output_geo.size);

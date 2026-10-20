@@ -680,7 +680,7 @@ impl<'a> OutputRender<'a> {
         include_cursor: bool,
     ) -> Self {
         let scale = Scale::from(output.current_scale().fractional_scale());
-        let rect = ewm.space.output_geometry(output).unwrap_or_default();
+        let rect = ewm.layout.output_rect(output).unwrap_or_default();
         let blur = ewm.blur_config;
         // Everything under the top layer scales with the overview, and slides up one output height
         // in content space while the frames hide.
