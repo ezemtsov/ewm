@@ -545,7 +545,7 @@ mod tests {
 
     use super::*;
 
-    /// Serializes tests that mutate the process environment; the `unsafe` env calls in
+    /// Serializes tests that mutate the process environment. The `unsafe` env calls in
     /// this module are only sound while this lock is held.
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();

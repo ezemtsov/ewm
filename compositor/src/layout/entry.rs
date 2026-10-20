@@ -10,7 +10,7 @@ pub type FocusId = std::num::NonZeroU64;
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct LayoutEntry {
-    /// Entry identity assigned by lisp; names one Emacs window in a frame.
+    /// Entry identity assigned by lisp. Names one Emacs window in a frame.
     pub id: LayoutEntryId,
     /// Buffer name shown in this Emacs window.
     #[serde(default)]

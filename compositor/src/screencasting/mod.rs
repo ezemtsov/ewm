@@ -167,7 +167,7 @@ impl State {
         }
 
         // Filter render formats to the fourcc we'll negotiate. Window
-        // casts use ARGB (alpha for transparency); output casts use XRGB.
+        // casts use ARGB (alpha for transparency). Output casts use XRGB.
         let fourcc = if alpha {
             smithay::backend::allocator::Fourcc::Argb8888
         } else {

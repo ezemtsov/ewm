@@ -6,7 +6,7 @@
 //!    queues, pipes, and shared state:
 //!    - `COMMAND_QUEUE`: Emacs -> Compositor commands (layouts, focus, etc.)
 //!    - `EVENT_CHANNEL`: Compositor -> Emacs events, drainable only after the tick publishes
-//!      `SHARED_STATE`; the pipe fd (open_channel) only carries a wakeup byte
+//!      `SHARED_STATE`. The pipe fd (open_channel) only carries a wakeup byte
 //!    - `SHARED_STATE`: Compositor -> Emacs snapshot (focus, pointer, outputs)
 //!    - `KEYBOARD_CAPTURE_ACTIVE`: derived from tokened Emacs input leases
 //!
@@ -522,7 +522,7 @@ pub enum ModuleCommand {
     MarkWorkspaceUrgent {
         frame_surface_id: Option<u64>,
     },
-    /// Sole channel for Emacs-initiated focus; bypasses xdg_activation.
+    /// Sole channel for Emacs-initiated focus. Bypasses xdg_activation.
     FocusTarget {
         focus_id: NonZeroU64,
     },
@@ -563,7 +563,7 @@ pub enum ModuleCommand {
     PowerOffMonitors,
     /// Monitors back on
     PowerOnMonitors,
-    /// Client init done; force-resend wl_keyboard.enter (PGTK drops the
+    /// Client init done. Force-resend wl_keyboard.enter (PGTK drops the
     /// pre-roundtrip one).
     Initialized,
 }
@@ -583,8 +583,7 @@ fn command_queue() -> &'static Mutex<Vec<ModuleCommand>> {
     COMMAND_QUEUE.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-/// Drain all pending commands from the queue.
-/// Called by the compositor in its main loop.
+/// Take every command Emacs queued, once per compositor tick.
 pub fn drain_commands() -> Vec<ModuleCommand> {
     command_queue().lock().unwrap().drain(..).collect()
 }
@@ -610,7 +609,7 @@ fn push_command(cmd: ModuleCommand) {
 
 fn push_keyboard_capture_changed() {
     // Snapshot the edge at enqueue time. A begin+end pair can be queued before
-    // the compositor drains commands; the begin still needs to cancel repeat.
+    // the compositor drains commands. The begin still needs to cancel repeat.
     push_command(ModuleCommand::KeyboardCaptureChanged {
         active: get_keyboard_capture(),
     });
@@ -637,7 +636,7 @@ fn create_activation_token() -> Result<Option<String>> {
 }
 
 /// Push a request-reply command with a one-shot reply slot and block on the
-/// reply.  Fast-fails with `None` if the compositor isn't running so callers
+/// reply. Fast-fails with `None` if the compositor isn't running so callers
 /// don't burn the full timeout when there's no one to answer.
 fn request_reply<T, F>(make_cmd: F, timeout: Duration, label: &str) -> Option<T>
 where
@@ -837,7 +836,7 @@ pub(crate) fn take_events() -> Vec<crate::event::Event> {
     events
 }
 
-/// Test function - returns a greeting
+/// A greeting, to check the module loaded.
 #[defun]
 fn hello() -> Result<String> {
     Ok("Hello from EWM compositor!".to_string())
@@ -864,7 +863,7 @@ fn gtk_freeze_frame_updates(window_id: String) -> Result<()> {
     crate::gtk::set_updates_frozen(ptr, true)
 }
 
-/// Resume GdkWindow paint updates; flushes any queued expose.
+/// Resume GdkWindow paint updates. Flushes any queued expose.
 #[defun]
 fn gtk_thaw_frame_updates(window_id: String) -> Result<()> {
     let ptr: usize = window_id
@@ -1026,7 +1025,7 @@ fn socket() -> Result<Option<String>> {
 
 // Module Command Functions (direct Emacs -> Compositor)
 
-/// One Emacs window of a frame as Lisp spells it; `surface-id` names the view it shows.
+/// One Emacs window of a frame as Lisp spells it. `surface-id` names the view it shows.
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 struct EntrySpec {
@@ -1163,7 +1162,7 @@ fn set_fullscreen_module(entry_id: i64, on: Value<'_>) -> Result<()> {
 }
 
 /// Focus the active frame on the output adjacent to the current one.
-/// DX/DY are -1/+1 along one axis; the other axis is 0.
+/// DX/DY are -1/+1 along one axis. The other axis is 0.
 #[defun]
 fn focus_output_direction_module(dx: i64, dy: i64) -> Result<()> {
     push_command(ModuleCommand::Action {
@@ -1195,7 +1194,7 @@ fn workspace_mark_urgent_module(frame_surface_id: Option<i64>) -> Result<()> {
     Ok(())
 }
 
-/// Sole focus channel from Lisp. FOCUS-ID names a frame chrome or layout entry.
+/// Sole focus channel from Lisp. FOCUS-ID names a frame's own surface or a layout entry.
 #[defun]
 fn focus_target_module(focus_id: i64) -> Result<()> {
     let Some(focus_id) = NonZeroU64::new(focus_id as u64) else {
@@ -1264,10 +1263,10 @@ fn prepare_frame_close_module(id: i64) -> Result<()> {
     Ok(())
 }
 
-/// An output's requested configuration as Lisp spells it; absent keys leave things as they are.
+/// An output's requested configuration as Lisp spells it. Absent keys leave things as they are.
 ///
 /// `custom` generates a CVT mode for `width`/`height`/`refresh` instead of matching an
-/// advertised one; `modeline` takes precedence over the mode fields. `transform` counts
+/// advertised one. `modeline` takes precedence over the mode fields. `transform` counts
 /// 0=Normal, 1=90, 2=180, 3=270, 4=Flipped, 5=Flipped90, 6=Flipped180, 7=Flipped270.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
@@ -1460,7 +1459,7 @@ pub struct ChordSpec {
 }
 
 impl KeySpec {
-    /// Resolve the trigger; `None` skips a key neither a swipe nor libxkbcommon can name.
+    /// Resolve the trigger. `None` skips a key neither a swipe nor libxkbcommon can name.
     fn resolve(self) -> Option<InterceptedKey> {
         let Some(trigger) = self.key.trigger() else {
             let key = self.key.description();
@@ -1668,7 +1667,7 @@ fn get_layouts_module() -> Result<()> {
 }
 
 /// Request verbose compositor state dump for debugging (module mode).
-/// Blocks until the compositor replies; returns the state as Lisp data, or nil on timeout.
+/// Blocks until the compositor replies. Returns the state as Lisp data, or nil on timeout.
 #[defun]
 fn get_debug_state_module() -> Result<Option<Lisp<Data>>> {
     Ok(request_reply(
@@ -1716,7 +1715,7 @@ fn configure_idle_module(timeout: Option<i64>, action: Option<String>) -> Result
 
 /// Configure cursor auto-hide (module mode).
 /// TIMEOUT is seconds of pointer inactivity before hiding (nil to disable).
-/// HIDE-WHEN-TYPING (t/nil) hides the cursor on key press; pointer motion restores it.
+/// HIDE-WHEN-TYPING (t/nil) hides the cursor on key press. Pointer motion restores it.
 #[defun]
 fn configure_cursor_hide_module(timeout: Option<i64>, hide_when_typing: Value<'_>) -> Result<()> {
     let timeout_secs = timeout.and_then(|t| if t > 0 { Some(t as u64) } else { None });
@@ -1756,7 +1755,7 @@ fn set_drag_source(active: Value<'_>) -> Result<()> {
 }
 
 /// Set alpha multiplier for unfocused toplevels (module mode).
-/// ALPHA is clamped to 0.0..=1.0; 1.0 disables the effect.
+/// ALPHA is clamped to 0.0..=1.0. 1.0 disables the effect.
 #[defun]
 fn set_unfocused_alpha(alpha: f64) -> Result<()> {
     let alpha = alpha.clamp(0.0, 1.0) as f32;
@@ -1765,7 +1764,7 @@ fn set_unfocused_alpha(alpha: f64) -> Result<()> {
 }
 
 /// Configure background blur (module mode).
-/// ON enables blur behind surfaces that request it; PASSES, OFFSET, NOISE
+/// ON enables blur behind surfaces that request it. PASSES, OFFSET, NOISE
 /// and SATURATION tune how it looks.
 #[defun]
 fn configure_blur_module(
@@ -1836,7 +1835,7 @@ fn rgb(red: f64, green: f64, blue: f64) -> [f32; 4] {
 }
 
 /// Configure the overview (module mode).
-/// ZOOM scales the strip when zoomed out; RED, GREEN and BLUE in 0.0..=1.0
+/// ZOOM scales the strip when zoomed out. RED, GREEN and BLUE in 0.0..=1.0
 /// colour the backdrop behind it.
 #[defun]
 fn configure_overview_module(zoom: f64, red: f64, green: f64, blue: f64) -> Result<()> {
@@ -1867,7 +1866,7 @@ fn configure_background_module(red: f64, green: f64, blue: f64) -> Result<()> {
 
 /// Set manual idle inhibition (module mode).
 /// When INHIBITED is non-nil, idle timeout and idle notifications are
-/// suppressed regardless of other inhibition sources.  When nil, manual
+/// suppressed regardless of other inhibition sources. When nil, manual
 /// inhibition is lifted (other sources like D-Bus or Wayland protocol
 /// may still inhibit idle).
 #[defun]

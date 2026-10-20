@@ -14,9 +14,8 @@
 //! 2. **Rendering order**: Elements are collected front-to-back, matching typical desktop
 //!    compositor layering: Cursor -> Overlay -> Top -> Popups -> Windows -> Bottom -> Background.
 //!
-//! 3. **Layout-based rendering**: Surfaces with entries in the layout's strips are rendered at
-//!    their declared positions. Surfaces without layout entries use space positions (for Emacs
-//!    frames).
+//! 3. **Layout-based rendering**: Views draw at the window rects their layout entries declare,
+//!    Emacs frames at the origin their strip or floating space gives them.
 
 use std::ptr;
 
@@ -64,7 +63,7 @@ use crate::surface::SurfaceState;
 use crate::{Ewm, LayoutEntry, State, tracy_span};
 
 /// Render a window's surface tree without its popups. Popups are emitted once
-/// per surface via `window_popup_placements`; smithay's `Window::render_elements`
+/// per surface via `window_popup_placements`. Smithay's `Window::render_elements`
 /// would otherwise inline them at every view's location, duplicating across outputs.
 fn render_window_without_popups(
     window: &smithay::desktop::Window,
@@ -585,34 +584,21 @@ pub(crate) fn push_view_elements<
     );
 }
 
-/// Collect render elements for a specific output.
+/// Collect the render elements of `output`, filtering during collection so nothing from another
+/// output damages this one.
 ///
-/// This function collects only elements visible on the target output, filtering
-/// during collection rather than after. This is important for:
-/// 1. Efficient rendering - don't process elements that won't be visible
-/// 2. Accurate damage tracking - elements from other outputs don't trigger false damage
-///
-/// Returns `(content_elements, cursor_elements)`. Cursor elements are split out
-/// to allow separate damage tracking for screencast. When only the cursor moves,
-/// the screencast can skip a full re-render.
+/// Returns `(content_elements, cursor_elements)`, the cursor apart so a screencast skips a full
+/// re-render when only the cursor moved. `include_layers` false leaves out layer surfaces and the
+/// DnD icon, for workspace-transition snapshots that must not re-draw panels over the live ones.
 ///
 /// Rendering order (front to back):
-/// 1. Cursor (highest z-order, always visible)
+/// 1. Cursor
 /// 2. Overlay layer
 /// 3. Top layer and layer-shell popups
 /// 4. Zoomed by the overview: window popups, floating frames, views, frames (these four also slide
 ///    off when hidden), panel exclusive zones in the fill colour, bottom and background layers, the
 ///    output fill and the overview shadow
-/// 5. Overview backdrop (lowest z-order)
-///
-/// Parameters:
-/// - `output`: The output to render for (provides layer map)
-/// - `output_pos`: The output's position in global logical space
-/// - `output_size`: The output's size in logical coordinates
-/// - `include_cursor`: Whether to include the cursor element
-/// - `include_layers`: Whether to include layer surfaces and the DnD icon. Set to `false` for
-///   workspace-transition snapshots so the captured texture doesn't re-draw panels on top of the
-///   live layer surfaces.
+/// 5. Overview backdrop
 #[allow(clippy::too_many_arguments)]
 pub fn collect_render_elements_for_output(
     ewm: &mut Ewm,
@@ -705,7 +691,7 @@ pub fn collect_render_elements_for_output(
 
     // Collect all layer elements in a tight scope to avoid holding the RefCell
     // borrow across the rest of the function. layer_map_for_output() returns
-    // RefMut<LayerMap>; calling it again (e.g. via get_working_area) while
+    // RefMut<LayerMap>. Calling it again (e.g. via get_working_area) while
     // this borrow is alive would panic.
     let (mut overlay_elems, mut top_elems, mut bottom_elems, mut bg_elems) = if include_layers {
         let layer_map = layer_map_for_output(output);
@@ -908,7 +894,7 @@ pub fn collect_render_elements_for_output(
                 continue;
             };
             let window = &frame_surface.window;
-            // A frame created hidden (sized, then shown) has no buffer yet; skip it
+            // A frame created hidden (sized, then shown) has no buffer yet. Skip it
             // so its shadow never draws at the placeholder size.
             if !frame_surface.has_buffer() {
                 continue;

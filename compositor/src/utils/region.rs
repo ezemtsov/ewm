@@ -152,7 +152,7 @@ pub fn region_to_non_overlapping_rects(
                             continue;
                         }
 
-                        // New span overlaps this span; merge them.
+                        // New span overlaps this span. Merge them.
                         spans.remove(i);
                         x1 = min(x1, start);
                         x2 = max(x2, end);

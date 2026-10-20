@@ -10,7 +10,7 @@
 //!
 //! 1. **Key interception**: Emacs provides intercepted keys via `ewm-intercept-keys-module`. The
 //!    first match wins, and a surface-scoped entry matches only while that surface has focus.
-//!    Matching uses raw Latin keysyms; delivery uses temporary keyboard focus or command events.
+//!    Matching uses raw Latin keysyms. Delivery uses temporary keyboard focus or command events.
 //!
 //! 2. **Focus synchronization**: Keyboard focus is derived from logical focus and capture state
 //!    before forwarding.
@@ -77,8 +77,7 @@ use crate::im::TextInputProvider;
 use crate::im::repeat::{HeldKeyOwner, InterceptRepeat};
 use crate::{Action, InterceptDispatch, InterceptedKey, State, SurfaceHit, module, tracy_span};
 
-/// Unified decision from the keyboard filter.
-/// Returned by `input_intercept`. The caller decides how to forward.
+/// Where a key goes, as `classify_key` decides it. The caller forwards accordingly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyAction {
     /// Forward to focused client as-is
@@ -664,7 +663,7 @@ impl State {
             return KeyboardAction::Forward;
         }
 
-        // Look up the focused entry on the focused frame; if it's fullscreen,
+        // Look up the focused entry on the focused frame. If it's fullscreen,
         // make sure normal forwarded keys still go to that surface.
         let fullscreen_entry = self.ewm.focused_fullscreen_entry();
         let fullscreen_active = fullscreen_entry.is_some();
@@ -1102,7 +1101,7 @@ impl State {
         self.focus_target_at(pos, source);
     }
 
-    /// Focus a drop's target like a click; a torn-off tab's window then opens there.
+    /// Focus a drop's target like a click. A torn-off tab's window then opens there.
     fn focus_pending_drop(&mut self) {
         if let Some(pos) = self.ewm.pending_drop.take() {
             self.focus_target_at(pos, "drop");
@@ -1399,7 +1398,7 @@ impl State {
         use smithay::backend::input::{Event, GestureSwipeUpdateEvent as _};
         let mut dx = event.delta_x();
         let mut dy = event.delta_y();
-        // Use libinput's unaccelerated deltas; invert when natural-scroll is on
+        // Use libinput's unaccelerated deltas. Invert when natural-scroll is on
         // so the strip follows fingers regardless of scroll mode.
         if let Some(le) = (&event as &dyn std::any::Any)
             .downcast_ref::<libinput::event::gesture::GestureSwipeUpdateEvent>()
@@ -2029,7 +2028,7 @@ fn should_activate_monitors<I: InputBackend>(event: &InputEvent<I>) -> bool {
     }
 }
 
-/// `Ctrl+Alt+F1..F12` arrives as `XF86Switch_VT_N`; decode to the 1-based VT.
+/// `Ctrl+Alt+F1..F12` arrives as `XF86Switch_VT_N`. Decode to the 1-based VT.
 fn decode_vt_switch(modified_raw: u32) -> Option<i32> {
     if (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12).contains(&modified_raw) {
         Some((modified_raw - keysyms::KEY_XF86Switch_VT_1 + 1) as i32)
@@ -2038,7 +2037,7 @@ fn decode_vt_switch(modified_raw: u32) -> Option<i32> {
     }
 }
 
-/// Pure classification of a keyboard event. Reads no compositor state; the
+/// Pure classification of a keyboard event. Reads no compositor state. The
 /// caller resolves the `KeyRouting` upstream and applies side effects
 /// downstream. Releases always Forward.
 pub fn classify_key(

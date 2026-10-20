@@ -344,7 +344,7 @@ impl TestClient {
             .get_text_input(&seat, &qh, ())
     }
 
-    /// A running IME; smithay discards text-input requests without one.
+    /// A running IME. Smithay discards text-input requests without one.
     pub fn create_input_method(&mut self) -> zwp_input_method_v2::ZwpInputMethodV2 {
         let qh = self.eq.handle();
         let seat = self.state.seat.clone().expect("wl_seat not bound");

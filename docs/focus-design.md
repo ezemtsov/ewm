@@ -86,7 +86,7 @@ compositor makes the call and tells lisp what happened.
  │           Emacs          │ ─────────────────► │        Compositor        │
  │     (lisp; Emacs main    │   Layout           │      (Rust; thread       │
  │         thread)          │   FocusTarget      │      inside Emacs)       │
- │                          │   FocusOutputDir   │                          │
+ │                          │   FocusOutput      │                          │
  │   contents authority     │                    │    focus authority       │
  │   frame / window tree    │                    │    Wayland keyboard      │
  │   buffer ↔ view ↔        │      pipe          │    focus from layout     │
@@ -314,8 +314,8 @@ heap.  Communication is through two channels:
 
 - **Module commands**: lisp -> compositor, a queue of typed messages
   (apply this layout; focus this view; configure this output).
-- **Pipe events**: compositor -> lisp, JSON over a pipe (focus changed;
-  surface created; output disconnected).
+- **Queued events**: compositor -> lisp, Lisp data in a queue the module drains on a
+  wakeup byte (focus changed, surface created, output disconnected).
 
 Both channels are asynchronous and ordering between them is not
 guaranteed.  Lisp can send a message, the compositor can send an event

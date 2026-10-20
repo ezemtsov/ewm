@@ -831,7 +831,7 @@ where
                         "unknown adaptive sync value",
                     );
                 }
-                // ewm doesn't support VRR; valid requests are accepted as no-ops.
+                // ewm doesn't support VRR. Valid requests are accepted as no-ops.
             }
             _ => unreachable!(),
         }

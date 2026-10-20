@@ -33,7 +33,6 @@ fn leave_output_for_window(window: &Window, output: &Output) {
 }
 
 impl Ewm {
-    /// Bake frame `id`'s close snapshot.
     /// Bake `id` for its close animation: a frame into its record, a surface into every frame
     /// showing it.
     pub(crate) fn store_close_snapshot(&mut self, renderer: &mut GlesRenderer, id: u64) {
@@ -520,7 +519,7 @@ impl Ewm {
         )
     }
 
-    /// Hit-test layout toplevel/subsurfaces under a global position; falls
+    /// Hit-test layout toplevel/subsurfaces under a global position. Falls
     /// back to the frame's own surface when no entry hits. Popups are handled
     /// separately by `popup_surface_under`, so popup placement and z-order stay
     /// identical to rendering.
@@ -950,7 +949,7 @@ impl Ewm {
         }
     }
 
-    /// Run `f` on the floating space owning `id`, redrawing on change; false if none.
+    /// Run `f` on the floating space owning `id`, redrawing on change. False if none.
     fn with_floating_space(
         &mut self,
         id: u64,
@@ -1085,7 +1084,7 @@ impl Ewm {
     }
 
     /// Pick each surface's primary entry (largest active-frame slot) and
-    /// configure its toplevel.  Off-screen frames don't bid.
+    /// configure its toplevel. Off-screen frames don't bid.
     pub(crate) fn refresh_primary_assignments(&mut self) {
         self.layout.assign_primaries(&self.sorted_outputs);
         self.refresh_mapped_cast_outputs();
@@ -1120,9 +1119,7 @@ impl Ewm {
         }
     }
 
-    /// Emit FrameShown/FrameHidden when an output's strip-active changes.
-    /// Caller snapshots `prev_active_id` before the mutation; the helper
-    /// compares against the post-mutation state.  No stored state.
+    /// Tell Emacs when `output`'s active strip frame differs from `prev_active_id`.
     pub(crate) fn reconcile_active_for_output(
         &mut self,
         output: &Output,

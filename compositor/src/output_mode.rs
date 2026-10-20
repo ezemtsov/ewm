@@ -1,6 +1,6 @@
 //! Output mode configuration types, ported from niri's `niri-config`/`niri-ipc`.
 //!
-//! `Mode` selects an advertised or CVT-generated custom mode; `Modeline` is an
+//! `Mode` selects an advertised or CVT-generated custom mode. `Modeline` is an
 //! explicit DRM modeline. The timing calculation lives in `backend/drm.rs`.
 
 use std::str::FromStr;

@@ -1,6 +1,6 @@
 //! Per-output horizontal strip of Emacs frames + view-offset state machine.
 //!
-//! Frame positions derive from per-frame widths via `column_x`; the viewport's
+//! Frame positions derive from per-frame widths via `column_x`. The viewport's
 //! left edge is `column_x(active_idx) + view_offset.current()`.
 
 use std::collections::{HashSet, VecDeque};
@@ -76,7 +76,7 @@ impl SwipeTracker {
     }
 }
 
-/// In-progress touchpad swipe; `current = anchor + tracker.pos()` to avoid drift.
+/// In-progress touchpad swipe. `current = anchor + tracker.pos()` keeps it from drifting.
 #[derive(Debug, Clone)]
 pub struct ViewGesture {
     pub current: f64,
@@ -177,7 +177,7 @@ impl ViewOffset {
 /// Layout entry ids stay in `[1, 2^32 - 1]` with bit 32 unset.
 pub const FRAME_FOCUS_ID_MARKER: u64 = 1u64 << 32;
 
-/// Derive a frame chrome's focus id from its surface id.
+/// Focus id of a frame's own surface, from its surface id.
 pub fn frame_focus_id_for(surface_id: u64) -> FocusId {
     std::num::NonZeroU64::new(FRAME_FOCUS_ID_MARKER | surface_id)
         .expect("frame focus id is non-zero by construction")
@@ -232,7 +232,7 @@ impl Frame {
         self.owner == Owner::Compositor && self.workspace_name.is_none()
     }
 
-    /// Construct a default Frame for a newly mapped Emacs frame chrome.
+    /// A default Frame for a newly mapped Emacs frame surface.
     pub fn new(surface_id: u64) -> Self {
         Self {
             name: String::new(),
@@ -351,7 +351,7 @@ pub fn dropped_frame_ids<'a>(
         .collect()
 }
 
-/// Per-output strip of frames laid out left-to-right; `set_active` is the sole mutator of
+/// Per-output strip of frames laid out left-to-right. `set_active` is the sole mutator of
 /// `active_idx`.
 #[derive(Debug, serde::Serialize)]
 pub struct Strip {
@@ -398,8 +398,8 @@ impl Strip {
         self.active_idx
     }
 
-    /// Activate frame `idx` (clamped); re-anchors and animates `view_offset`
-    /// so the active frame ends up centered on the viewport.
+    /// Activate frame `idx`, clamped, re-anchoring and animating `view_offset` so the active frame
+    /// ends up centered on the viewport.
     pub fn set_active(&mut self, idx: usize) {
         self.set_active_with_velocity(idx, 0.);
     }
@@ -426,7 +426,7 @@ impl Strip {
     }
 
     /// X position of frame `idx` relative to the strip origin.
-    /// `column_x(0)` is always 0; subsequent columns accumulate `width + gap`.
+    /// `column_x(0)` is always 0. Subsequent columns accumulate `width + gap`.
     pub fn column_x(&self, idx: usize) -> f64 {
         self.frames[..idx.min(self.frames.len())]
             .iter()
@@ -458,7 +458,7 @@ impl Strip {
         }
     }
 
-    /// Room a frame takes in the strip; an unsized frame takes none.
+    /// Room a frame takes in the strip. An unsized frame takes none.
     fn stride(&self, frame: &Frame) -> f64 {
         let width = if frame.fullscreen_entry().is_some() {
             self.fullscreen_slot.size.w
@@ -555,7 +555,7 @@ impl Strip {
         self.set_active_from_view_pos(active, view_pos, 0.);
     }
 
-    /// Pull out the frames `take` selects; the active frame stays active when it stays.
+    /// Pull out the frames `take` selects. The active frame stays active when it stays.
     pub fn drain_frames(&mut self, take: impl FnMut(&Frame) -> bool) -> Vec<Frame> {
         let active_id = self.active_frame_id();
         let (taken, kept): (Vec<_>, Vec<_>) =
@@ -618,7 +618,7 @@ impl Strip {
         }
     }
 
-    /// Drive the state machine forward; settles finished animations.
+    /// Drive the state machine forward. Settles finished animations.
     pub fn advance(&mut self) {
         self.view_offset.advance();
         for f in &mut self.frames {
@@ -803,7 +803,7 @@ impl Strip {
         });
     }
 
-    /// Push a swipe delta in unaccelerated touchpad units.  `working_w` is
+    /// Push a swipe delta in unaccelerated touchpad units. `working_w` is
     /// the active output's working-area width, used to normalise the swipe.
     pub fn gesture_update(&mut self, delta_x: f64, timestamp: Duration, working_w: f64) {
         let ViewOffset::Gesture(g) = &mut self.view_offset else {
@@ -834,7 +834,7 @@ impl Strip {
         self.set_active_with_velocity(snap, velocity);
     }
 
-    /// Drop frame `idx`; surviving neighbours slide in to close the gap.
+    /// Drop frame `idx`. Surviving neighbours slide in to close the gap.
     pub fn remove_frame_at(&mut self, idx: usize) {
         self.remove_frame_at_with_focus(idx, RemovalFocus::CurrentActive);
     }

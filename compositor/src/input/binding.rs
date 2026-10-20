@@ -52,7 +52,7 @@ impl InterceptedKey {
     /// Check if this key matches the given keysym and modifiers.
     ///
     /// `raw_keysym` is the layout-independent keysym (physical key, no
-    /// modifiers).  `modified_keysym` is the keysym after XKB applies
+    /// modifiers). `modified_keysym` is the keysym after XKB applies
     /// modifiers (e.g. Shift+`;` -> `colon`).
     ///
     /// We try `raw_keysym` first for layout-independent matching, then

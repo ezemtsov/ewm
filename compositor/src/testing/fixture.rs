@@ -111,7 +111,7 @@ impl Fixture {
         TestClient::new(client_end, server_client.id())
     }
 
-    /// Attach an SHM buffer + commit; populates server-side surface_view and
+    /// Attach an SHM buffer + commit. Populates server-side surface_view and
     /// flips the xdg-shell committed state so hit-tests find the surface.
     fn finish_xdg(
         &mut self,
@@ -319,7 +319,7 @@ impl Fixture {
         self.open_grabbed_popup_on(client, &parent.xdg_surface, anchor, size, serial)
     }
 
-    /// Request the grab before the mapping commit; a grab after mapping is rejected.
+    /// Request the grab before the mapping commit. A grab after mapping is rejected.
     fn open_grabbed_popup_on(
         &mut self,
         client: &mut TestClient,
@@ -434,7 +434,7 @@ impl Fixture {
         WlSurface::from_id(dh, id).unwrap()
     }
 
-    /// Start a pointer drag from surface SID with ICON; a button must be held.
+    /// Start a pointer drag from surface SID with ICON. A button must be held.
     pub fn start_pointer_dnd(&mut self, sid: u64, icon: Option<WlSurface>) {
         use smithay::input::dnd::GrabType;
         use smithay::utils::SERIAL_COUNTER;
@@ -892,7 +892,7 @@ impl Fixture {
         self.state.ewm.captured_events = Some(Vec::new());
     }
 
-    /// Take and clear captured events.  Empty if capture is disabled.
+    /// Take and clear captured events. Empty if capture is disabled.
     pub fn drain_events(&mut self) -> Vec<crate::event::Event> {
         self.state
             .ewm

@@ -3,7 +3,7 @@
 //! Smithay's text_input_v3 requires an input_method_v2 instance (`has_instance()`).
 //! This relay satisfies that by connecting to our own compositor as a Wayland client.
 //! It forwards Activate/Deactivate events over a calloop channel so activation
-//! is processed before the next key, not one dispatch late; text commits go
+//! is processed before the next key, not one dispatch late. Text commits go
 //! directly through TextInputHandle to avoid cross-thread serial races.
 
 use std::os::unix::net::UnixStream;

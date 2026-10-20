@@ -4,7 +4,7 @@
 //! `rubber_band.rs`), adapted to one strip per output.
 //!
 //! Every output's content shrinks about its centre so neighbouring frames come
-//! into view; layer-shell panels stay put on top. Opened by key or a 3-finger
+//! into view. Layer-shell panels stay put on top. Opened by key or a 3-finger
 //! vertical swipe, closed the same way or by clicking a frame.
 
 use std::time::Duration;
@@ -79,7 +79,7 @@ struct Gesture {
     value: f64,
 }
 
-/// Overview state machine; progress runs 0 (closed) to 1 (fully zoomed out).
+/// Overview state machine. Progress runs 0 (closed) to 1 (fully zoomed out).
 #[derive(Debug)]
 pub struct Overview {
     open: bool,
@@ -162,7 +162,7 @@ impl Overview {
         }));
     }
 
-    /// Push a swipe delta; positive opens. `Some(true)` when the view changed.
+    /// Push a swipe delta. Positive opens. `Some(true)` when the view changed.
     pub fn gesture_update(&mut self, delta: f64, timestamp: Duration) -> Option<bool> {
         let Some(Progress::Gesture(gesture)) = &mut self.progress else {
             return None;
@@ -253,7 +253,7 @@ impl Default for Geometry {
 }
 
 impl Geometry {
-    /// Centre the zoomed output, moved right by `shift_x`; rounded to physical pixels.
+    /// Centre the zoomed output, moved right by `shift_x`. Rounded to physical pixels.
     pub fn new(output_size: Size<f64, Logical>, scale: f64, zoom: f64, shift_x: f64) -> Self {
         let centred = (output_size.to_point() - output_size.upscale(zoom).to_point()).downscale(2.);
         let offset = centred + Point::from((shift_x, 0.));

@@ -54,7 +54,7 @@ pub struct DrainedReplaces {
 /// Surface-aware commit gate for text-input commits produced by Emacs.
 ///
 /// Commits may arrive while a client is cycling text-input disable/enable.
-/// Queue only while no active text-input surface is known; once a surface is
+/// Queue only while no active text-input surface is known. Once a surface is
 /// active, text for any other surface is stale and must not be delivered later.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct TextInputCommitState {
@@ -139,7 +139,7 @@ impl TextInputCommitState {
         ReplaceResult::Queued
     }
 
-    /// Last replace queued for the active surface wins; the rest drop as stale.
+    /// Last replace queued for the active surface wins. The rest drop as stale.
     pub fn drain_pending_replace(&mut self, active_surface_id: Option<u64>) -> DrainedReplaces {
         let mut out = DrainedReplaces::default();
         let Some(active) = active_surface_id else {

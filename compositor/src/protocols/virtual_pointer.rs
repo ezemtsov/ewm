@@ -1,7 +1,7 @@
 //! zwlr-virtual-pointer-v1 protocol implementation
 //!
 //! Lets clients inject pointer motion, buttons and axis events, routed through
-//! the normal input handlers.  Ported from niri's implementation.
+//! the normal input handlers. Ported from niri's implementation.
 
 use std::collections::HashSet;
 use std::sync::Mutex;

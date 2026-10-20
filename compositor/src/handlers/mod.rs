@@ -168,7 +168,7 @@ impl WaylandDndGrabHandler for State {
             dnd::GrabType::Pointer => {
                 let pointer = seat.get_pointer().unwrap();
                 let mut start_data = pointer.grab_start_data().unwrap();
-                // Seeds the drop location; the click grab's press point is stale.
+                // Seeds the drop location. The click grab's press point is stale.
                 start_data.location = pointer.current_location();
                 let grab = DnDGrab::new_pointer(&self.ewm.display_handle, start_data, source, seat);
                 pointer.set_grab(self, grab, serial, smithay::input::pointer::Focus::Keep);
@@ -198,7 +198,7 @@ impl DndGrabHandler for State {
         _seat: Seat<Self>,
         location: Point<f64, Logical>,
     ) {
-        // A drop acts like a click; a torn-off tab's window then opens there.
+        // A drop acts like a click. A torn-off tab's window then opens there.
         self.ewm.pending_drop = Some(location);
         self.ewm.dnd_icon = None;
         self.ewm.queue_redraw_all();
@@ -378,7 +378,7 @@ impl XdgActivationHandler for State {
 
         if token_data.timestamp.elapsed() < XDG_ACTIVATION_TOKEN_TIMEOUT {
             if let Some(id) = self.ewm.surface_id(&surface) {
-                // Lisp owns Emacs frame focus via select-frame-set-input-focus;
+                // Lisp owns Emacs frame focus via select-frame-set-input-focus.
                 // honoring GTK's echo activation here would loop with our own
                 // ewm-focus calls.
                 if token_data.user_data.get::<UrgentOnlyMarker>().is_some() {
@@ -411,7 +411,7 @@ impl XdgActivationHandler for State {
 impl XdgSystemBellHandler for State {
     fn ring(&mut self, surface: Option<WlSurface>) {
         let id = surface.and_then(|surface| self.ewm.surface_id(&surface));
-        // Emacs rang this itself; echoing it back would loop.
+        // Emacs rang this itself. Echoing it back would loop.
         if id.is_some_and(|id| self.ewm.layout.has_frame(id)) {
             return;
         }
@@ -490,7 +490,7 @@ impl OutputManagementHandler for State {
 
     fn apply_output_config(&mut self, configs: HashMap<String, OutputConfig>) {
         // Merge each config into ewm.output_config and apply.
-        // The backend sets output_heads_changed = true; the deferred
+        // The backend sets output_heads_changed = true. The deferred
         // refresh_output_management() call (before next render) will
         // send protocol updates to clients, after the Dispatch handler
         // has already sent succeeded().

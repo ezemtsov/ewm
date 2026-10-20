@@ -50,12 +50,12 @@ Emacs frames are created with an explicit target output. No "show then reassign"
 ## Module Interface
 
 The compositor runs as a dynamic module thread within Emacs. Communication happens
-via shared state protected by mutexes, with events delivered over a pipe fd
-(newline-delimited JSON via `open_channel`).
+via shared state protected by mutexes, with events queued as Lisp data that Emacs drains
+when a wakeup byte arrives on the pipe from `open_channel`.
 
 ### Compositor -> Emacs Events
 
-Events are serialized to JSON and written to a pipe fd:
+Events are queued as Lisp data and drained by `ewm-drain-events` on the wakeup:
 
 | Event | Fields | Purpose |
 |-------|--------|---------|

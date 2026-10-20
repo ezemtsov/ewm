@@ -114,7 +114,7 @@ impl std::fmt::Display for CastStreamId {
 #[derive(Debug)]
 pub enum PwToCompositor {
     /// Core connection died (EPIPE on PW_ID_CORE). The compositor should
-    /// stop active casts and drop the `PipeWire` instance; the next
+    /// stop active casts and drop the `PipeWire` instance. The next
     /// `StartCast` will lazy-reinit.
     FatalError,
     /// Stop the cast with this session id. Sent on stream errors that
@@ -131,7 +131,7 @@ pub enum PwToCompositor {
 impl PipeWire {
     /// Initialize PipeWire and integrate with the calloop event loop.
     ///
-    /// `to_compositor` is a persistent sender owned by the compositor;
+    /// `to_compositor` is a persistent sender owned by the compositor.
     /// each `PipeWire` instance clones it. The receiver side stays
     /// registered across PipeWire reinits.
     pub fn new(
@@ -160,7 +160,7 @@ impl PipeWire {
                 }
             })
             .register();
-        // Listener leaks intentionally; captured Sender clone leaks too,
+        // Listener leaks intentionally. Captured Sender clone leaks too,
         // but the receiver outlives all senders.
         mem::forget(listener);
 
@@ -195,7 +195,7 @@ impl PipeWire {
 const CAST_DELAY_ALLOWANCE: Duration = Duration::from_micros(100);
 
 /// Result of `Cast::ensure_size`. Callers branch on this each frame:
-/// `Ready` -> render now; `Pending` -> skip this frame, retry next time.
+/// `Ready` -> render now. `Pending` -> skip this frame, retry next time.
 #[derive(PartialEq, Eq)]
 pub enum CastSizeChange {
     Ready,
@@ -284,7 +284,7 @@ struct CastInner {
     min_time_between_frames: Duration,
     dmabufs: HashMap<i64, Dmabuf>,
     /// Buffers dequeued from PipeWire awaiting GPU render completion.
-    /// Stored oldest-first; completed buffers are queued back in order.
+    /// Stored oldest-first. Completed buffers are queued back in order.
     rendering_buffers: Vec<(NonNull<pw_buffer>, SyncPoint)>,
 }
 
@@ -537,7 +537,7 @@ impl PipeWire {
                         return;
                     }
 
-                    // Modifier is already fixated; verify it matches if we're confirming
+                    // Modifier is already fixated. Verify it matches if we're confirming
                     let modifier = Modifier::from(format.modifier());
                     let plane_count = match &inner.state {
                         CastState::ConfirmationPending {
@@ -1191,7 +1191,7 @@ fn make_video_params(
         PropertyFlags::empty()
     };
 
-    // Window casts use BGRA (alpha) for transparency; output casts use BGRx
+    // Window casts use BGRA (alpha) for transparency. Output casts use BGRx
     let video_format = if alpha {
         VideoFormat::BGRA
     } else {

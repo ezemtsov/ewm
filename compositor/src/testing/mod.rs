@@ -66,7 +66,7 @@ pub fn layout_with(strips: Vec<(&str, strip::Strip)>) -> Layout {
     layout
 }
 
-/// Drop every queued frame; the queue is a process-wide static.
+/// Drop every queued frame. The queue is a process-wide static.
 pub fn clear_pending_frames() {
     while crate::module::take_pending_frame().is_some() {}
 }

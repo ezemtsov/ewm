@@ -514,7 +514,7 @@ fn build_surface_dmabuf_feedback(
         .build()?;
 
     // On the primary render node, include scanout tranches in render feedback too.
-    // On secondary outputs, keep render feedback to the primary renderer only;
+    // On secondary outputs, keep render feedback to the primary renderer only.
     // screen sharing/damage detection relies on clients continuing to allocate
     // buffers compatible with the primary render path.
     let render = if surface_render_node == Some(primary_render_node) {
@@ -914,7 +914,7 @@ pub struct DrmBackendState {
     primary_render_node: Option<DrmNode>,
     /// Global GPU manager used by all DRM devices.
     gpu_manager: Option<GpuManager<GbmGlesBackend<GlesRenderer, DrmDeviceFd>>>,
-    /// zwp_linux_dmabuf global; `Some` once the primary render node is up.
+    /// zwp_linux_dmabuf global. `Some` once the primary render node is up.
     dmabuf_global: Option<DmabufGlobal>,
     /// Backend-owned reporting metadata for connected outputs.
     output_infos: OutputInfos,
@@ -1065,7 +1065,7 @@ impl DrmBackendState {
 
         self.resume_input();
 
-        // GPUs may have been added or removed during the pause; reconcile the
+        // GPUs may have been added or removed during the pause. Reconcile the
         // device map with what udev currently reports.
         let mut device_list: HashMap<libc::dev_t, PathBuf> = match self
             .session
@@ -1133,7 +1133,7 @@ impl DrmBackendState {
                         }
                     }
                 } else {
-                    // No pending change; restore previous gamma state.
+                    // No pending change. Restore previous gamma state.
                     if let Some(ref gamma_props) = surface.gamma_props
                         && let Err(err) = gamma_props.restore_gamma(&device.drm)
                     {
@@ -1348,7 +1348,7 @@ impl DrmBackendState {
             return;
         };
 
-        // Resolve and apply DRM mode. A modeline takes precedence over `mode`;
+        // Resolve and apply DRM mode. A modeline takes precedence over `mode`.
         // when neither is configured, keep the current mode (scale-only change).
         let new_drm_mode = if config.mode.is_some() || config.modeline.is_some() {
             let connector_info = match device.drm.get_connector(surface.connector, false) {
@@ -1621,7 +1621,7 @@ impl DrmBackendState {
         let now = crate::utils::get_monotonic_time();
         let mut duration = target_presentation_time.saturating_sub(now);
 
-        // Don't set a zero timer; frame callbacks are sent right after render anyway
+        // Don't set a zero timer. Frame callbacks are sent right after render anyway
         if duration.is_zero() {
             duration = output_state
                 .frame_clock

@@ -289,10 +289,7 @@ impl Backend {
         }
     }
 
-    /// Process post-render work for an output (screencopy, screencast).
-    ///
-    /// Called by `Ewm::redraw()` after a successful render. Requires backend-specific
-    /// renderer access, so it lives here rather than on Ewm.
+    /// Serve screencopy and screencast for `output` after a render, where the renderer lives.
     pub fn post_render(&mut self, ewm: &mut Ewm, output: &Output) {
         match self {
             Backend::Drm(drm) => drm.post_render(ewm, output),

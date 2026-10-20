@@ -4,7 +4,7 @@
 //!
 //! # Design Invariants
 //!
-//! 1. **Surfaces and views are distinct**: A Wayland surface is a client-owned object; a view is
+//! 1. **Surfaces and views are distinct**: A Wayland surface is a client-owned object, a view is
 //!    one compositor-owned placement of that surface. The same surface may appear as multiple
 //!    views.
 //!
@@ -19,7 +19,7 @@
 //! 4. **Wayland destruction is authoritative**: Layout can move, add, or omit views and frames, but
 //!    surface destruction is the final signal that removes compositor state tied to that surface.
 //!
-//! 5. **Emacs owns policy; Rust preserves invariants**: Emacs decides layout and focus intent. Rust
+//! 5. **Emacs owns policy, Rust preserves invariants**: Emacs decides layout and focus intent. Rust
 //!    applies those decisions, handles Wayland protocol state, and repairs local state when async
 //!    ordering would otherwise break invariants.
 //!
@@ -76,7 +76,6 @@ pub fn vt_suffix() -> String {
         .unwrap_or_default()
 }
 
-/// Returns true for embedded laptop panel connectors (eDP, LVDS, DSI).
 /// Register the server `Display` as a calloop source so inserted clients
 /// dispatch on each event-loop tick. Shared by production and test fixtures.
 pub fn register_display_source(event_loop: &LoopHandle<State>, display: Display<State>) {
@@ -93,6 +92,7 @@ pub fn register_display_source(event_loop: &LoopHandle<State>, display: Display<
         .expect("failed to insert Display source");
 }
 
+/// Whether `connector_name` is a built-in laptop panel: eDP, LVDS or DSI.
 pub fn is_laptop_panel(connector_name: &str) -> bool {
     matches!(connector_name.get(..4), Some("eDP-" | "LVDS" | "DSI-"))
 }
@@ -339,17 +339,17 @@ pub struct CursorHideState {
     pub timer_token: Option<RegistrationToken>,
     pub is_hidden: bool,
     pub last_activity: std::time::Instant,
-    /// Hide the cursor immediately on key press; pointer motion restores it.
+    /// Hide the cursor immediately on key press. Pointer motion restores it.
     pub hide_when_typing: bool,
 }
 
 /// Desired output configuration (from Emacs).
-/// Stored per output name; looked up on connect and config changes.
+/// Stored per output name. Looked up on connect and config changes.
 #[derive(Debug, Clone)]
 pub struct OutputConfig {
     /// Desired video mode (None = use preferred/auto)
     pub mode: Option<output_mode::Mode>,
-    /// Explicit DRM modeline; takes precedence over `mode` when set
+    /// Explicit DRM modeline. Takes precedence over `mode` when set
     pub modeline: Option<output_mode::Modeline>,
     /// Desired position (None = auto horizontal layout)
     pub position: Option<(i32, i32)>,
@@ -595,7 +595,7 @@ pub struct Ewm {
     /// Mapped compositor outputs in deterministic spatial order.
     pub sorted_outputs: Vec<Output>,
     /// Desired output configuration, keyed by output name.
-    /// Looked up when outputs connect; updated by Emacs commands.
+    /// Looked up when outputs connect. Updated by Emacs commands.
     pub output_config: HashMap<String, OutputConfig>,
 
     // Input
@@ -609,13 +609,13 @@ pub struct Ewm {
     /// Keys for Emacs waiting until it reads the Focus they followed.
     pub(crate) deferred_keys: VecDeque<input::DeferredKey>,
     pub(crate) im_repeat: InterceptRepeatState,
-    /// Introspected window list changed; announce it next tick.
+    /// Introspected window list changed. Announce it next tick.
     pub introspect_windows_dirty: bool,
     /// Focus follows mouse
     pub focus_follows_mouse_mode: bool,
     /// Emacs is tracking a drag source (`track-mouse' is `drag-source').
     pub emacs_drag_source: bool,
-    /// Alpha multiplier for inactive layout entries; 1.0 disables.
+    /// Alpha multiplier for inactive layout entries. 1.0 disables.
     pub unfocused_alpha: f32,
     /// Blur settings for surfaces that request background blur.
     pub blur_config: shadow_style::Blur,
@@ -628,8 +628,8 @@ pub struct Ewm {
     /// Connected libinput devices, for re-applying configuration on change
     pub libinput_devices: std::collections::HashSet<smithay::reexports::input::Device>,
 
-    // PID for matching Emacs-owned wl_surfaces in `new_toplevel` (vs external
-    // applications); is-this-an-emacs-frame queries derive from strip membership.
+    // PID that marks Emacs-owned wl_surfaces in `new_toplevel`. Whether a surface is an Emacs
+    // frame derives from strip membership.
     pub emacs_pid: Option<u32>,
 
     // Per-output state (redraw state machine)
@@ -676,7 +676,7 @@ pub struct Ewm {
     // Popup manager for XDG popups
     pub popups: PopupManager,
 
-    // Active popup (menu) grab; suppresses EWM's own focus routing while live.
+    // Active popup (menu) grab. Suppresses EWM's own focus routing while live.
     pub popup_grab: Option<PopupGrab<State>>,
 
     // DnD icon surface (shown at pointer during drag)
@@ -796,7 +796,7 @@ pub struct Ewm {
     pub xkb_current_layout: usize,
 
     // Event loop handle. Resource destructors must not send events (aborts
-    // on a dying client); defer event-sending cleanup via insert_idle.
+    // on a dying client). Defer event-sending cleanup via insert_idle.
     pub loop_handle: LoopHandle<'static, State>,
 
     /// Worker-thread sender that routes events back into the main loop.
@@ -1225,11 +1225,7 @@ impl Ewm {
         self.queue_redraw_all();
     }
 
-    /// Clean up all Ewm state for a removed output.
-    ///
-    /// Called by backends after their own teardown (e.g. DRM surface removal).
-    /// Handles: output state, lock check, screencasts, space, layouts,
-    /// workspaces, working areas, and output size.
+    /// Drop every record of a removed output once the backend has torn it down.
     pub fn remove_output(&mut self, output: &Output) {
         let output_name = output.name();
 
@@ -1275,9 +1271,8 @@ impl Ewm {
         info!("Output removed: {}", output_name);
     }
 
-    /// Remove dead windows from the space.
-    /// This replaces Space::refresh(). We manage output enter/leave explicitly
-    /// rather than relying on automatic spatial overlap detection.
+    /// Drop windows whose surface died, refocusing when the focused one went. Returns whether any
+    /// did. Output enter and leave are explicit, nothing watches spatial overlap.
     pub fn cleanup_dead_windows(&mut self) -> bool {
         let dead_ids: Vec<u64> = self
             .windows()
@@ -1671,7 +1666,7 @@ impl Ewm {
         }
     }
 
-    /// Activate frame `idx` and close; the strip snaps onto it and the zoom carries the slide.
+    /// Activate frame `idx` and close. The strip snaps onto it and the zoom carries the slide.
     fn overview_activate_frame(
         &mut self,
         output: &Output,
@@ -1857,7 +1852,7 @@ impl Ewm {
         }
     }
 
-    /// Focus a frame reached with the pointer; Emacs then anchors mouse-follows-focus.
+    /// Focus a frame reached with the pointer. Emacs then anchors mouse-follows-focus.
     fn set_focus_frame_from_pointer(
         &mut self,
         frame_surface_id: u64,
@@ -2281,7 +2276,7 @@ impl Ewm {
 
         let elapsed = self.idle_timeout.last_activity.elapsed();
         if elapsed < timeout {
-            // Activity happened since timer was set; reschedule for remaining time
+            // Activity happened since timer was set. Reschedule for remaining time
             let remaining = timeout - elapsed;
             self.start_idle_timer(remaining);
             return false;
@@ -2391,7 +2386,7 @@ impl Ewm {
             return;
         }
 
-        // A pen in use moves constantly; hiding would just flicker.
+        // A pen in use moves constantly. Hiding would just flicker.
         if self.tablet_cursor_location.is_some() {
             return;
         }
@@ -2590,15 +2585,8 @@ impl Ewm {
         }
     }
 
-    /// Orchestrate a single output redraw.
-    ///
-    /// Orchestrate a single output redraw:
-    /// 1. Get target presentation time from frame clock
-    /// 2. Call backend.render() -> RenderResult
-    /// 3. Handle state transitions based on result
-    /// 4. Update lock render state
-    /// 5. Send frame callbacks
-    /// 6. Process screencopy/screencast via backend
+    /// Redraw `output` once: advance animations, refresh the protocol mirrors, render, then send
+    /// frame callbacks and serve the casts.
     fn redraw(&mut self, backend: &mut backend::Backend, output: &Output) {
         tracy_span!("ewm_redraw");
 
@@ -3107,7 +3095,7 @@ impl Ewm {
     }
 
     pub fn send_frame_callbacks_on_fallback_timer(&self) {
-        // Off-screen emacs frames mustn't be woken; their pgtk client would
+        // Off-screen emacs frames mustn't be woken. Their pgtk client would
         // redisplay on the emacs main thread for nothing.
         let hidden_emacs_ids = self.fallback_hidden_emacs_ids();
 
@@ -3223,9 +3211,8 @@ impl Ewm {
         self.foreign_toplevel_state.refresh::<State>(windows);
     }
 
-    /// Refresh output management protocol if output heads changed.
-    /// Called from redraw() before rendering, so updates are deferred
-    /// until after any in-flight Dispatch handlers have finished.
+    /// Refresh the output management protocol once heads changed, from redraw so no Dispatch
+    /// handler is still running.
     pub fn refresh_output_management(&mut self, output_infos: &[OutputInfo]) {
         if !self.output_management_state.output_heads_changed {
             return;
@@ -3332,9 +3319,7 @@ impl Ewm {
         })
     }
 
-    /// Focus a surface by id; resolves to either a layout entry or an Emacs frame and
-    /// delegates to the canonical mutator (`set_focus_entry` / `set_focus_frame`).
-    /// Callers with a known kind should call those directly.
+    /// Focus surface `id` as the layout entry or Emacs frame it is, via the mutator for that kind.
     pub fn set_focus(&mut self, id: u64, notify_emacs: bool, source: &str) -> bool {
         let (frame_id, entry_id) = self.resolve_focus_target(id);
         if let Some(entry_id) = entry_id {
@@ -3405,10 +3390,8 @@ impl Ewm {
         }
     }
 
-    /// Focus the entity under `pos`; returns `(frame_id, entry_id)`.
-    /// Hit-test `pos` and focus the resulting layout entry or frame. Callers retain
-    /// control over emitting the `Focus` event (for ffm coordinates), so this
-    /// passes `notify_emacs=false` to the canonical mutators.
+    /// Focus the layout entry or frame under `pos`, returning `(frame_id, entry_id)`. The caller
+    /// sends the Focus event itself, with the pointer coordinates mouse-follows-focus needs.
     pub fn focus_under(
         &mut self,
         pos: Point<f64, Logical>,
@@ -3475,7 +3458,6 @@ impl Ewm {
     fn resolve_layer_keyboard_focus(&self) -> Option<WlSurface> {
         use smithay::wayland::shell::wlr_layer::KeyboardInteractivity;
 
-        // Helper: find exclusive focus on a layer
         let excl_on_layer = |output: &Output, layer: Layer| -> Option<WlSurface> {
             let map = layer_map_for_output(output);
 
@@ -3489,7 +3471,6 @@ impl Ewm {
             })
         };
 
-        // Helper: check if on-demand focus is on a layer
         let on_demand_on_layer = |output: &Output, layer: Layer| -> Option<WlSurface> {
             let on_demand = self.layer_shell_on_demand_focus.as_ref()?;
             let map = layer_map_for_output(output);
@@ -3935,7 +3916,7 @@ impl Ewm {
         focus.as_ref().map(|(surface, _)| surface)
     }
 
-    /// Click, move and resize grabs pin delivery; DnD and popup grabs hit-test.
+    /// Click, move and resize grabs pin delivery. DnD and popup grabs hit-test.
     fn grab_pins_pointer_focus(&self) -> bool {
         self.pointer
             .with_grab(|_, grab| {
@@ -3975,7 +3956,7 @@ impl Ewm {
         let entry_id = self.layout_entry_id_under(pos);
         let entry_changed = mem::replace(&mut self.pointer_entry_id, entry_id) != entry_id;
 
-        // Don't retarget keyboard focus while grabbed; the grab owns it.
+        // Don't retarget keyboard focus while grabbed. The grab owns it.
         if !grabbed
             && self.focus_follows_mouse_mode
             && (focus_changed || entry_changed)
@@ -4179,12 +4160,7 @@ impl Ewm {
         self.layout.sort_monitors(&self.sorted_outputs);
     }
 
-    /// Register a newly connected output.
-    ///
-    /// Called by backends after hardware setup (DRM surface, virtual output) and
-    /// after the output is mapped in the space. Handles all backend-agnostic
-    /// bookkeeping: sorted outputs, size recalculation, event to Emacs,
-    /// initial working area, and output management state.
+    /// Register an output the backend has set up and mapped: order, size, working area, Emacs.
     pub fn add_output(&mut self, output: &Output, info: OutputInfo) {
         let output_name = info.name.clone();
 
@@ -4211,12 +4187,7 @@ impl Ewm {
         self.output_management_state.output_heads_changed = true;
     }
 
-    /// Handle output configuration changes (mode, scale, transform, position).
-    ///
-    /// Called by backends after applying hardware state changes. Handles all
-    /// backend-agnostic bookkeeping: scale notification, lock buffer resize,
-    /// screencast size, recalculation, working areas, event to Emacs, and
-    /// output management state.
+    /// Follow a new mode, scale, transform or position the backend applied to `output`.
     pub fn output_config_changed(&mut self, output: &Output, became_mapped: bool) {
         let output_name = output.name();
         let current_mode = output.current_mode().unwrap_or(smithay::output::Mode {
@@ -4606,7 +4577,7 @@ impl Ewm {
 
         surface.with_pending_state(|state| {
             if is_emacs && frame_is_floating {
-                // Let Emacs drive the size; the frame fits itself to its content.
+                // Let Emacs drive the size. The frame fits itself to its content.
                 state.size = None;
             } else {
                 state.size = Some(self.output_size);
@@ -5093,7 +5064,7 @@ impl State {
     /// during layout changes should not trap the pointer).
     pub fn warp_pointer(&mut self, x: f64, y: f64) {
         let pointer = self.ewm.pointer.clone();
-        // A grab or constraint owns the pointer; a warp would teleport it.
+        // A grab or constraint owns the pointer. A warp would teleport it.
         if pointer.is_grabbed() || self.active_constraint_for_focus(&pointer).is_some() {
             return;
         }
@@ -5734,7 +5705,7 @@ impl State {
                 let token_str = token.as_str().to_string();
                 debug!("Created activation token for Emacs: {}", token_str);
                 if reply.send(token_str).is_err() {
-                    // Emacs gave up before we replied; the token would otherwise leak.
+                    // Emacs gave up before we replied. The token would otherwise leak.
                     self.ewm.activation_state.remove_token(&token);
                 }
             }
@@ -5927,7 +5898,7 @@ impl State {
             ModuleCommand::PowerOnMonitors => self.ewm.activate_monitors(),
 
             ModuleCommand::Initialized => {
-                // Force-resend keyboard.enter; PGTK silently dropped the
+                // Force-resend keyboard.enter. PGTK silently dropped the
                 // initial one (sent before its first surface roundtrip).
                 info!("Client initialized; replaying keyboard focus");
                 // set_focus() sends nothing when the target is unchanged, so

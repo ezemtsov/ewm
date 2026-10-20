@@ -136,7 +136,7 @@ pub enum Event {
     TextInputReplaced { surface_id: u64 },
     #[serde(rename = "text-input-replace-dropped")]
     TextInputReplaceDropped { surface_id: u64 },
-    /// Intercepted key; `keycode`/`surface_id` let Lisp forward it back to the client.
+    /// Intercepted key, `keycode` and `surface_id` let Lisp forward it back to the client.
     #[serde(rename = "key")]
     Key(TextInputKey),
     /// Intercepted Emacs command key. Lisp replays this through its keymaps.

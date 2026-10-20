@@ -302,7 +302,7 @@ fn unconstrain_with_padding(
         return geo;
     }
 
-    // Padded didn't fit; fall back to the full target.
+    // Padded didn't fit. Fall back to the full target.
     positioner.get_unconstrained_geometry(target)
 }
 

@@ -89,7 +89,7 @@ impl GroupData {
 
 /// Per-workspace protocol mirror, stores current state for diffing.
 struct WorkspaceData {
-    /// Output this workspace currently belongs to.  Tracked here so a
+    /// Output this workspace currently belongs to. Tracked here so a
     /// cross-output move can be detected as a leave-from-old/enter-new on
     /// the same workspace handle.
     output: String,

@@ -1,4 +1,4 @@
-//! Per-output floating Emacs frame space; durable positions stored as a working-area fraction.
+//! Per-output floating Emacs frame space. Durable positions stored as a working-area fraction.
 
 use std::iter::zip;
 
@@ -483,7 +483,7 @@ impl FloatingSpace {
                 new_frame.floating_pos = (!was_auto).then_some(preserved_pos);
                 self.frames[idx].refill(new_frame);
                 self.data[idx].update(&self.frames[idx]);
-                // Auto-floated frames are added placeholder-sized; center once the real size lands.
+                // Auto-floated frames are added placeholder-sized. Center once the real size lands.
                 let recenter = was_auto && self.data[idx].size() != prev_size;
                 if recenter {
                     let centered = self.centered_pos_for(self.data[idx].size());
@@ -509,7 +509,7 @@ impl FloatingSpace {
         for (frame, data) in zip(&mut self.frames, &self.data) {
             if !named.contains(&frame.surface_id) {
                 frame.clear_contents();
-                // Persist only an already-explicit position; leave auto frames auto.
+                // Persist only an already-explicit position. Leave auto frames auto.
                 if frame.floating_pos.is_some() {
                     frame.floating_pos = Some(data.pos);
                 }

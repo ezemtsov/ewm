@@ -1,8 +1,8 @@
 //! GTK interop with the host (pgtk) Emacs process.
 //!
 //! The compositor runs as a dynamic module in the Emacs process, which is
-//! linked against libgtk-3.  Symbols are resolved at use via `dlopen` +
-//! `dlsym` so we don't have a link-time dependency on GTK.  Calls here
+//! linked against libgtk-3. Symbols are resolved at use via `dlopen` +
+//! `dlsym` so we don't have a link-time dependency on GTK. Calls here
 //! must run on the Emacs main thread.
 
 use std::ffi::{CStr, c_char, c_int, c_void};
@@ -79,7 +79,7 @@ type WindowFn = unsafe extern "C" fn(*mut c_void);
 type GetDataFn = unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void;
 type SetDataFn = unsafe extern "C" fn(*mut c_void, *const c_char, *mut c_void);
 
-/// Cached function pointers for the freeze/thaw path; resolved once on first use.
+/// Cached function pointers for the freeze/thaw path. Resolved once on first use.
 struct FreezeApi {
     get_window: GetWindowFn,
     freeze: WindowFn,
@@ -100,7 +100,7 @@ fn freeze_api() -> Result<&'static FreezeApi> {
         if lib.is_null() {
             return None;
         }
-        // libc::dlopen with RTLD_NOLOAD takes a refcount on the host's handle;
+        // libc::dlopen with RTLD_NOLOAD takes a refcount on the host's handle.
         // we never close it so the resolved pointers stay valid for the process lifetime.
         (|| -> Result<FreezeApi> {
             Ok(FreezeApi {

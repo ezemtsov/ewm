@@ -154,8 +154,6 @@ impl Blur {
                 continue;
             }
 
-            // debug!("creating texture for step {i} sized {w} × {h}");
-
             let texture: GlesTexture =
                 create_texture(Fourcc::Abgr8888, size).context("error creating texture")?;
             self.textures.push(texture);

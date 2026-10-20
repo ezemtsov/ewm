@@ -22,8 +22,8 @@ contexts communicate.
 │  │         │                  │    Elisp API      │         │ │
 │  │         ▼                  │ ewm-*-module fns  │         │ │
 │  │  ┌─────────────┐           │                   │         │ │
-│  │  │ Event Pipe  │──────────▶│ ewm--event-filter │         │ │
-│  │  │ (JSON/fd)   │           └───────────────────┘         │ │
+│  │  │ Event queue │──────────▶│ ewm--event-filter │         │ │
+│  │  │ (Lisp data) │           └───────────────────┘         │ │
 │  └───────────────────────────────────────────────────────────┘ │
 │                                                                │
 │  ┌─ ewm.el ────────────────────────────────────────────────────┐
@@ -39,63 +39,50 @@ contexts communicate.
 
 Emacs Lisp is single-threaded and cannot be called from the compositor thread.
 Communication uses shared queues protected by `Mutex`, with locks released
-before crossing thread boundaries. Events flow from compositor to Emacs via
-a pipe fd (newline-delimited JSON).
+before crossing thread boundaries. Events flow from compositor to Emacs through
+a queue of Lisp data, the pipe fd carrying only a wakeup byte.
 
 ## Event Delivery: Compositor -> Emacs
 
-The compositor serializes events to JSON and writes them to a pipe fd created
-via `emacs-module-rs`'s `open_channel`. Emacs receives them through a process
-filter on the pipe process:
+The compositor stages events during a tick and publishes them once the tick has
+updated `SharedState`, so a handler reading shared state sees the state its event
+describes. Publishing writes one wakeup byte to a pipe created with
+`emacs-module-rs`'s `open_channel` when no wakeup is outstanding. The pipe
+process filter ignores the byte and drains the queue:
 
 ```
-Compositor Thread              │  Emacs Main Thread
-                               │
-push_event(Event::Focus{...})  │
-  └─ serde_json::to_vec(event) │
-  └─ write to pipe fd ────────►│  ewm--event-filter receives data
-                               │    └─ split on newlines
-                               │    └─ json-parse-string -> alist
-                               │    └─ ewm--handle-event(alist)
+Compositor Thread                 │  Emacs Main Thread
+                                  │
+push_event(Event::Focus{...})     │
+  └─ EventChannel::push           │
+     (drops unread events it      │
+      supersedes)                 │
+flush_events() at the tick end    │
+  └─ one wakeup byte ────────────►│  ewm--event-filter
+                                  │    └─ (ewm-drain-events) -> list of plists
+                                  │    └─ ewm--handle-event on each
 ```
 
 ### Rust Side
 
-```rust
-static EVENT_WRITER: Mutex<Option<Box<dyn Write + Send>>> = Mutex::new(None);
-
-pub fn push_event(event: Event) {
-    let mut guard = EVENT_WRITER.lock().unwrap();
-    if let Some(ref mut w) = *guard {
-        let mut buf = serde_json::to_vec(&event).unwrap_or_default();
-        buf.push(b'\n');
-        let _ = w.write_all(&buf);  // Broken pipe = Emacs closed
-    }
-}
-```
+`EventChannel` in `module.rs` holds `pending`, this tick's events, and `queue`,
+the published ones. `push` drops earlier unread events the new one supersedes,
+`flush` appends and sends the wakeup when none is outstanding, and the
+`drain_events` defun empties the queue as Lisp data through the `elisp` crate's serde
+support.
 
 ### Emacs Side
 
-```elisp
-(defun ewm--event-filter (_proc output)
-  "Process newline-delimited JSON events from the compositor pipe."
-  (setq ewm--event-buffer (concat ewm--event-buffer output))
-  (while (string-match "\n" ewm--event-buffer)
-    (let ((line (substring ewm--event-buffer 0 (match-beginning 0))))
-      (setq ewm--event-buffer (substring ewm--event-buffer (match-end 0)))
-      (when (> (length line) 0)
-        (let ((event (json-parse-string line :object-type 'alist :false-object nil)))
-          (ewm--handle-event event))))))
-```
+`ewm--event-filter` loops `(ewm-drain-events)` until it returns nil, dispatching
+each event to `ewm--handle-event`, and refuses to run nested from a handler that
+waited for process output, so no event jumps the queue.
 
-### Why Pipe fd Works
+### Why a wakeup pipe
 
-`emacs-module-rs`'s `open_channel` creates a pipe whose read end is registered
-with Emacs's event loop as a process. Data written to the write end triggers
-the process filter at the next safe point, the same integration as network or
-subprocess output. Unlike SIGUSR1, pipe writes are never coalesced: each
-JSON line is delivered exactly once. Serde serialization replaces the manual
-`event_to_lisp` converter, keeping the Event enum as the single source of truth.
+`open_channel` creates a pipe whose read end is an Emacs process, so the filter
+runs at the next safe point like any subprocess output. Coalesced wakeups are
+harmless because the events wait in the queue, and a `Focus` stays unread until
+Emacs drains it, which the key queue relies on.
 
 ### Events
 

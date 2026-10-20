@@ -138,7 +138,7 @@ fn floating_frame_occludes_the_strip_when_hit_testing() {
     ));
     fix.tile(HEAD_A, vec![tiled]);
 
-    // Floating frame (400x480, centered at (600,210)) over the tiled entry;
+    // Floating frame (400x480, centered at (600,210)) over the tiled entry.
     // its 400x400 entry leaves an 80px strip of the frame's own surface.
     let floating_entry = nz(3001);
     fix.float(HEAD_A, vec![frame_with_entry(200, floating_entry, 9000)]);
@@ -161,7 +161,7 @@ fn floating_frame_occludes_the_strip_when_hit_testing() {
     // The modeline and echo area occlude the tiled entry beneath them.
     assert_eq!(ewm.layout_entry_id_under(modeline), None);
     assert_eq!(ewm.layout_entry_id_under(echo_area), None);
-    // The floating entry still resolves; the tiled entry still wins beside the float.
+    // The floating entry still resolves. The tiled entry still wins beside the float.
     assert_eq!(ewm.layout_entry_id_under(over_entry), Some(floating_entry));
     assert_eq!(ewm.layout_entry_id_under(outside), Some(tiled_entry));
 
