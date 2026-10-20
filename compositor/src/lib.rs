@@ -182,10 +182,11 @@ use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::selection::data_device::{
     request_data_device_client_selection, set_data_device_selection,
     DataDeviceState, };
+use smithay::wayland::selection::ext_data_control::DataControlState as ExtDataControlState;
 use smithay::wayland::selection::primary_selection::{
     PrimarySelectionState,
 };
-use smithay::wayland::selection::wlr_data_control::{DataControlState};
+use smithay::wayland::selection::wlr_data_control::DataControlState as WlrDataControlState;
 use smithay::wayland::session_lock::{
     LockSurface, SessionLockManagerState, SessionLocker,
 };
@@ -826,7 +827,8 @@ pub struct Ewm {
     pub seat_state: SeatState<State>,
     pub data_device_state: DataDeviceState,
     pub primary_selection_state: PrimarySelectionState,
-    pub data_control_state: DataControlState,
+    pub wlr_data_control_state: WlrDataControlState,
+    pub ext_data_control_state: ExtDataControlState,
     pub seat: Seat<State>,
     /// Cached pointer handle (avoids repeated get_pointer().unwrap() on hot paths)
     pub pointer: PointerHandle<State>,
@@ -1155,7 +1157,12 @@ impl Ewm {
         let mut seat_state: SeatState<State> = SeatState::new();
         let data_device_state = DataDeviceState::new::<State>(&display_handle);
         let primary_selection_state = PrimarySelectionState::new::<State>(&display_handle);
-        let data_control_state = DataControlState::new::<State, _>(
+        let wlr_data_control_state = WlrDataControlState::new::<State, _>(
+            &display_handle,
+            Some(&primary_selection_state),
+            |_| true,
+        );
+        let ext_data_control_state = ExtDataControlState::new::<State, _>(
             &display_handle,
             Some(&primary_selection_state),
             |_| true,
@@ -1300,7 +1307,8 @@ impl Ewm {
             seat_state,
             data_device_state,
             primary_selection_state,
-            data_control_state,
+            wlr_data_control_state,
+            ext_data_control_state,
             seat,
             pointer,
             keyboard,

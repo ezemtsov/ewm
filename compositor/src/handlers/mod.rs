@@ -29,10 +29,15 @@ use smithay::wayland::pointer_constraints::{PointerConstraintsHandler, with_poin
 use smithay::wayland::selection::data_device::{
     DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler, set_data_device_focus,
 };
+use smithay::wayland::selection::ext_data_control::{
+    DataControlHandler as ExtDataControlHandler, DataControlState as ExtDataControlState,
+};
 use smithay::wayland::selection::primary_selection::{
     PrimarySelectionHandler, PrimarySelectionState, set_primary_focus,
 };
-use smithay::wayland::selection::wlr_data_control::{DataControlHandler, DataControlState};
+use smithay::wayland::selection::wlr_data_control::{
+    DataControlHandler as WlrDataControlHandler, DataControlState as WlrDataControlState,
+};
 use smithay::wayland::selection::{SelectionHandler, SelectionSource, SelectionTarget};
 use smithay::wayland::session_lock::{
     LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
@@ -219,9 +224,15 @@ impl PrimarySelectionHandler for State {
     }
 }
 
-impl DataControlHandler for State {
-    fn data_control_state(&mut self) -> &mut DataControlState {
-        &mut self.ewm.data_control_state
+impl WlrDataControlHandler for State {
+    fn data_control_state(&mut self) -> &mut WlrDataControlState {
+        &mut self.ewm.wlr_data_control_state
+    }
+}
+
+impl ExtDataControlHandler for State {
+    fn data_control_state(&mut self) -> &mut ExtDataControlState {
+        &mut self.ewm.ext_data_control_state
     }
 }
 

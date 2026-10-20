@@ -171,6 +171,8 @@ pub struct ClientState {
     pub layer_shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
     /// `wl_output` protocol id -> server-advertised name.
     pub output_names: HashMap<u32, String>,
+    /// Interface names of every global the server advertised.
+    pub globals: Vec<String>,
     pub events: Vec<ClientEvent>,
 }
 
@@ -244,6 +246,10 @@ impl TestClient {
 
     pub fn has_keyboard(&self) -> bool {
         self.state.keyboard.is_some()
+    }
+
+    pub fn has_global(&self, interface: &str) -> bool {
+        self.state.globals.iter().any(|g| g == interface)
     }
 
     /// Request the session lock. The answer arrives as `SessionLocked` or
@@ -533,6 +539,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientState {
         else {
             return;
         };
+        state.globals.push(interface.clone());
         if interface == wl_compositor::WlCompositor::interface().name {
             state.compositor = Some(registry.bind(name, version, qh, ()));
         } else if interface == xdg_wm_base::XdgWmBase::interface().name {
