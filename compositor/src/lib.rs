@@ -116,6 +116,7 @@ use layout::{overview, strip};
 use render_helpers::{floating_shadow, shadow_style};
 
 pub use focus::{FocusSource, Notify};
+pub use handlers::{LockRenderState, LockState};
 pub use idle::{CursorHideState, IdleAction, IdleTimeoutState};
 pub use input::binding::{Action, InterceptDispatch, InterceptedKey, Trigger};
 pub use layout::entry::{FocusId, LayoutEntry, LayoutEntryId, LayoutEntrySurface, fullscreen_center_offset};
@@ -149,7 +150,6 @@ use smithay::reexports::calloop::timer::Timer;
 use smithay::reexports::calloop::{
     Interest, LoopHandle, LoopSignal, Mode as CalloopMode, PostAction, RegistrationToken,
 };
-use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::ExtSessionLockV1;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgToplevelState;
 use smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration_manager::Mode as KdeDefaultMode;
 use smithay::reexports::wayland_server::backend::{
@@ -187,7 +187,7 @@ use smithay::wayland::selection::primary_selection::{
 };
 use smithay::wayland::selection::wlr_data_control::DataControlState as WlrDataControlState;
 use smithay::wayland::session_lock::{
-    LockSurface, SessionLockManagerState, SessionLocker,
+    LockSurface, SessionLockManagerState,
 };
 use smithay::wayland::shell::kde::decoration::{KdeDecorationState};
 use smithay::wayland::shell::wlr_layer::{Layer, WlrLayerShellState};
@@ -278,32 +278,6 @@ impl RedrawState {
             other => other, // Already queued, no-op
         }
     }
-}
-
-/// Session lock state machine for secure screen locking.
-///
-/// Follows the ext-session-lock-v1 protocol requirements:
-/// - Lock is confirmed only after all outputs render a locked frame
-/// - Input is blocked during locking/locked states
-#[derive(Default)]
-pub enum LockState {
-    /// Session is not locked
-    #[default]
-    Unlocked,
-    /// Lock requested, waiting for all outputs to render locked frame
-    Locking(SessionLocker),
-    /// Session is fully locked (stores the lock object to detect dead clients)
-    Locked(ExtSessionLockV1),
-}
-
-/// Per-output lock render state for tracking lock confirmation.
-#[derive(Default, PartialEq, Eq, Clone, Copy, Debug)]
-pub enum LockRenderState {
-    /// Output is showing normal content (or not yet rendered locked)
-    #[default]
-    Unlocked,
-    /// Output has rendered a locked frame
-    Locked,
 }
 
 /// Desired output configuration (from Emacs).
@@ -2678,83 +2652,6 @@ fn is_portal_surface(surface: &WlSurface) -> bool {
 /// The identity recorded when SURFACE's client connected, if any.
 fn client_identity(surface: &WlSurface) -> Option<ClientIdentity> {
     client_state(&surface.client()?).identity.get().cloned()
-}
-
-impl Ewm {
-    /// Check if the session is locked (locking or fully locked)
-    pub fn is_locked(&self) -> bool {
-        !matches!(self.lock_state, LockState::Unlocked)
-    }
-
-    /// Check whether a live client holds the session lock, or is taking it.
-    pub fn lock_client_is_live(&self) -> bool {
-        match &self.lock_state {
-            LockState::Unlocked => false,
-            LockState::Locking(locker) => locker.ext_session_lock().is_alive(),
-            LockState::Locked(lock) => lock.is_alive(),
-        }
-    }
-
-    /// Check if all outputs have rendered locked frames and confirm lock if so
-    pub fn check_lock_complete(&mut self) {
-        // Check if we're in Locking state and all outputs have rendered
-        let should_confirm = matches!(&self.lock_state, LockState::Locking(_))
-            && self
-                .output_state
-                .values()
-                .all(|s| s.lock_render_state == LockRenderState::Locked);
-
-        if should_confirm {
-            // Take ownership of the SessionLocker to call lock()
-            // Use a temporary Unlocked state (will be replaced immediately)
-            let old_state = mem::replace(&mut self.lock_state, LockState::Unlocked);
-            if let LockState::Locking(confirmation) = old_state {
-                info!("All outputs rendered locked frame, confirming lock");
-                let lock = confirmation.ext_session_lock().clone();
-                confirmation.lock();
-                self.lock_state = LockState::Locked(lock);
-            }
-        }
-    }
-
-    fn lock_surface_output(&self) -> Option<&Output> {
-        self.output_under_cursor().or_else(|| self.first_output())
-    }
-
-    /// Get the lock surface for keyboard focus when locked.
-    pub fn lock_surface_focus(&self) -> Option<WlSurface> {
-        let output = self.lock_surface_output()?;
-        self.output_state
-            .get(output)?
-            .lock_surface
-            .as_ref()
-            .map(|s| s.wl_surface().clone())
-    }
-
-    /// Check lock state after output removal.
-    /// If in Locking state, the removed output no longer needs to render a locked frame.
-    pub fn check_lock_on_output_removed(&mut self) {
-        if matches!(&self.lock_state, LockState::Locking(_)) {
-            // Re-check if all remaining outputs are locked
-            self.check_lock_complete();
-        }
-    }
-
-    /// Abort the lock if we failed to render during Locking state.
-    /// This prevents the session from being stuck in an unlockable state.
-    pub fn abort_lock_on_render_failure(&mut self) {
-        if matches!(&self.lock_state, LockState::Locking(_)) {
-            warn!("Aborting session lock due to render failure");
-            // Reset to unlocked - the SessionLocker will be dropped, signaling failure
-            self.lock_state = LockState::Unlocked;
-            // Clear any lock surfaces
-            for state in self.output_state.values_mut() {
-                state.lock_surface = None;
-                state.lock_render_state = LockRenderState::Unlocked;
-            }
-            self.queue_redraw_all();
-        }
-    }
 }
 
 /// Shared state for compositor event loop (passed to all handlers)

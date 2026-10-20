@@ -1,6 +1,7 @@
 pub mod background_effect;
 mod compositor;
 mod layer_shell;
+mod session_lock;
 mod xdg_shell;
 
 use std::collections::HashMap;
@@ -39,15 +40,14 @@ use smithay::wayland::selection::wlr_data_control::{
     DataControlHandler as WlrDataControlHandler, DataControlState as WlrDataControlState,
 };
 use smithay::wayland::selection::{SelectionHandler, SelectionSource, SelectionTarget};
-use smithay::wayland::session_lock::{
-    LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
-};
 use smithay::wayland::xdg_activation::{
     XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
 };
 use smithay::wayland::xdg_system_bell::XdgSystemBellHandler;
 use tracing::{debug, info, trace, warn};
 
+pub(crate) use self::session_lock::configure_lock_surface;
+pub use self::session_lock::{LockRenderState, LockState};
 pub(crate) use self::xdg_shell::add_toplevel_pre_commit_hook;
 use crate::protocols::foreign_toplevel::{ForeignToplevelHandler, ForeignToplevelManagerState};
 use crate::protocols::output_management::{OutputManagementHandler, OutputManagementState};
@@ -58,9 +58,7 @@ use crate::protocols::virtual_pointer::{
     VirtualPointerMotionEvent,
 };
 use crate::protocols::workspace::{WorkspaceHandler, WorkspaceManagerState};
-use crate::{
-    Action, DndIcon, Event, FocusSource, LockRenderState, LockState, Notify, OutputConfig, State,
-};
+use crate::{Action, DndIcon, Event, FocusSource, OutputConfig, State};
 
 // DMA-BUF
 impl DmabufHandler for State {
@@ -541,100 +539,6 @@ impl ScreencopyHandler for State {
     }
 }
 
-// Session Lock protocol (ext-session-lock-v1) for screen locking
-impl SessionLockHandler for State {
-    fn lock_state(&mut self) -> &mut SessionLockManagerState {
-        &mut self.ewm.session_lock_state
-    }
-
-    fn lock(&mut self, confirmation: SessionLocker) {
-        // Liveness, not the state, decides: a replacement is the only way out
-        // of a lock whose client is gone.
-        if self.ewm.lock_client_is_live() {
-            info!("Session lock request ignored: a live client holds the lock");
-            return;
-        }
-
-        info!("Session lock requested");
-
-        // Save current focus to restore after unlock
-        if self.ewm.focused_surface_id() != 0 {
-            self.ewm.pre_lock_focus = Some(self.ewm.focused_surface_id());
-        }
-
-        if self.ewm.output_state.is_empty() {
-            // No outputs: lock immediately
-            let lock = confirmation.ext_session_lock().clone();
-            confirmation.lock();
-            self.ewm.lock_state = LockState::Locked(lock);
-            info!("Session locked (no outputs)");
-        } else {
-            // Enter Locking state and queue redraw to show locked frame
-            self.ewm.lock_state = LockState::Locking(confirmation);
-            // Reset all output lock render states
-            for state in self.ewm.output_state.values_mut() {
-                state.lock_render_state = LockRenderState::Unlocked;
-            }
-            self.ewm.queue_redraw_all();
-        }
-
-        // Monitors on for the lock screen. After the state is set, so the wake
-        // spares the lock client.
-        self.ewm.wake_from_idle();
-    }
-
-    fn unlock(&mut self) {
-        info!("Session unlock requested");
-        self.ewm.lock_state = LockState::Unlocked;
-
-        // Clear lock surfaces and reset render states
-        for state in self.ewm.output_state.values_mut() {
-            state.lock_surface = None;
-            state.lock_render_state = LockRenderState::Unlocked;
-        }
-
-        // Invalidate tracked focus (was on lock surface) to force sync
-        self.ewm.keyboard_focus = None;
-
-        // Restore focus to the surface that was focused before locking
-        if let Some(id) = self.ewm.pre_lock_focus.take()
-            && self.ewm.surfaces.contains_key(&id)
-        {
-            info!("Restoring focus to surface {} after unlock", id);
-            self.ewm.set_focus(id, FocusSource::Unlock, Notify::None);
-        }
-        self.sync_keyboard_focus();
-
-        self.ewm.queue_redraw_all();
-
-        // Monitors on, so unlocking from a fingerprint reader lights the screen.
-        self.ewm.activate_monitors();
-        self.ewm.notify_activity();
-        self.ewm.reset_idle_timer();
-
-        info!("Session unlocked");
-    }
-
-    fn new_surface(&mut self, surface: LockSurface, wl_output: WlOutput) {
-        let Some(output) = self.ewm.output_from_resource(&wl_output) else {
-            warn!("Lock surface created for unknown output");
-            return;
-        };
-
-        info!("New lock surface for output: {}", output.name());
-
-        // Configure lock surface to cover the entire output
-        configure_lock_surface(&surface, &output);
-
-        // Store in per-output state
-        if let Some(state) = self.ewm.output_state.get_mut(&output) {
-            state.lock_surface = Some(surface);
-        }
-
-        self.ewm.queue_redraw(&output);
-    }
-}
-
 // Idle notify protocol (ext-idle-notify-v1)
 impl IdleNotifierHandler for State {
     fn idle_notifier_state(&mut self) -> &mut IdleNotifierState<Self> {
@@ -730,24 +634,4 @@ impl PointerConstraintsHandler for State {
         // Redraw to update cursor position visually
         self.ewm.queue_redraw_for_pointer();
     }
-}
-
-/// Configure a lock surface to cover the full output
-pub(crate) fn configure_lock_surface(surface: &LockSurface, output: &Output) {
-    use smithay::wayland::compositor::with_states;
-
-    surface.with_pending_state(|states| {
-        let size = crate::utils::output_size(output);
-        states.size = Some(size.to_i32_round());
-    });
-
-    let scale = output.current_scale();
-    let transform = output.current_transform();
-    let wl_surface = surface.wl_surface();
-
-    with_states(wl_surface, |data| {
-        crate::utils::send_scale_transform(wl_surface, data, scale, transform);
-    });
-
-    surface.send_configure();
 }
