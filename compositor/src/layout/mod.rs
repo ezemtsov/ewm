@@ -662,6 +662,8 @@ impl Layout {
                 monitor.floating.add_frame(frame);
             }
         }
+        // A fullscreen float pins to the first strip frame as it appears.
+        monitor.settle_pins();
         self.remember_home_if_missing(id, &home);
         self.settle_focus();
     }
