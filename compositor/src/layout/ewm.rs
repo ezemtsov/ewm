@@ -1,4 +1,4 @@
-//! The compositor side of the layout: moves, hotplug and what Emacs is told about them.
+//! The compositor side of the layout: moves, hotplug, overview, fades and what Emacs is told.
 
 use std::collections::{HashMap, HashSet};
 use std::mem;
@@ -11,11 +11,17 @@ use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::Sta
 use smithay::utils::{Logical, Point, Rectangle, Size};
 use smithay::wayland::seat::WaylandFocus;
 
-use super::resize_fade::{Fit, ViewRect, contents_rect};
+use super::overview::{Geometry, Overview};
+use super::resize_fade::{
+    FadingView, Fit, PendingResize, RESIZE_FADE_THRESHOLD, ResizeFade, ViewRect, contents_rect,
+    fade_spring, size_change,
+};
 use super::snapshot::Snapshot;
 use super::{FrameLocation, LayoutEntryLocation, Monitor, Moved, floating, strip};
+use crate::animation::Animation;
+use crate::render::render_view_snapshot;
 use crate::{
-    Event, Ewm, FocusSource, LayoutEntry, LayoutEntryHit, LayoutEntryId, Notify, SurfaceHit,
+    Event, Ewm, FocusSource, LayoutEntry, LayoutEntryHit, LayoutEntryId, Notify, State, SurfaceHit,
     fullscreen_center_offset, module,
 };
 
@@ -1206,5 +1212,384 @@ impl Ewm {
                 self.set_focus_frame(id, FocusSource::Gesture, Notify::Emacs);
             }
         }
+    }
+}
+
+impl Ewm {
+    /// Where `output`'s content lands on screen under the overview zoom.
+    pub fn overview_geometry(&self, output: &Output) -> Geometry {
+        let Some(progress) = self.overview.progress() else {
+            return Geometry::default();
+        };
+        let size = self
+            .layout
+            .output_rect(output)
+            .map(|geo| geo.size.to_f64())
+            .unwrap_or_default();
+        let scale = output.current_scale().fractional_scale();
+        let shift = self
+            .layout
+            .strip(output)
+            .map_or(0.0, strip::Strip::overview_shift)
+            * progress;
+        Geometry::new(size, scale, self.overview.zoom(), shift)
+    }
+
+    /// Strip frame under an output-local content point, with the point's
+    /// frame-relative position.
+    fn overview_frame_under(
+        &self,
+        output: &Output,
+        geometry: &Geometry,
+        in_content: Point<f64, Logical>,
+    ) -> Option<(usize, Point<f64, Logical>)> {
+        let working_area = self.get_working_area(output);
+        let in_strip = in_content - working_area.loc.to_f64();
+        let strip = self.layout.strip(output)?;
+        strip
+            .frames_with_render_geo(
+                working_area.size.to_f64(),
+                geometry.strip_viewport(working_area),
+            )
+            .find(|(_, _, rect, _)| rect.contains(in_strip))
+            .map(|(idx, _, rect, _)| (idx, in_strip - rect.loc))
+    }
+
+    /// Click in the open overview: a frame under `pos` becomes active, and a
+    /// click anywhere on the zoomed output closes the overview.
+    pub fn overview_click(&mut self, pos: Point<f64, Logical>) {
+        let Some(output) = self.output_at(pos).cloned() else {
+            return;
+        };
+        let Some(output_geo) = self.layout.output_rect(&output) else {
+            return;
+        };
+        let pos_within_output = pos - output_geo.loc.to_f64();
+        let geometry = self.overview_geometry(&output);
+        let in_output = geometry.to_content(pos_within_output);
+        // Hidden frames have slid up, so the click maps onto where they were.
+        let slide = self.hide.current() * f64::from(output_geo.size.h);
+        let in_content = in_output + Point::from((0., slide));
+        let floating_frame = self.layout.monitor_of(&output).and_then(|monitor| {
+            monitor
+                .floats_with_render_geo()
+                .find(|(_, rect)| rect.contains(in_content))
+                .map(|(frame, rect)| (frame.surface_id, rect))
+        });
+        if let Some((frame_id, rect)) = floating_frame {
+            self.set_focus_frame(
+                frame_id,
+                FocusSource::Overview,
+                Notify::Pointer(in_content - rect.loc),
+            );
+            self.overview_close();
+        } else if let Some((idx, pos_in_frame)) =
+            self.overview_frame_under(&output, &geometry, in_content)
+        {
+            self.overview_activate_frame(&output, idx, pos_in_frame);
+        } else if Rectangle::from_size(output_geo.size.to_f64()).contains(in_output) {
+            self.overview_close();
+        }
+    }
+
+    /// Activate frame `idx` and close. The strip snaps onto it and the zoom carries the slide.
+    fn overview_activate_frame(
+        &mut self,
+        output: &Output,
+        idx: usize,
+        pos_in_frame: Point<f64, Logical>,
+    ) {
+        self.bake_overview_shifts();
+        let Some(strip) = self.layout.strip(output) else {
+            return;
+        };
+        let Some(target) = strip.frames().get(idx).map(|frame| frame.surface_id) else {
+            return;
+        };
+        let prev_view_pos = strip.view_pos();
+        let zoom = self.overview.zoom();
+        let progress = self.overview.progress().unwrap_or(0.0);
+        self.set_focus_frame(target, FocusSource::Overview, Notify::Pointer(pos_in_frame));
+        if progress > 0.01
+            && let Some(strip) = self.layout.strip_mut(output)
+        {
+            strip.carry_slide_as_overview_shift(prev_view_pos, zoom, progress);
+        }
+        self.with_overview(|overview| overview.close());
+        self.queue_redraw_all();
+    }
+
+    /// Change the overview and tell Emacs when it opens or closes.
+    fn with_overview<R>(&mut self, change: impl FnOnce(&mut Overview) -> R) -> R {
+        let was_open = self.overview.is_open();
+        let result = change(&mut self.overview);
+        let open = self.overview.is_open();
+        if open != was_open {
+            self.queue_event(Event::Overview { open });
+        }
+        result
+    }
+
+    pub fn overview_gesture_end(&mut self) -> bool {
+        self.with_overview(|overview| overview.gesture_end())
+    }
+
+    /// Turn leftover overview shifts back into strip slides before the zoom changes course.
+    fn bake_overview_shifts(&mut self) {
+        let progress = self.overview.progress();
+        let zoom = self.overview.zoom();
+        for strip in self.layout.strips_mut() {
+            strip.bake_overview_shift(progress, zoom);
+        }
+    }
+
+    /// Run overview `action`.
+    pub(crate) fn overview(&mut self, action: module::OverviewAction) {
+        match action {
+            module::OverviewAction::Toggle => self.overview_toggle(),
+            module::OverviewAction::Open => {
+                self.overview_open();
+            }
+            module::OverviewAction::Close => {
+                self.overview_close();
+            }
+        }
+    }
+
+    pub fn overview_toggle(&mut self) {
+        if self.is_locked() {
+            return;
+        }
+        self.bake_overview_shifts();
+        let was_active = self.overview.is_active();
+        self.with_overview(|overview| overview.toggle());
+        if !was_active {
+            self.set_inactive_frames_shown(true);
+        }
+        self.queue_redraw_all();
+    }
+
+    /// Thaw every frame while the overview shows them all, or refreeze the inactive ones.
+    pub(crate) fn set_inactive_frames_shown(&mut self, shown: bool) {
+        let ids: Vec<u64> = self.layout.inactive_frame_ids().collect();
+        for id in ids {
+            self.queue_event(if shown {
+                Event::FrameShown { id }
+            } else {
+                Event::FrameHidden { id }
+            });
+        }
+    }
+
+    pub fn overview_open(&mut self) -> bool {
+        if self.overview.is_open() {
+            return false;
+        }
+        self.overview_toggle();
+        true
+    }
+
+    pub fn overview_close(&mut self) -> bool {
+        if !self.overview.is_open() {
+            return false;
+        }
+        self.overview_toggle();
+        true
+    }
+
+    pub fn overview_gesture_begin(&mut self) {
+        if self.is_locked() {
+            return;
+        }
+        self.bake_overview_shifts();
+        let was_active = self.overview.is_active();
+        self.with_overview(|overview| overview.gesture_begin());
+        if !was_active {
+            self.set_inactive_frames_shown(true);
+        }
+        self.queue_redraw_all();
+    }
+
+    pub fn frames_hidden(&self) -> bool {
+        self.hide.target() == 1.
+    }
+
+    /// Neither the overview nor the hide has moved the frames.
+    pub fn frames_in_place(&self) -> bool {
+        !self.overview.is_active() && self.hide.is_static() && !self.frames_hidden()
+    }
+
+    /// Slide every frame off its output or bring them back, and tell Emacs.
+    pub fn hide_toggle(&mut self) {
+        if self.is_locked() {
+            return;
+        }
+        let hidden = !self.frames_hidden();
+        self.hide.animate_to(
+            self.animations_clock.clone(),
+            if hidden { 1. } else { 0. },
+            0.,
+            f64::EPSILON,
+        );
+        self.queue_event(Event::Hide { hidden });
+        self.queue_redraw_all();
+    }
+}
+
+impl Ewm {
+    /// Fit every shown view, holding the views of a surface owing a buffer until it comes, unless
+    /// this is its commit (`answered`). Views no longer shown are forgotten.
+    pub(crate) fn fit_views(&mut self, answered: bool) {
+        let shown = self.view_rects();
+        for now in &shown {
+            if let Some(surface) = self.surfaces.get_mut(&now.surface) {
+                let hold = !answered && surface.owes_buffer();
+                surface.fit(now.entry, now.fit, hold);
+            }
+        }
+        for surface in self.surfaces.values_mut() {
+            surface.forget_views(&shown);
+        }
+    }
+
+    /// The views of `id` as drawn now, with the resolution the old contents need for them.
+    fn fading_views(
+        &self,
+        id: u64,
+        mut keep: impl FnMut(&ViewRect) -> Option<FadingView>,
+    ) -> Option<PendingResize> {
+        let mut views = Vec::new();
+        let mut scale = 0f64;
+        for now in self.view_rects().iter().filter(|now| now.surface == id) {
+            let Some(view) = keep(now) else {
+                continue;
+            };
+            scale = scale.max(view.scale.min(1.) * now.output.current_scale().fractional_scale());
+            views.push(view);
+        }
+        (!views.is_empty()).then_some(PendingResize { views, scale })
+    }
+
+    /// What a configure of `id` to `size` will fade.
+    pub(crate) fn pending_resize(
+        &self,
+        id: u64,
+        size: Size<i32, Logical>,
+    ) -> Option<PendingResize> {
+        if self.animations_clock.should_complete_instantly() {
+            return None;
+        }
+        let old = self.window(id)?.geometry().size;
+        if size_change(size, old) <= RESIZE_FADE_THRESHOLD {
+            return None;
+        }
+        self.fading_views(id, |now| {
+            Some(FadingView {
+                entry: now.entry,
+                window: now.window,
+                scale: now.scale,
+                at: None,
+            })
+        })
+    }
+
+    /// What a layout refitting views of `id` since `before` will fade, nothing while it owes a
+    /// buffer or its frame settles at once.
+    fn pending_refit(&self, id: u64, before: &[ViewRect]) -> Option<PendingResize> {
+        if self.animations_clock.should_complete_instantly()
+            || self.surfaces.get(&id)?.owes_buffer()
+        {
+            return None;
+        }
+        self.fading_views(id, |now| {
+            if self
+                .layout
+                .monitor_of(&now.output)
+                .is_some_and(|monitor| monitor.settles_at_once(now.frame))
+            {
+                return None;
+            }
+            let was = before
+                .iter()
+                .find(|was| was.entry == now.entry && was.output == now.output)?;
+            (size_change(was.rect.size, now.rect.size) > RESIZE_FADE_THRESHOLD).then_some(
+                FadingView {
+                    entry: now.entry,
+                    window: now.window,
+                    scale: was.scale,
+                    at: Some(was.rect),
+                },
+            )
+        })
+    }
+}
+
+impl State {
+    /// Fade the old contents of surface `id` into the new ones `pending` names, the backdrop
+    /// along if it `flips`.
+    pub(crate) fn start_resize_fade(&mut self, id: u64, pending: PendingResize, flips: bool) {
+        let ewm = &mut self.ewm;
+        let Some(surface) = ewm.surfaces.get_mut(&id) else {
+            return;
+        };
+        // A fade in flight keeps its snapshot, and an open fade would hide a new one.
+        if surface.open.as_ref().is_some_and(|open| !open.is_done())
+            || surface.resize.as_ref().is_some_and(|fade| !fade.is_done())
+            || ewm.animations_clock.should_complete_instantly()
+        {
+            return;
+        }
+        let clock = ewm.animations_clock.clone();
+        self.backend.with_renderer(|renderer, _, _| {
+            if let Some(snapshot) =
+                render_view_snapshot(&surface.window, renderer, pending.scale.into())
+            {
+                let anim = Animation::new(clock, 0., 1., 0., fade_spring());
+                surface.resize = Some(ResizeFade {
+                    snapshot,
+                    anim,
+                    views: pending.views,
+                    flips,
+                });
+            }
+        });
+    }
+
+    /// Apply Emacs's layout, fading every view it refits.
+    pub(crate) fn apply_layout(&mut self, frames: Vec<strip::Frame>) {
+        let before = self.ewm.view_rects();
+        self.ewm.apply_layout(frames);
+        let ids: Vec<u64> = self.ewm.surfaces.keys().copied().collect();
+        for id in ids {
+            if let Some(pending) = self.ewm.pending_refit(id, &before) {
+                self.start_resize_fade(id, pending, false);
+            }
+        }
+    }
+}
+
+impl State {
+    /// Bake close snapshots for the frames among `ids` lacking one, and for the other ids' views.
+    pub(crate) fn store_close_snapshots(&mut self, ids: &[u64]) {
+        let ewm = &mut self.ewm;
+        if ewm.animations_clock.should_complete_instantly() {
+            return;
+        }
+        let ids: Vec<u64> = ids
+            .iter()
+            .copied()
+            .filter(|&id| match ewm.layout.frame_location(id) {
+                Some(location) => location.frame.close_snapshot.is_none(),
+                None => ewm.surface_entry_locations(id).next().is_some(),
+            })
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        self.backend.with_renderer(|renderer, _, _| {
+            for id in ids {
+                ewm.store_close_snapshot(renderer, id);
+            }
+        });
     }
 }
