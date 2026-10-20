@@ -692,32 +692,43 @@ impl Fixture {
         self.state.apply_layout(layout);
     }
 
-    /// Place the unplaced frames among `frames` on `output` as `new_toplevel`
-    /// would, then return them with every other placed frame as it is: Emacs
-    /// declares them all.
-    fn place(&mut self, output: &str, frames: Vec<Frame>, floating: bool) -> Vec<Frame> {
+    /// Place the unplaced frames among `frames` on `output` as `new_toplevel` would.
+    pub fn open_frames(&mut self, output: &str, frames: &[Frame], floating: bool) {
         let ewm = &mut self.state.ewm;
-        if let Some(output) = ewm.layout.output(output).cloned() {
-            for frame in &frames {
-                let id = frame.surface_id;
-                if id == 0 || ewm.layout.has_frame(id) {
-                    continue;
-                }
-                let placement = if floating {
-                    let pos = frame.floating_pos.and_then(|pos| {
-                        let area = ewm.layout.floating(&output)?.working_area();
-                        Some(crate::layout::floating::Data::scale_by_working_area(
-                            area, pos,
-                        ))
-                    });
-                    crate::layout::Placement::Floating { pos }
-                } else {
-                    crate::layout::Placement::Tiled { after: None }
-                };
-                ewm.layout.add_frame(id, &output, placement);
+        let Some(output) = ewm.layout.output(output).cloned() else {
+            return;
+        };
+        for frame in frames {
+            let id = frame.surface_id;
+            if id == 0 || ewm.layout.has_frame(id) {
+                continue;
             }
+            let placement = if floating {
+                let pos = frame.floating_pos.and_then(|pos| {
+                    let area = ewm.layout.floating(&output)?.working_area();
+                    Some(crate::layout::floating::Data::scale_by_working_area(
+                        area, pos,
+                    ))
+                });
+                crate::layout::Placement::Floating { pos }
+            } else {
+                crate::layout::Placement::Tiled { after: None }
+            };
+            ewm.layout.add_frame(id, &output, placement);
         }
-        let mut layout: Vec<Frame> = ewm
+    }
+
+    /// `open_frames`, then the layout Emacs declares for them.
+    fn place(&mut self, output: &str, frames: Vec<Frame>, floating: bool) -> Vec<Frame> {
+        self.open_frames(output, &frames, floating);
+        self.declare(frames)
+    }
+
+    /// The layout Emacs declares: every placed frame as it is, `frames` as given.
+    fn declare(&self, frames: Vec<Frame>) -> Vec<Frame> {
+        let mut layout: Vec<Frame> = self
+            .state
+            .ewm
             .layout
             .placed_frames()
             .filter(|placed| !frames.iter().any(|f| f.surface_id == placed.surface_id))
@@ -725,6 +736,16 @@ impl Fixture {
             .collect();
         layout.extend(frames);
         layout
+    }
+
+    /// One layout for `tiled` and `floats` on `output`, the frames opened first as Emacs does.
+    pub fn layout(&mut self, output: &str, tiled: Vec<Frame>, mut floats: Vec<Frame>) {
+        self.open_frames(output, &tiled, false);
+        self.open_frames(output, &floats, true);
+        let mut frames = tiled;
+        frames.append(&mut floats);
+        let layout = self.declare(frames);
+        self.state.apply_layout(layout);
     }
 
     pub fn handle_module_command(&mut self, command: crate::module::ModuleCommand) {

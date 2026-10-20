@@ -434,8 +434,12 @@ fn apply_op(
                 .iter()
                 .map(|spec| to_frame(spec, &clients.sids))
                 .partition(|frame| frame.floating_pos.is_some());
-            fix.tile(name, tiled);
-            fix.float(name, floats);
+            // Frames open before the layout lands, as they do for Emacs, each opening settling
+            // the float pins, then one layout declares them all.
+            fix.open_frames(name, &tiled, false);
+            fix.open_frames(name, &floats, true);
+            check(fix, model, clients)?;
+            fix.layout(name, tiled, floats);
         }
         Op::SetEntryFullscreen {
             frame_idx,
