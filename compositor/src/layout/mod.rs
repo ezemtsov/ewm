@@ -690,7 +690,7 @@ impl Layout {
             .find(|frame| frame.surface_id == frame_surface_id)
     }
 
-    /// Frame ids on `output`, tiled then floating.
+    /// Whether frame `frame_surface_id` is parked.
     pub fn is_homeless(&self, frame_surface_id: u64) -> bool {
         self.homeless
             .iter()

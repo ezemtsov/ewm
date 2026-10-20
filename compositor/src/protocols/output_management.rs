@@ -72,8 +72,8 @@ pub struct OutputManagementState {
     serial: u32,
     clients: HashMap<ClientId, ClientData>,
     current_state: HashMap<String, OutputHeadState>,
-    /// Set by the backend when output topology or config changes.
-    /// Cleared by `refresh()` which sends protocol updates to clients.
+    /// Set by the backend when output topology or config changes, cleared by
+    /// `Ewm::refresh_output_management`, which sends the updates.
     pub output_heads_changed: bool,
 }
 

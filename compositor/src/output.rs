@@ -174,8 +174,8 @@ impl Ewm {
         self.output_management_state.notify_changes(new_state);
     }
 
-    /// The monitor showing surface `id`: its focused view's, else the first in
-    /// output order, else the one holding it as an Emacs frame.
+    /// The monitor showing surface `id`: its focused view's, else the first in output order
+    /// among those the surface is on.
     pub(crate) fn surface_monitor(&self, id: u64) -> Option<&Monitor> {
         if let Some(location) = self.focused_entry_for_surface(id) {
             return Some(location.monitor);

@@ -1,6 +1,6 @@
-// Ported from niri (https://github.com/YaLTeR/niri)
-//
-// On-demand xwayland-satellite lifecycle management.
+//! Ported from niri's `utils/xwayland/satellite.rs`.
+//!
+//! On-demand xwayland-satellite lifecycle management.
 // Listens on X11 sockets and spawns xwayland-satellite when an X11 client connects.
 // Automatically re-watches sockets if the satellite crashes, enabling transparent restart.
 

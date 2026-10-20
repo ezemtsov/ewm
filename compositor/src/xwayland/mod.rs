@@ -1,6 +1,6 @@
-// Ported from niri (https://github.com/YaLTeR/niri)
-//
-// X11 display allocation and socket management for xwayland-satellite.
+//! Ported from niri's `utils/xwayland/mod.rs`.
+//!
+//! X11 display allocation and socket management for xwayland-satellite.
 // Creates lock files, binds abstract + unix sockets, and provides RAII cleanup.
 
 use std::os::fd::OwnedFd;

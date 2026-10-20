@@ -1,6 +1,7 @@
 //! VBlank throttling.
 //!
-//! Ported from niri. Some buggy drivers deliver VBlanks way earlier than necessary.
+//! Ported from niri's `utils/vblank_throttle.rs`. Some buggy drivers deliver VBlanks way earlier
+//! than necessary.
 //! This helper throttles the VBlank in such cases to avoid tearing and to get more
 //! consistent timings.
 

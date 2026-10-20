@@ -1,16 +1,14 @@
-//! Shared render element collection
+//! Render element collection for an output, and the window, view and snapshot renderers.
 //!
-//! This module provides functions for collecting render elements from
-//! the compositor state, shared between DRM and headless backends.
+//! The collector serves the DRM backend, screencopy and screen casts alike.
 //!
 //! # Design Invariants
 //!
-//! 1. **Per-output rendering**: Elements are collected per-output, not globally. Each output only
-//!    receives elements that intersect with its geometry. This is critical for efficient rendering,
-//!    accurate damage tracking, and screen sharing.
+//! 1. **Per-output rendering**: Elements are collected per output, only those within its geometry,
+//!    which keeps damage tracking and screen sharing to that output.
 //!
-//! 2. **Rendering order**: Elements are collected front-to-back, matching typical desktop
-//!    compositor layering: Cursor -> Overlay -> Top -> Popups -> Windows -> Bottom -> Background.
+//! 2. **Rendering order**: Elements are collected front to back in the order the collector
+//!    documents, the top layer waiting behind a fullscreen view that covers it.
 //!
 //! 3. **Layout-based rendering**: Views draw at the window rects their layout entries declare,
 //!    Emacs frames at the origin their strip or floating space gives them.
@@ -469,10 +467,7 @@ fn push_view(
     }
 }
 
-/// Push constrained (rescale + crop) render elements into the element list.
-///
-/// Shared pipeline for all view rendering: fullscreen primary/secondary
-/// and normal primary/secondary.
+/// Push `view_elements` rescaled and cropped as `view` says.
 pub(crate) fn push_constrained<I, E>(
     elements: &mut Vec<E>,
     view_elements: impl IntoIterator<Item = I>,
