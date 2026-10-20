@@ -51,16 +51,18 @@ use emacs::{Env, Result, Value, defun};
 use serde::Deserialize;
 use smithay::input::keyboard::{keysyms, xkb};
 use smithay::reexports::calloop::LoopSignal;
+use tracing::{debug, info, trace};
 
 use crate::cursor::CursorConfig;
 use crate::im::TextInputProvider;
 use crate::input::SwipeDirection;
 use crate::layout::Placement;
-use crate::layout::strip::Frame;
+use crate::layout::strip::{self, Frame};
 pub use crate::utils::reply::Reply;
 use crate::utils::reply::{ReplyError, reply_channel};
 use crate::{
-    FocusId, FocusSource, InterceptDispatch, InterceptedKey, LayoutEntry, LayoutEntryId, Trigger,
+    Event, FocusId, FocusSource, IdleAction, InterceptDispatch, InterceptedKey, LayoutEntry,
+    LayoutEntryId, Notify, State, Trigger, tracy_span,
 };
 
 // Shared State (read by Emacs, written by compositor)
@@ -568,6 +570,219 @@ pub enum ModuleCommand {
     /// Client init done. Force-resend wl_keyboard.enter (PGTK drops the
     /// pre-roundtrip one).
     Initialized,
+}
+
+impl State {
+    /// Handle a module command (from Emacs via dynamic module).
+    pub(crate) fn handle_module_command(&mut self, cmd: ModuleCommand) {
+        tracy_span!("handle_module_command");
+        match cmd {
+            ModuleCommand::Close { id } => {
+                if let Some(window) = self.ewm.window(id)
+                    && let Some(toplevel) = window.toplevel()
+                {
+                    toplevel.send_close();
+                    info!("Close surface {} (sent close request)", id);
+                }
+            }
+            ModuleCommand::Action { action } => self.do_action(action),
+            ModuleCommand::ReplayDeferredKeys => self.replay_deferred_keys(),
+            ModuleCommand::RenameWorkspace {
+                frame_surface_id,
+                name,
+            } => {
+                self.ewm.rename_workspace(frame_surface_id, name);
+            }
+            ModuleCommand::MarkWorkspaceUrgent { frame_surface_id } => {
+                self.ewm.mark_workspace_urgent(frame_surface_id);
+            }
+            ModuleCommand::FocusTarget { focus_id } => {
+                if self.ewm.layout.entry_location(focus_id).is_some() {
+                    self.ewm
+                        .set_focus_entry(focus_id, FocusSource::LispRequest, Notify::None);
+                } else if let Some(frame_id) = self.ewm.layout.frame_with_focus_id(focus_id) {
+                    self.ewm
+                        .set_focus_frame(frame_id, FocusSource::LispRequest, Notify::None);
+                }
+            }
+            ModuleCommand::WarpPointer { x, y } => {
+                // Don't warp while a pen is in use.
+                if self.ewm.tablet_cursor_location.is_none() {
+                    self.warp_pointer(x, y);
+                }
+            }
+            ModuleCommand::ConfigureOutput { name, config } => self.configure_output(name, config),
+            ModuleCommand::ImPreedit { text, surface_id } => {
+                if self.ewm.active_text_input_surface_id() == Some(surface_id) {
+                    self.ewm.preedit_active_text_input(text);
+                }
+            }
+            ModuleCommand::ImCommit { text, surface_id } => self.ewm.im_commit(text, surface_id),
+            ModuleCommand::TextInputReplace { text, surface_id } => {
+                self.ewm.text_input_replace(text, surface_id);
+            }
+            ModuleCommand::TextInputForwardKey {
+                surface_id,
+                keycode,
+                ctrl,
+                alt,
+                shift,
+                logo,
+            } => {
+                self.forward_text_input_key(surface_id, keycode, ctrl, alt, shift, logo);
+            }
+            ModuleCommand::SendKey { surface_id, keys } => self.send_keys(surface_id, keys),
+            ModuleCommand::TextInputIntercept { enabled } => {
+                if self.ewm.text_input_intercept != enabled {
+                    info!("Text input intercept: {}", enabled);
+                    self.ewm.text_input_intercept = enabled;
+                }
+            }
+            ModuleCommand::ConfigureTextInput { provider } => {
+                self.set_text_input_provider(provider);
+            }
+            ModuleCommand::KeyboardCaptureChanged { active } => {
+                trace!("Keyboard capture changed: active={}", active);
+                if active {
+                    self.ewm.cancel_command_repeat();
+                }
+            }
+            ModuleCommand::SwitchLayout { layout } => self.switch_xkb_layout(layout),
+            ModuleCommand::GetLayouts => {
+                self.ewm.queue_event(Event::Layouts {
+                    layouts: self.ewm.xkb_layout_names.clone(),
+                    current: self.ewm.xkb_current_layout,
+                });
+            }
+            ModuleCommand::GetDebugState(reply) => {
+                let outputs = self.backend.output_info_list(&self.ewm.sorted_outputs);
+                let state = elisp::serde::to_value(self.ewm.debug_state(&outputs))
+                    .unwrap_or(elisp::Value::NIL);
+                let _ = reply.send(state);
+            }
+            ModuleCommand::EntryUnderFloatingCenter {
+                floating_frame_id,
+                reply,
+            } => {
+                let entry = self
+                    .ewm
+                    .tiled_entry_under_floating_center(floating_frame_id);
+                let _ = reply.send(entry);
+            }
+            ModuleCommand::CreateActivationToken(reply) => {
+                let (token_ref, _) = self.ewm.activation_state.create_external_token(None);
+                let token = token_ref.clone();
+                let token_str = token.as_str().to_string();
+                debug!("Created activation token for Emacs: {}", token_str);
+                if reply.send(token_str).is_err() {
+                    // Emacs gave up before we replied. The token would otherwise leak.
+                    self.ewm.activation_state.remove_token(&token);
+                }
+            }
+            ModuleCommand::SetSelection { text } => self.set_selection(text),
+            ModuleCommand::Layout { frames } => {
+                let dropped = strip::dropped_frame_ids(self.ewm.layout.placed_frames(), &frames);
+                self.store_close_snapshots(&dropped);
+                self.apply_layout(frames);
+                self.refresh_pointer_after_layout();
+            }
+            ModuleCommand::MoveFrame { id, delta } => {
+                self.ewm.move_frame(id, delta);
+                self.refresh_pointer_after_layout();
+            }
+            ModuleCommand::MoveFloatingFrame { id, dx, dy } => {
+                self.ewm.move_floating_frame(id, dx, dy);
+                self.refresh_pointer_after_layout();
+            }
+            ModuleCommand::ResizeFloatingFrame { id, dw, dh } => {
+                self.ewm.resize_floating_frame(id, dw, dh);
+                self.refresh_pointer_after_layout();
+            }
+            ModuleCommand::ToggleFullscreen { entry_id } => {
+                if let Some(id) = self.ewm.layout.entry_surface_id(entry_id) {
+                    let on = !self.ewm.pending_fullscreen(id);
+                    self.set_surface_fullscreen(id, on);
+                }
+            }
+            ModuleCommand::SetFullscreen { entry_id, on } => {
+                if let Some(id) = self.ewm.layout.entry_surface_id(entry_id) {
+                    self.set_surface_fullscreen(id, on);
+                }
+            }
+            ModuleCommand::ConfigureInput { configs } => self.configure_input(configs),
+            ModuleCommand::ConfigureIdle {
+                timeout_secs,
+                action,
+            } => {
+                let idle_action = if action == "blank" {
+                    IdleAction::DeactivateMonitors
+                } else {
+                    IdleAction::RunCommand(action)
+                };
+                self.ewm
+                    .configure_idle(timeout_secs.map(Duration::from_secs), idle_action);
+            }
+            ModuleCommand::ConfigureCursorHide {
+                timeout_secs,
+                hide_when_typing,
+            } => {
+                self.ewm
+                    .configure_cursor_hide(timeout_secs.map(Duration::from_secs), hide_when_typing);
+            }
+            ModuleCommand::ConfigureCursor { config } => {
+                self.ewm.cursor_manager.reload(&config.theme, config.size);
+                self.backend.clear_cursor_texture_cache();
+                let env_vars = config.env_vars();
+                self.backend.import_environment(&env_vars);
+                self.ewm.queue_event(Event::Environment { vars: env_vars });
+                self.ewm.queue_redraw_for_pointer();
+            }
+            ModuleCommand::ConfigureFocusFollowsMouse { state: setting } => {
+                self.ewm.focus_follows_mouse_mode = setting;
+            }
+            ModuleCommand::SetDragSource { active } => {
+                self.ewm.emacs_drag_source = active;
+            }
+            ModuleCommand::ConfigureUnfocusedAlpha { alpha } => {
+                self.ewm.unfocused_alpha = alpha.clamp(0.0, 1.0);
+            }
+            ModuleCommand::ConfigureBlur { config } => {
+                if self.ewm.blur_config != config {
+                    self.ewm.blur_config = config;
+                    self.ewm.queue_redraw_all();
+                }
+            }
+            ModuleCommand::ConfigureAnimations { enabled } => {
+                self.ewm.animations_clock.set_complete_instantly(!enabled);
+            }
+            ModuleCommand::ConfigureOverview {
+                zoom,
+                backdrop_color,
+            } => {
+                self.ewm.overview.set_zoom(zoom);
+                self.ewm.overview.backdrop_color = backdrop_color;
+                self.ewm.queue_redraw_all();
+            }
+            ModuleCommand::ConfigureGestures { gestures } => self.ewm.gestures = gestures,
+            ModuleCommand::ConfigureBackground { color } => {
+                self.ewm.overview.background_color = color;
+                self.ewm.queue_redraw_all();
+            }
+            ModuleCommand::SetIdleInhibited { inhibited } => {
+                self.ewm.manual_idle_inhibited = inhibited;
+            }
+            ModuleCommand::ConfigurePower {
+                closed_lid_suspends,
+                sepia,
+            } => self.configure_power(closed_lid_suspends, sepia),
+            ModuleCommand::PowerOffMonitors => {
+                self.ewm.deactivate_monitors();
+                self.backend.clear_all_surfaces();
+            }
+            ModuleCommand::PowerOnMonitors => self.ewm.activate_monitors(),
+            ModuleCommand::Initialized => self.replay_keyboard_focus(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize)]

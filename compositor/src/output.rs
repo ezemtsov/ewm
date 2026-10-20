@@ -13,7 +13,8 @@ use tracing::warn;
 
 use crate::handlers::configure_lock_surface;
 use crate::{
-    Event, Ewm, FocusSource, Monitor, Notify, OutputInfo, RedrawState, backend, module, protocols,
+    Event, Ewm, FocusSource, Monitor, Notify, OutputInfo, RedrawState, State, backend, module,
+    output_mode, protocols,
 };
 #[cfg(feature = "screencast")]
 use crate::{dbus, screencasting};
@@ -618,5 +619,66 @@ impl Ewm {
                 }
             })
             .collect()
+    }
+}
+
+impl State {
+    /// Merge `config` into the stored one for output `name` and apply it.
+    pub(crate) fn configure_output(&mut self, name: String, config: module::OutputConfig) {
+        let module::OutputConfig {
+            x,
+            y,
+            width,
+            height,
+            refresh,
+            custom,
+            modeline,
+            scale,
+            transform,
+            enabled,
+        } = config;
+        let current_output = self.ewm.find_mapped_output(&name);
+        let current_mode = current_output
+            .as_ref()
+            .and_then(|output| output.current_mode());
+        let current_pos = current_output
+            .as_ref()
+            .and_then(|output| self.ewm.layout.output_rect(output))
+            .map(|geo| (geo.loc.x, geo.loc.y))
+            .unwrap_or((0, 0));
+
+        // Update stored config (merge with existing)
+        let config = self.ewm.output_config.entry(name.clone()).or_default();
+        if width.is_some() || height.is_some() || refresh.is_some() {
+            // Fall back to current mode for unspecified parameters
+            let w = width.unwrap_or_else(|| current_mode.map(|mode| mode.size.w).unwrap_or(1920));
+            let h = height.unwrap_or_else(|| current_mode.map(|mode| mode.size.h).unwrap_or(1080));
+            config.mode = Some(output_mode::Mode {
+                custom,
+                mode: output_mode::ConfiguredMode {
+                    width: w as u16,
+                    height: h as u16,
+                    refresh,
+                },
+            });
+        }
+        if modeline.is_some() {
+            config.modeline = modeline;
+        }
+        if x.is_some() || y.is_some() {
+            config.position = Some((x.unwrap_or(current_pos.0), y.unwrap_or(current_pos.1)));
+        }
+        if let Some(s) = scale {
+            config.scale = Some(s);
+        }
+        if let Some(t) = transform {
+            config.transform = Some(backend::int_to_transform(t));
+        }
+        if let Some(e) = enabled {
+            config.enabled = e;
+        }
+
+        // Apply the config (adjusts pointer if geometry changed)
+        self.apply_output_config_for(&name);
     }
 }

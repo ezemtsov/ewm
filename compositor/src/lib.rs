@@ -207,7 +207,7 @@ use smithay::wayland::xdg_activation::{
 };
 use smithay::wayland::xdg_foreign::{XdgForeignState};
 use smithay::wayland::xdg_system_bell::{XdgSystemBellState};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, info, warn};
 
 use crate::protocols::foreign_toplevel::{ForeignToplevelManagerState, WindowInfo};
 use crate::protocols::output_management::OutputManagementState;
@@ -2328,6 +2328,45 @@ impl Ewm {
         }
     }
 
+    /// Commit `text` from the input method for `surface_id`, queued or dropped if it is stale.
+    pub(crate) fn im_commit(&mut self, text: String, surface_id: u64) {
+        let active_surface_id = self.active_text_input_surface_id();
+        match self
+            .im_text_input
+            .commit(active_surface_id, surface_id, text)
+        {
+            im::text_input::CommitResult::Deliver(text) => {
+                self.commit_active_text_input(text);
+            }
+            im::text_input::CommitResult::Queued => {
+                debug!("ImCommit: queued (surface_id={surface_id})");
+            }
+            im::text_input::CommitResult::DroppedStale => {
+                debug!("ImCommit: dropped stale commit (surface_id={surface_id})");
+            }
+        }
+    }
+
+    /// Replace the surrounding text of `surface_id` with `text`, queued or dropped if it is stale.
+    pub(crate) fn text_input_replace(&mut self, text: String, surface_id: u64) {
+        let active_surface_id = self.active_text_input_surface_id();
+        match self
+            .im_text_input
+            .replace(active_surface_id, surface_id, text)
+        {
+            im::text_input::ReplaceResult::Deliver(r) => {
+                self.deliver_replace_ack(surface_id, r);
+            }
+            im::text_input::ReplaceResult::Queued => {
+                debug!("TextInputReplace: queued (surface_id={surface_id})");
+            }
+            im::text_input::ReplaceResult::DroppedStale => {
+                debug!("TextInputReplace: dropped stale replace (surface_id={surface_id})");
+                self.queue_event(Event::TextInputReplaceDropped { surface_id });
+            }
+        }
+    }
+
     fn layer_hit_under(
         &self,
         output: &Output,
@@ -3572,450 +3611,20 @@ impl State {
         module::flush_events();
     }
 
-    /// Handle a module command (from Emacs via dynamic module).
-    pub(crate) fn handle_module_command(&mut self, cmd: module::ModuleCommand) {
-        tracy_span!("handle_module_command");
-
-        use module::ModuleCommand;
-        match cmd {
-            ModuleCommand::Close { id } => {
-                if let Some(window) = self.ewm.window(id)
-                    && let Some(toplevel) = window.toplevel()
-                {
-                    toplevel.send_close();
-                    info!("Close surface {} (sent close request)", id);
-                }
-            }
-            ModuleCommand::Action { action } => self.do_action(action),
-            ModuleCommand::ReplayDeferredKeys => self.replay_deferred_keys(),
-            ModuleCommand::RenameWorkspace {
-                frame_surface_id,
-                name,
-            } => {
-                self.ewm.rename_workspace(frame_surface_id, name);
-            }
-            ModuleCommand::MarkWorkspaceUrgent { frame_surface_id } => {
-                self.ewm.mark_workspace_urgent(frame_surface_id);
-            }
-            ModuleCommand::FocusTarget { focus_id } => {
-                if self.ewm.layout.entry_location(focus_id).is_some() {
-                    self.ewm
-                        .set_focus_entry(focus_id, FocusSource::LispRequest, Notify::None);
-                } else if let Some(frame_id) = self.ewm.layout.frame_with_focus_id(focus_id) {
-                    self.ewm
-                        .set_focus_frame(frame_id, FocusSource::LispRequest, Notify::None);
-                }
-            }
-            ModuleCommand::WarpPointer { x, y } => {
-                // Don't warp while a pen is in use.
-                if self.ewm.tablet_cursor_location.is_none() {
-                    self.warp_pointer(x, y);
-                }
-            }
-            ModuleCommand::ConfigureOutput {
-                name,
-                config:
-                    module::OutputConfig {
-                        x,
-                        y,
-                        width,
-                        height,
-                        refresh,
-                        custom,
-                        modeline,
-                        scale,
-                        transform,
-                        enabled,
-                    },
-            } => {
-                let current_output = self.ewm.find_mapped_output(&name);
-                let current_mode = current_output
-                    .as_ref()
-                    .and_then(|output| output.current_mode());
-                let current_pos = current_output
-                    .as_ref()
-                    .and_then(|output| self.ewm.layout.output_rect(output))
-                    .map(|geo| (geo.loc.x, geo.loc.y))
-                    .unwrap_or((0, 0));
-
-                // Update stored config (merge with existing)
-                let config = self.ewm.output_config.entry(name.clone()).or_default();
-                if width.is_some() || height.is_some() || refresh.is_some() {
-                    // Fall back to current mode for unspecified parameters
-                    let w = width
-                        .unwrap_or_else(|| current_mode.map(|mode| mode.size.w).unwrap_or(1920));
-                    let h = height
-                        .unwrap_or_else(|| current_mode.map(|mode| mode.size.h).unwrap_or(1080));
-                    config.mode = Some(output_mode::Mode {
-                        custom,
-                        mode: output_mode::ConfiguredMode {
-                            width: w as u16,
-                            height: h as u16,
-                            refresh,
-                        },
-                    });
-                }
-                if modeline.is_some() {
-                    config.modeline = modeline;
-                }
-                if x.is_some() || y.is_some() {
-                    config.position =
-                        Some((x.unwrap_or(current_pos.0), y.unwrap_or(current_pos.1)));
-                }
-                if let Some(s) = scale {
-                    config.scale = Some(s);
-                }
-                if let Some(t) = transform {
-                    config.transform = Some(backend::int_to_transform(t));
-                }
-                if let Some(e) = enabled {
-                    config.enabled = e;
-                }
-
-                // Apply the config (adjusts pointer if geometry changed)
-                self.apply_output_config_for(&name);
-            }
-            ModuleCommand::ImPreedit { text, surface_id } => {
-                if self.ewm.active_text_input_surface_id() == Some(surface_id) {
-                    self.ewm.preedit_active_text_input(text);
-                }
-            }
-            ModuleCommand::ImCommit { text, surface_id } => {
-                let active_surface_id = self.ewm.active_text_input_surface_id();
-                match self
-                    .ewm
-                    .im_text_input
-                    .commit(active_surface_id, surface_id, text)
-                {
-                    im::text_input::CommitResult::Deliver(text) => {
-                        self.ewm.commit_active_text_input(text);
-                    }
-                    im::text_input::CommitResult::Queued => {
-                        debug!("ImCommit: queued (surface_id={surface_id})");
-                    }
-                    im::text_input::CommitResult::DroppedStale => {
-                        debug!("ImCommit: dropped stale commit (surface_id={surface_id})");
-                    }
-                }
-            }
-            ModuleCommand::TextInputReplace { text, surface_id } => {
-                let active_surface_id = self.ewm.active_text_input_surface_id();
-                match self
-                    .ewm
-                    .im_text_input
-                    .replace(active_surface_id, surface_id, text)
-                {
-                    im::text_input::ReplaceResult::Deliver(r) => {
-                        self.ewm.deliver_replace_ack(surface_id, r);
-                    }
-                    im::text_input::ReplaceResult::Queued => {
-                        debug!("TextInputReplace: queued (surface_id={surface_id})");
-                    }
-                    im::text_input::ReplaceResult::DroppedStale => {
-                        debug!("TextInputReplace: dropped stale replace (surface_id={surface_id})");
-                        self.ewm
-                            .queue_event(Event::TextInputReplaceDropped { surface_id });
-                    }
-                }
-            }
-            ModuleCommand::TextInputForwardKey {
-                surface_id,
-                keycode,
-                ctrl,
-                alt,
-                shift,
-                logo,
-            } => {
-                self.forward_text_input_key(surface_id, keycode, ctrl, alt, shift, logo);
-            }
-            ModuleCommand::SendKey { surface_id, keys } => {
-                if surface_id.is_none_or(|id| id == self.ewm.focused_surface_id()) {
-                    for key in keys {
-                        let Some(code) = key
-                            .key
-                            .keysym()
-                            .and_then(|k| self.ewm.keyboard.keycode_for_keysym(k))
-                        else {
-                            continue;
-                        };
-                        let mods = (key.ctrl, key.alt, key.shift, key.logo);
-                        self.tap_key(code.raw(), mods);
-                    }
-                }
-            }
-            ModuleCommand::TextInputIntercept { enabled } => {
-                if self.ewm.text_input_intercept != enabled {
-                    info!("Text input intercept: {}", enabled);
-                    self.ewm.text_input_intercept = enabled;
-                }
-            }
-            ModuleCommand::ConfigureTextInput { provider } => {
-                self.set_text_input_provider(provider);
-            }
-            ModuleCommand::KeyboardCaptureChanged { active } => {
-                trace!("Keyboard capture changed: active={}", active);
-                if active {
-                    self.ewm.cancel_command_repeat();
-                }
-            }
-            ModuleCommand::SwitchLayout { layout } => {
-                let index = self.ewm.xkb_layout_names.iter().position(|l| l == &layout);
-                match index {
-                    Some(idx) => {
-                        use smithay::input::keyboard::Layout;
-                        let keyboard = self.ewm.keyboard.clone();
-                        let current_focus = self.ewm.keyboard_focus.clone();
-                        keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
-                        keyboard.with_xkb_state(self, |mut context| {
-                            context.set_layout(Layout(idx as u32));
-                        });
-                        keyboard.set_focus(self, current_focus, SERIAL_COUNTER.next_serial());
-                        self.ewm.xkb_current_layout = idx;
-                        info!("Switched to layout: {} (index {})", layout, idx);
-                        self.ewm.queue_event(Event::LayoutSwitched {
-                            layout: layout.clone(),
-                            index: idx,
-                        });
-                    }
-                    None => {
-                        warn!(
-                            "Layout '{}' not found. Available: {:?}",
-                            layout, self.ewm.xkb_layout_names
-                        );
-                    }
-                }
-            }
-            ModuleCommand::GetLayouts => {
-                self.ewm.queue_event(Event::Layouts {
-                    layouts: self.ewm.xkb_layout_names.clone(),
-                    current: self.ewm.xkb_current_layout,
-                });
-            }
-            ModuleCommand::GetDebugState(reply) => {
-                let outputs = self.backend.output_info_list(&self.ewm.sorted_outputs);
-                let state = elisp::serde::to_value(self.ewm.debug_state(&outputs))
-                    .unwrap_or(elisp::Value::NIL);
-                let _ = reply.send(state);
-            }
-            ModuleCommand::EntryUnderFloatingCenter {
-                floating_frame_id,
-                reply,
-            } => {
-                let entry = self
-                    .ewm
-                    .tiled_entry_under_floating_center(floating_frame_id);
-                let _ = reply.send(entry);
-            }
-            ModuleCommand::CreateActivationToken(reply) => {
-                let (token_ref, _) = self.ewm.activation_state.create_external_token(None);
-                let token = token_ref.clone();
-                let token_str = token.as_str().to_string();
-                debug!("Created activation token for Emacs: {}", token_str);
-                if reply.send(token_str).is_err() {
-                    // Emacs gave up before we replied. The token would otherwise leak.
-                    self.ewm.activation_state.remove_token(&token);
-                }
-            }
-            ModuleCommand::SetSelection { text } => {
-                let data: Arc<[u8]> = Arc::from(text.into_bytes().into_boxed_slice());
-                set_data_device_selection(
-                    &self.ewm.display_handle,
-                    &self.ewm.seat,
-                    vec![
-                        "text/plain;charset=utf-8".into(),
-                        "text/plain".into(),
-                        "UTF8_STRING".into(),
-                    ],
-                    data,
-                );
-                debug!("Selection set from Emacs");
-            }
-            ModuleCommand::Layout { frames } => {
-                let dropped = strip::dropped_frame_ids(self.ewm.layout.placed_frames(), &frames);
-                self.store_close_snapshots(&dropped);
-                self.apply_layout(frames);
-                self.refresh_pointer_after_layout();
-            }
-            ModuleCommand::MoveFrame { id, delta } => {
-                self.ewm.move_frame(id, delta);
-                self.refresh_pointer_after_layout();
-            }
-            ModuleCommand::MoveFloatingFrame { id, dx, dy } => {
-                self.ewm.move_floating_frame(id, dx, dy);
-                self.refresh_pointer_after_layout();
-            }
-            ModuleCommand::ResizeFloatingFrame { id, dw, dh } => {
-                self.ewm.resize_floating_frame(id, dw, dh);
-                self.refresh_pointer_after_layout();
-            }
-            ModuleCommand::ToggleFullscreen { entry_id } => {
-                if let Some(id) = self.ewm.layout.entry_surface_id(entry_id) {
-                    let on = !self.ewm.pending_fullscreen(id);
-                    self.set_surface_fullscreen(id, on);
-                }
-            }
-            ModuleCommand::SetFullscreen { entry_id, on } => {
-                if let Some(id) = self.ewm.layout.entry_surface_id(entry_id) {
-                    self.set_surface_fullscreen(id, on);
-                }
-            }
-            ModuleCommand::ConfigureInput { configs } => {
-                info!("Input config updated: {} entries", configs.len());
-
-                // Extract keyboard settings before storing configs (avoids borrow conflict).
-                let kb_repeat = input::effective_keyboard_repeat(&configs);
-                let kb_xkb = configs
-                    .iter()
-                    .find(|c| {
-                        c.device.is_none()
-                            && c.device_type == Some(crate::input::DeviceType::Keyboard)
-                    })
-                    .and_then(|kb| {
-                        kb.xkb_layouts.clone().map(|layouts| {
-                            (layouts, kb.xkb_variants.clone(), kb.xkb_options.clone())
-                        })
-                    });
-
-                self.ewm.input_configs = configs;
-                for mut device in self.ewm.libinput_devices.iter().cloned() {
-                    input::apply_libinput_settings(&mut device, &self.ewm.input_configs);
-                }
-
-                // Apply the same effective repeat settings to Wayland clients
-                // and intercepted command/text-input repeat.
-                let (rate, delay) = kb_repeat;
-                let keyboard = self.ewm.keyboard.clone();
-                keyboard.change_repeat_info(rate, delay);
-                self.ewm.configure_keyboard_repeat(rate, delay);
-                info!("Keyboard repeat: rate={}, delay={}", rate, delay);
-
-                // Apply XKB layout settings
-                if let Some((layouts_str, variants, options)) = kb_xkb {
-                    let layout_names: Vec<String> = layouts_str
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                    if !layout_names.is_empty() {
-                        let variants_str = variants.as_deref().unwrap_or("");
-                        let xkb_config = smithay::input::keyboard::XkbConfig {
-                            layout: &layouts_str,
-                            variant: variants_str,
-                            options: options.clone(),
-                            ..Default::default()
-                        };
-                        let keyboard = self.ewm.keyboard.clone();
-                        if let Err(e) = keyboard.set_xkb_config(self, xkb_config) {
-                            error!("Failed to configure XKB: {:?}", e);
-                        } else {
-                            self.ewm.xkb_layout_names = layout_names.clone();
-                            self.ewm.xkb_current_layout = 0;
-                            info!(
-                                "Configured XKB layouts: {:?}, variants: {:?}, options: {:?}",
-                                layout_names, variants, options
-                            );
-                            self.ewm.queue_event(Event::Layouts {
-                                layouts: layout_names,
-                                current: 0,
-                            });
-                        }
-                    }
-                }
-            }
-            ModuleCommand::ConfigureIdle {
-                timeout_secs,
-                action,
-            } => {
-                let idle_action = if action == "blank" {
-                    IdleAction::DeactivateMonitors
-                } else {
-                    IdleAction::RunCommand(action)
-                };
-                self.ewm
-                    .configure_idle(timeout_secs.map(Duration::from_secs), idle_action);
-            }
-            ModuleCommand::ConfigureCursorHide {
-                timeout_secs,
-                hide_when_typing,
-            } => {
-                self.ewm
-                    .configure_cursor_hide(timeout_secs.map(Duration::from_secs), hide_when_typing);
-            }
-            ModuleCommand::ConfigureCursor { config } => {
-                self.ewm.cursor_manager.reload(&config.theme, config.size);
-                self.backend.clear_cursor_texture_cache();
-                let env_vars = config.env_vars();
-                self.backend.import_environment(&env_vars);
-                self.ewm.queue_event(Event::Environment { vars: env_vars });
-                self.ewm.queue_redraw_for_pointer();
-            }
-            ModuleCommand::ConfigureFocusFollowsMouse { state: setting } => {
-                self.ewm.focus_follows_mouse_mode = setting;
-            }
-            ModuleCommand::SetDragSource { active } => {
-                self.ewm.emacs_drag_source = active;
-            }
-            ModuleCommand::ConfigureUnfocusedAlpha { alpha } => {
-                self.ewm.unfocused_alpha = alpha.clamp(0.0, 1.0);
-            }
-            ModuleCommand::ConfigureBlur { config } => {
-                if self.ewm.blur_config != config {
-                    self.ewm.blur_config = config;
-                    self.ewm.queue_redraw_all();
-                }
-            }
-            ModuleCommand::ConfigureAnimations { enabled } => {
-                self.ewm.animations_clock.set_complete_instantly(!enabled);
-            }
-            ModuleCommand::ConfigureOverview {
-                zoom,
-                backdrop_color,
-            } => {
-                self.ewm.overview.set_zoom(zoom);
-                self.ewm.overview.backdrop_color = backdrop_color;
-                self.ewm.queue_redraw_all();
-            }
-            ModuleCommand::ConfigureGestures { gestures } => self.ewm.gestures = gestures,
-            ModuleCommand::ConfigureBackground { color } => {
-                self.ewm.overview.background_color = color;
-                self.ewm.queue_redraw_all();
-            }
-            ModuleCommand::SetIdleInhibited { inhibited } => {
-                self.ewm.manual_idle_inhibited = inhibited;
-            }
-            ModuleCommand::ConfigurePower {
-                closed_lid_suspends,
-                sepia,
-            } => {
-                let lid_changed =
-                    std::mem::replace(&mut self.ewm.closed_lid_suspends, closed_lid_suspends)
-                        != closed_lid_suspends;
-                self.ewm.set_sepia(sepia);
-                if lid_changed && let Some(drm) = self.backend.as_drm_mut() {
-                    drm.reapply_lid_policy(
-                        &mut self.ewm,
-                        crate::backend::drm::LidPolicyReason::Config,
-                    );
-                }
-            }
-            ModuleCommand::PowerOffMonitors => {
-                self.ewm.deactivate_monitors();
-                self.backend.clear_all_surfaces();
-            }
-            ModuleCommand::PowerOnMonitors => self.ewm.activate_monitors(),
-
-            ModuleCommand::Initialized => {
-                // Force-resend keyboard.enter. PGTK silently dropped the
-                // initial one (sent before its first surface roundtrip).
-                info!("Client initialized; replaying keyboard focus");
-                // set_focus() sends nothing when the target is unchanged, so
-                // drop the protocol focus or the replay is a no-op.
-                let keyboard = self.ewm.keyboard.clone();
-                keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
-                self.ewm.keyboard_focus = None;
-                self.sync_keyboard_focus();
-            }
-        }
+    /// Offer `text` as the clipboard selection on behalf of Emacs.
+    pub(crate) fn set_selection(&mut self, text: String) {
+        let data: Arc<[u8]> = Arc::from(text.into_bytes().into_boxed_slice());
+        set_data_device_selection(
+            &self.ewm.display_handle,
+            &self.ewm.seat,
+            vec![
+                "text/plain;charset=utf-8".into(),
+                "text/plain".into(),
+                "UTF8_STRING".into(),
+            ],
+            data,
+        );
+        debug!("Selection set from Emacs");
     }
 
     /// Read clipboard data from the current client selection and forward to Emacs.

@@ -70,11 +70,12 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Transform};
 use smithay::wayland::compositor::RegionAttributes;
 use smithay::wayland::pointer_constraints::{PointerConstraint, with_pointer_constraint};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::event::TextInputKey;
 use crate::im::TextInputProvider;
 use crate::im::repeat::{HeldKeyOwner, InterceptRepeat};
+use crate::module::ChordSpec;
 use crate::{
     Action, FocusSource, InterceptDispatch, InterceptedKey, Notify, State, SurfaceHit, module,
     tracy_span,
@@ -2272,5 +2273,130 @@ pub fn apply_libinput_settings(device: &mut libinput::Device, configs: &[InputCo
         ) {
             let _ = device.config_tap_set_button_map(map);
         }
+    }
+}
+
+impl State {
+    /// Store the input configs and apply them to the devices, the keyboard repeat and XKB.
+    pub(crate) fn configure_input(&mut self, configs: Vec<InputConfigEntry>) {
+        info!("Input config updated: {} entries", configs.len());
+
+        // Extract keyboard settings before storing configs (avoids borrow conflict).
+        let kb_repeat = effective_keyboard_repeat(&configs);
+        let kb_xkb = configs
+            .iter()
+            .find(|c| {
+                c.device.is_none() && c.device_type == Some(crate::input::DeviceType::Keyboard)
+            })
+            .and_then(|kb| {
+                kb.xkb_layouts
+                    .clone()
+                    .map(|layouts| (layouts, kb.xkb_variants.clone(), kb.xkb_options.clone()))
+            });
+
+        self.ewm.input_configs = configs;
+        for mut device in self.ewm.libinput_devices.iter().cloned() {
+            apply_libinput_settings(&mut device, &self.ewm.input_configs);
+        }
+
+        // Apply the same effective repeat settings to Wayland clients
+        // and intercepted command/text-input repeat.
+        let (rate, delay) = kb_repeat;
+        let keyboard = self.ewm.keyboard.clone();
+        keyboard.change_repeat_info(rate, delay);
+        self.ewm.configure_keyboard_repeat(rate, delay);
+        info!("Keyboard repeat: rate={}, delay={}", rate, delay);
+
+        // Apply XKB layout settings
+        if let Some((layouts_str, variants, options)) = kb_xkb {
+            let layout_names: Vec<String> = layouts_str
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if !layout_names.is_empty() {
+                let variants_str = variants.as_deref().unwrap_or("");
+                let xkb_config = smithay::input::keyboard::XkbConfig {
+                    layout: &layouts_str,
+                    variant: variants_str,
+                    options: options.clone(),
+                    ..Default::default()
+                };
+                let keyboard = self.ewm.keyboard.clone();
+                if let Err(e) = keyboard.set_xkb_config(self, xkb_config) {
+                    error!("Failed to configure XKB: {:?}", e);
+                } else {
+                    self.ewm.xkb_layout_names = layout_names.clone();
+                    self.ewm.xkb_current_layout = 0;
+                    info!(
+                        "Configured XKB layouts: {:?}, variants: {:?}, options: {:?}",
+                        layout_names, variants, options
+                    );
+                    self.ewm.queue_event(crate::Event::Layouts {
+                        layouts: layout_names,
+                        current: 0,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Switch the keyboard to the XKB layout called `layout`, telling Emacs.
+    pub(crate) fn switch_xkb_layout(&mut self, layout: String) {
+        let index = self.ewm.xkb_layout_names.iter().position(|l| l == &layout);
+        match index {
+            Some(idx) => {
+                use smithay::input::keyboard::Layout;
+                let keyboard = self.ewm.keyboard.clone();
+                let current_focus = self.ewm.keyboard_focus.clone();
+                keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
+                keyboard.with_xkb_state(self, |mut context| {
+                    context.set_layout(Layout(idx as u32));
+                });
+                keyboard.set_focus(self, current_focus, SERIAL_COUNTER.next_serial());
+                self.ewm.xkb_current_layout = idx;
+                info!("Switched to layout: {} (index {})", layout, idx);
+                self.ewm.queue_event(crate::Event::LayoutSwitched {
+                    layout: layout.clone(),
+                    index: idx,
+                });
+            }
+            None => {
+                warn!(
+                    "Layout '{}' not found. Available: {:?}",
+                    layout, self.ewm.xkb_layout_names
+                );
+            }
+        }
+    }
+
+    /// Tap `keys` on the focused surface, or on none when `surface_id` names another.
+    pub(crate) fn send_keys(&mut self, surface_id: Option<u64>, keys: Vec<ChordSpec>) {
+        if surface_id.is_none_or(|id| id == self.ewm.focused_surface_id()) {
+            for key in keys {
+                let Some(code) = key
+                    .key
+                    .keysym()
+                    .and_then(|k| self.ewm.keyboard.keycode_for_keysym(k))
+                else {
+                    continue;
+                };
+                let mods = (key.ctrl, key.alt, key.shift, key.logo);
+                self.tap_key(code.raw(), mods);
+            }
+        }
+    }
+
+    /// Resend keyboard.enter once Emacs is ready for it.
+    pub(crate) fn replay_keyboard_focus(&mut self) {
+        // Force-resend keyboard.enter. PGTK silently dropped the
+        // initial one (sent before its first surface roundtrip).
+        info!("Client initialized; replaying keyboard focus");
+        // set_focus() sends nothing when the target is unchanged, so
+        // drop the protocol focus or the replay is a no-op.
+        let keyboard = self.ewm.keyboard.clone();
+        keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
+        self.ewm.keyboard_focus = None;
+        self.sync_keyboard_focus();
     }
 }
