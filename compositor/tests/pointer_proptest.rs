@@ -432,6 +432,11 @@ fn apply_op(h: &mut Harness, op: &Op) {
         h.fix
             .map_toplevel(&mut h.client, &h.toplevel, Size::from((w, height)));
         h.answered_configure = h.last_configure;
+        // The answer can move the pointer focus, and the clients learn of it before the op.
+        h.roundtrip_all();
+        let events = h.client.drain_events();
+        h.fold_events(&events);
+        h.app.fold(&h.client, &events);
     }
     h.focused_entry_before_op = h.fix.ewm_ref().focused_entry_id();
     h.focus_before_op = h.union_focus();
