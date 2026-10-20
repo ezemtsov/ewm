@@ -1,9 +1,12 @@
-{ pkgs ? import <nixpkgs> {} }:
+{ pkgs ? import <nixpkgs> {}, packages ? [ ] }:
 
 pkgs.mkShell {
+  inherit packages;
+
   nativeBuildInputs = with pkgs; [
     pkg-config
     cargo
+    clippy
     rustc
     rust-analyzer
   ];

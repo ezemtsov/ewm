@@ -8,34 +8,43 @@
   outputs =
     { self, nixpkgs }:
     let
-      supportedSystems = [
-        "x86_64-linux"
-        "aarch64-linux"
-      ];
-      forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
+      perSystem =
+        f:
+        nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" ] (
+          system: f (nixpkgs.legacyPackages.${system}.extend self.overlays.default)
+        );
     in
     {
-      packages = forAllSystems (
-        system:
-        let
-          pkgs = nixpkgs.legacyPackages.${system};
-        in
-        {
-          default = pkgs.callPackage ./nix/default.nix { };
-        }
-      );
-
       overlays.default = import ./nix/overlay.nix;
 
       nixosModules.default = import ./nix/service.nix;
 
-      devShells = forAllSystems (
-        system:
+      packages = perSystem (pkgs: {
+        default = pkgs.ewm;
+        inherit (pkgs) emacs31-pwayl;
+      });
+
+      checks = perSystem (pkgs: {
+        inherit (pkgs) ewm;
+        ewm-pwayl = pkgs.ewm.override { emacsPackage = pkgs.emacs31-pwayl; };
+      });
+
+      devShells = perSystem (
+        pkgs:
         let
-          pkgs = nixpkgs.legacyPackages.${system};
+          shell = packages: import ./shell.nix { inherit pkgs packages; };
         in
         {
-          default = import ./shell.nix { inherit pkgs; };
+          default = shell [ ];
+          # rustfmt stays out of shell.nix, where the rustup nightly provides it.
+          ci-pgtk = shell [
+            pkgs.rustfmt
+            pkgs.emacs-pgtk
+          ];
+          ci-pwayl = shell [
+            pkgs.rustfmt
+            pkgs.emacs31-pwayl
+          ];
         }
       );
     };

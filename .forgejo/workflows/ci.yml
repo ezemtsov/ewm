@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# A newer push to the same branch or pull request supersedes the running job.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: aasgard
+    defaults:
+      run:
+        shell: nix develop .#ci-pgtk -c bash -e {0}
+    steps:
+      - name: checkout
+        shell: bash
+        run: |
+          git init -q
+          git fetch -q --depth 1 "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$GITHUB_SHA"
+          git checkout -q --force FETCH_HEAD
+          git clean -qfdx
+      - name: rustfmt
+        run: cargo fmt --check --manifest-path compositor/Cargo.toml
+      - name: clippy
+        run: |
+          cargo clippy --manifest-path compositor/Cargo.toml --all-targets -- -D warnings
+          cargo clippy --manifest-path compositor/Cargo.toml --all-targets --features screencast -- -D warnings
+      - name: tests under pgtk
+        run: cargo test --manifest-path compositor/Cargo.toml --no-fail-fast
+      - name: tests under pwayl
+        shell: nix develop .#ci-pwayl -c bash -e {0}
+        run: cargo test --manifest-path compositor/Cargo.toml --no-fail-fast
+      - name: nix flake check
+        shell: bash
+        run: nix flake check -L
