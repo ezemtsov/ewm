@@ -76,16 +76,20 @@ No-op if N is past the number of frames on this output."
   "Move the selected frame to the next output in order, wrapping around.")
 
 (ewm--define-action ewm-output-focus-left (focus-output :dx -1 :dy 0)
-  "Focus the active frame on the output to the left of the current one.")
+  "Move the keyboard to the output to the left of the current one.")
 
 (ewm--define-action ewm-output-focus-right (focus-output :dx 1 :dy 0)
-  "Focus the active frame on the output to the right of the current one.")
+  "Move the keyboard to the output to the right of the current one.")
 
 (ewm--define-action ewm-output-focus-up (focus-output :dx 0 :dy -1)
-  "Focus the active frame on the output above the current one.")
+  "Move the keyboard to the output above the current one.")
 
 (ewm--define-action ewm-output-focus-down (focus-output :dx 0 :dy 1)
-  "Focus the active frame on the output below the current one.")
+  "Move the keyboard to the output below the current one.")
+
+(ewm--define-action ewm-float-focus-toggle float-focus-toggle
+  "Move the keyboard between the strip and the floats of the current output.
+From a float it goes to the active strip frame, else to the topmost shown float.")
 
 (defun ewm-focus-left ()
   "Focus the visible window to the left; cross output at the frame edge."

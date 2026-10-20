@@ -4,6 +4,7 @@ use std::time::Duration;
 use proptest::prelude::*;
 
 use super::*;
+use crate::Action;
 use crate::testing::{
     self, HEAD_A, HEAD_B, HEAD_C, PROP_HEADS, add_prop_outputs, frame_with_entry, frame_with_width,
     nz, order_from_keys, set_sorted_output_order, strip_with_frame_ids,
@@ -529,6 +530,80 @@ proptest! {
         prop_assert_eq!(strip.active_frame_id(), Some(focused));
         prop_assert_eq!(fix.ewm_ref().focused_frame_id(), focused);
     }
+
+    // A strip switch leaves the keyboard on a float it keeps on screen and takes it from one it
+    // hides.
+    #[test]
+    fn a_strip_switch_leaves_the_keyboard_on_a_shown_float(
+        len in 1usize..=4,
+        raw_active in 0usize..4,
+        pinned in any::<bool>(),
+        delta in -2i32..=2,
+    ) {
+        let mut fix = testing::Fixture::new().unwrap();
+        fix.add_output(HEAD_A, 1600, 900);
+        let ids: Vec<u64> = (0..len).map(|idx| 100 + idx as u64).collect();
+        fix.tile(HEAD_A, ids.iter().map(|&id| frame_with_width(id, 800.0)).collect());
+        let active_idx = raw_active % len;
+        let active = ids[active_idx];
+        fix.ewm().set_focus_frame(active, "test", false);
+        fix.float(HEAD_A, vec![frame_with_width(200, 640.0)]);
+        if pinned {
+            fix.ewm().layout.frame_mut(200).unwrap().pinned_to = Some(active);
+        }
+        fix.ewm().set_focus_frame(200, "test", false);
+
+        fix.do_action(Action::FocusFrame { delta });
+
+        let to = active_idx as i32 + delta;
+        let shown = if (0..len as i32).contains(&to) { ids[to as usize] } else { active };
+        prop_assert_eq!(fix.strip(HEAD_A).active_frame_id(), Some(shown));
+        let expected = if pinned && shown != active { shown } else { 200 };
+        prop_assert_eq!(fix.ewm_ref().focused_frame_id(), expected);
+    }
+
+    // Closing the focused float hands the keyboard to the topmost remaining float when that is
+    // shown, else to the strip.
+    #[test]
+    fn a_closing_float_hands_the_keyboard_to_the_next_shown_float(
+        len in 1usize..=4,
+        raw_focused in 0usize..4,
+        hidden in any::<[bool; 4]>(),
+    ) {
+        let mut fix = testing::Fixture::new().unwrap();
+        fix.add_output(HEAD_A, 1600, 900);
+        fix.tile(HEAD_A, vec![frame_with_width(100, 800.0), frame_with_width(101, 800.0)]);
+        fix.ewm().set_focus_frame(100, "test", false);
+        let ids: Vec<u64> = (0..len).map(|idx| 200 + idx as u64).collect();
+        fix.float(HEAD_A, ids.iter().map(|&id| frame_with_width(id, 640.0)).collect());
+        for (idx, &id) in ids.iter().enumerate() {
+            if hidden[idx] {
+                // Pinned to the inactive frame, off screen.
+                fix.ewm().layout.frame_mut(id).unwrap().pinned_to = Some(101);
+            }
+        }
+        let focused = ids[raw_focused % len];
+        fix.ewm().set_focus_frame(focused, "test", false);
+        let output = fix.output(HEAD_A);
+        let (active, next) = {
+            let monitor = fix.ewm_ref().layout.monitor_of(&output).unwrap();
+            let next = monitor
+                .floating
+                .frames()
+                .iter()
+                .find(|float| float.surface_id != focused)
+                .map(|float| (float.surface_id, monitor.float_shown(float)));
+            (monitor.strip.active_frame_id().unwrap(), next)
+        };
+
+        fix.ewm().handle_toplevel_destroyed_by_id(focused);
+
+        let expected = match next {
+            Some((id, true)) => id,
+            _ => active,
+        };
+        prop_assert_eq!(fix.ewm_ref().focused_frame_id(), expected);
+    }
 }
 
 /// Every way the compositor moves frames around, on the bare layout.
@@ -567,6 +642,8 @@ enum LayoutOp {
         frame: u64,
     },
     Activate(u64),
+    /// A strip frame comes into view without taking the keyboard, as a switch under a float.
+    Show(u64),
     Merge(Vec<u64>),
     DragBegin {
         id: u64,
@@ -621,6 +698,7 @@ fn layout_op() -> impl Strategy<Value = LayoutOp> {
         1 => output.clone().prop_map(LayoutOp::AdoptHomeless),
         1 => (id.clone(), id.clone()).prop_map(|(float, frame)| LayoutOp::Pin { float, frame }),
         1 => id.clone().prop_map(LayoutOp::Activate),
+        1 => id.clone().prop_map(LayoutOp::Show),
         1 => prop::collection::vec(id.clone(), 0..6).prop_map(LayoutOp::Merge),
         1 => (id.clone(), output.clone(), DRAG_COORD, DRAG_COORD)
             .prop_map(|(id, output, px, py)| LayoutOp::DragBegin { id, output, px, py }),
@@ -787,6 +865,11 @@ fn apply_layout_op(
             {
                 float.pinned_to = Some(frame);
             }
+            // The compositor settles the focus after every pin change.
+            layout.settle_focus();
+        }
+        LayoutOp::Show(id) => {
+            layout.show_strip_frame(id);
         }
         LayoutOp::Activate(id) => {
             if let Some((output, _)) = layout.activate_frame(id, None)

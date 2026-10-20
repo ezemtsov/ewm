@@ -774,14 +774,17 @@ pub enum InterceptDispatch {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Action {
-    /// Focus the strip frame `delta` slots away, counting from the shown frame under a float.
+    /// Show the strip frame `delta` slots away, counting from the shown frame under a float. The
+    /// keyboard follows unless a float keeps it on screen.
     FocusFrame { delta: i32 },
-    /// Focus the `n`th strip frame, counting from 1.
+    /// Show the `n`th strip frame, counting from 1, the keyboard following likewise.
     FocusNthFrame { n: usize },
     /// Focus frame `id`, as a workspace client asks.
     ActivateFrame { id: u64 },
-    /// Focus the active frame on the output in direction `(dx, dy)`.
+    /// Focus the frame holding the keyboard on the output in direction `(dx, dy)`.
     FocusOutput { dx: i32, dy: i32 },
+    /// Move the keyboard between the strip and the floats of the current output.
+    FloatFocusToggle,
     /// Move the focused strip frame `delta` slots.
     MoveFrame { delta: i32 },
     /// Move the focused frame to the next output in order, wrapping around.
@@ -1799,7 +1802,8 @@ impl Ewm {
         {
             self.flush_pending_title_event(surface_id);
         }
-        self.activate_frame(frame_id, entry_id);
+        let shown = self.layout.activate_frame(frame_id, entry_id);
+        self.settle_shown(shown);
         self.clear_focused_urgency();
         if notify_emacs {
             self.queue_event(Event::Focus {
@@ -2087,16 +2091,17 @@ impl Ewm {
         Some(output)
     }
 
-    /// End a strip swipe on `output`: snap to the nearest frame and focus it.
+    /// End a strip swipe on `output`: snap to the nearest frame, the keyboard following unless a
+    /// float keeps it on screen.
     pub fn strip_gesture_end(&mut self, output: &Output, working_w: f64) {
-        let prev_active_id = self.layout.active_frame_id(output);
-        let target = self.layout.strip_mut(output).and_then(|s| {
-            s.gesture_end(working_w);
-            s.active_frame_id()
-        });
-        self.reconcile_active_for_output(output, prev_active_id);
-        // A swipe that snaps back changes nothing; don't refocus.
-        let target = target.filter(|&id| Some(id) != prev_active_id);
+        let before = self.focused_frame_id();
+        let shown = self.layout.strip_gesture_end(output, working_w);
+        self.settle_shown(shown);
+        // The swiped output takes the keyboard on the frame holding it there, unless it has it.
+        let target = self
+            .layout
+            .focused_frame_on(output)
+            .filter(|&id| id != before);
         if let Some(id) = target {
             if self.pointer_is_on_output(output) {
                 // The frame settles flush with the working area.
@@ -2114,7 +2119,6 @@ impl Ewm {
                 self.set_focus_frame(id, "gesture", true);
             }
         }
-        self.queue_redraw(output);
     }
 
     /// Focus a frame reached with the pointer; Emacs then anchors mouse-follows-focus.
@@ -4311,16 +4315,16 @@ impl Ewm {
             .map(|(o, _)| o.clone())
     }
 
-    /// Focus the active frame on the output spatially adjacent to the
-    /// current one.  `dx` is `-1`/`+1` for left/right, `dy` is `-1`/`+1`
-    /// for up/down; mixed axes and zero vectors are a no-op.
+    /// Move the keyboard to the output spatially adjacent to the current one, onto the frame that
+    /// last held it there. `dx` is -1 or 1 for left or right, `dy` for up or down, mixed axes and
+    /// zero vectors a no-op.
     pub fn focus_output_direction(&mut self, dx: i32, dy: i32) {
         let Some(cur) = self.active_output().cloned() else {
             return;
         };
         let target = self.output_in_direction(&cur, dx, dy);
         let Some(target) = target else { return };
-        let Some(id) = self.layout.active_frame_id(&target) else {
+        let Some(id) = self.layout.focused_frame_on(&target) else {
             return;
         };
         self.set_focus_frame(id, "focus_output_direction", true);
@@ -4343,7 +4347,8 @@ impl Ewm {
         }
     }
 
-    /// Focus strip frame `pick(anchor)`, anchored at the focused frame, else at the shown one.
+    /// Show strip frame `pick(anchor)`, anchored at the focused frame, else at the shown one. The
+    /// keyboard follows a frame the change hides.
     pub(crate) fn focus_strip_frame(&mut self, pick: impl FnOnce(usize) -> Option<usize>) {
         let focused = self.focused_frame_id();
         let target = self.layout.frame_location(focused).and_then(|location| {
@@ -4354,6 +4359,34 @@ impl Ewm {
                 strip.index_of(focused)
             };
             strip.frame_ids().nth(pick(anchor?)?)
+        });
+        if let Some(id) = target {
+            let before = self.focused_frame_id();
+            let shown = self.layout.show_strip_frame(id);
+            self.settle_shown(shown);
+            // The change hid the frame holding the keyboard, Emacs follows it.
+            let after = self.focused_frame_id();
+            if after != before {
+                self.set_focus_frame(after, "action", true);
+            }
+        }
+    }
+
+    /// Move the keyboard from a float to the active strip frame, else to the topmost shown float.
+    pub(crate) fn toggle_float_focus(&mut self) {
+        let focused = self.focused_frame_id();
+        let target = self.layout.frame_location(focused).and_then(|location| {
+            let monitor = location.monitor;
+            if location.floating {
+                monitor.strip.active_frame_id()
+            } else {
+                monitor
+                    .floating
+                    .frames()
+                    .iter()
+                    .find(|float| monitor.float_shown(float))
+                    .map(|float| float.surface_id)
+            }
         });
         if let Some(id) = target {
             self.set_focus_frame(id, "action", true);
@@ -4958,14 +4991,10 @@ impl Ewm {
 
         if active_close {
             // Output may be unknown if lisp pruned the frame before destroy fired.
-            let refocus = output
-                .as_ref()
-                .and_then(|output| self.layout.active_frame_id(output))
-                .or_else(|| {
-                    self.pointer_output
-                        .as_ref()
-                        .and_then(|output| self.layout.active_frame_id(output))
-                })
+            let refocus = [output.as_ref(), self.pointer_output.as_ref()]
+                .into_iter()
+                .flatten()
+                .find_map(|output| self.layout.focused_frame_on(output))
                 .or_else(|| Some(self.focused_frame_id()).filter(|&id| id != 0));
             debug!("Toplevel {} destroyed: refocus -> {:?}", id, refocus);
             return refocus;

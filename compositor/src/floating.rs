@@ -374,8 +374,6 @@ impl FloatingSpace {
         let frame = self.frames.remove(idx);
         if self.active_frame_id == Some(id) {
             self.active_frame_id = self.frames.first().map(|frame| frame.surface_id);
-            // The keyboard leaves with its frame.
-            self.focused = false;
         }
         Some((frame, data))
     }
@@ -461,9 +459,9 @@ impl FloatingSpace {
         self.focused
     }
 
-    /// The strip takes the keyboard back.
-    pub fn unfocus(&mut self) {
-        self.focused = false;
+    /// Hand the keyboard to the active float, or back to the strip.
+    pub fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
     }
 
     fn raise_frame(&mut self, from_idx: usize, to_idx: usize) {

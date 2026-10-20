@@ -558,6 +558,7 @@ impl State {
                 self.ewm.overview(action);
                 self.refresh_pointer_after_scene_change(false);
             }
+            Action::FloatFocusToggle => self.ewm.toggle_float_focus(),
             Action::HideToggle => {
                 self.ewm.hide_toggle();
                 self.refresh_pointer_after_scene_change(false);

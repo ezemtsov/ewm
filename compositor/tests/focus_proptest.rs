@@ -157,6 +157,7 @@ fn action_strategy() -> impl Strategy<Value = Action> {
         ]
         .prop_map(Action::Overview),
         Just(Action::HideToggle),
+        Just(Action::FloatFocusToggle),
     ]
 }
 

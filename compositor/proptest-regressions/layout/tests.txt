@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 7af8a42eb2c764446cb4c84ba2db29e8ecb4af9a12043a9c5d1a16c03b5c75f5 # shrinks to ops = [AddFrame { id: 8, output: 0, floating: true, after: None }, DetachOutput(0), DetachOutput(2), DetachOutput(3), DragBegin { id: 8, output: 1, px: 0.0, py: 0.0 }, DetachOutput(1)], focused = 1
+cc d335618dd7f424fb704f0827664f4164e9e5b6c8bf74f46d527ea6fc8814671d # shrinks to ops = [AddFrame { id: 7, output: 0, floating: true, after: None, filler: false }, AddFrame { id: 1, output: 0, floating: false, after: None, filler: false }, AddFrame { id: 5, output: 0, floating: false, after: None, filler: false }, Pin { float: 7, frame: 5 }]

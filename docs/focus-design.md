@@ -296,6 +296,16 @@ After specific operations:
     after the destination's active frame, makes it that output's active
     frame and keeps keyboard focus on it, and repeated moves carry it round
     the outputs.
+18. **A strip switch leaves the keyboard on a float it keeps on screen.**
+    Next, nth and swiped frame changes show the target frame and take the
+    keyboard only from a strip frame or from a float the switch hides, a
+    pinned one whose frame slides away.  `ewm-float-focus-toggle` moves it
+    between the layers on purpose.
+19. **The floats hold the keyboard only while their active one is shown,
+    and take it from an empty strip.**  Closing the focused float hands the
+    keyboard to the next shown float, else to the strip, and an output whose
+    strip emptied gives it to its topmost float.  Checked by
+    `Layout::verify_invariants`.
 
 ## Why two threads make this hard
 
@@ -440,9 +450,10 @@ the fast path.
 
 Each output has its own strip.  Cross-output navigation (directional
 keybinds, clicks on the other monitor) makes the destination the active
-output, so its active frame is the focused one and the focused view
-follows from that frame's selected view.  The active output is layout
-state, and the focused frame falls out of it.
+output, which gets the keyboard back in the layer that last held it
+there, a float or the strip, and the focused view follows from that
+frame's selected view.  The active output is layout state, and the
+focused frame falls out of it.
 
 Multi-view -- one surface in multiple Emacs windows -- works because
 focus events carry view ids, not surface ids.  When the user clicks the

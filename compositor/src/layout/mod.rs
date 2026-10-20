@@ -170,6 +170,20 @@ impl Monitor {
         }
     }
 
+    /// Whether the active float is on screen.
+    fn active_float_shown(&self) -> bool {
+        self.floating
+            .active_frame()
+            .is_some_and(|float| self.float_shown(float))
+    }
+
+    /// The floats hold the keyboard only while their active one is shown, and take it from an
+    /// empty strip.
+    fn settle_focus_layer(&mut self) {
+        let keep = self.floating.is_focused() || self.strip.frames().is_empty();
+        self.floating.set_focused(self.active_float_shown() && keep);
+    }
+
     /// Keep each float pinned while its frame lasts, a fullscreen float falling back to the active
     /// frame and a float with plain views dropping its pin.
     fn settle_pins(&mut self) {
@@ -403,8 +417,19 @@ impl Layout {
         self.active_output.as_ref()
     }
 
-    /// Keep the keyboard on a frame while a monitor has one, the first in output order otherwise.
-    fn settle_active_output(&mut self) {
+    /// The frame holding the keyboard on `output`, or that would once it is the active output.
+    pub(crate) fn focused_frame_on(&self, output: &Output) -> Option<u64> {
+        self.monitor_of(output)?
+            .focused_frame()
+            .map(|frame| frame.surface_id)
+    }
+
+    /// Settle each floating space's hold on the keyboard, then keep it on a frame while a monitor
+    /// has one, the first in output order otherwise.
+    fn settle_focus(&mut self) {
+        for monitor in &mut self.monitors {
+            monitor.settle_focus_layer();
+        }
         if self.focused_frame().is_none() {
             self.active_output = self
                 .monitors
@@ -578,7 +603,7 @@ impl Layout {
         });
         self.homeless.tiled.extend(frames.tiled);
         self.homeless.floating.extend(frames.floating);
-        self.settle_active_output();
+        self.settle_focus();
     }
 
     /// Replace `output`'s strip wholesale, homing its frames there.
@@ -592,7 +617,7 @@ impl Layout {
         for id in ids {
             self.remember_home_if_missing(id, &home);
         }
-        self.settle_active_output();
+        self.settle_focus();
     }
 
     /// Put new frame `id` on `output` as `placement` says.
@@ -618,10 +643,7 @@ impl Layout {
             }
         }
         self.remember_home_if_missing(id, &home);
-        // The first frame takes the keyboard.
-        if self.focused_frame().is_none() {
-            self.activate_frame(id, None);
-        }
+        self.settle_focus();
     }
 
     /// Frames on monitors, each strip then its floating space.
@@ -703,7 +725,7 @@ impl Layout {
                 monitor.floating.close_frame(id);
             },
         );
-        self.settle_active_output();
+        self.settle_focus();
         removed
     }
 
@@ -737,7 +759,7 @@ impl Layout {
             dst_prev_active,
             ..Moved::default()
         };
-        self.settle_active_output();
+        self.settle_focus();
         moved
     }
 
@@ -845,7 +867,7 @@ impl Layout {
             id,
             |monitor, idx| {
                 monitor.strip.set_active(idx);
-                monitor.floating.unfocus();
+                monitor.floating.set_focused(false);
             },
             |monitor| {
                 monitor.floating.activate_frame(id);
@@ -861,6 +883,30 @@ impl Layout {
         )?;
         self.active_output = Some(activated.0.clone());
         Some(activated)
+    }
+
+    /// Show strip frame `id` active, the keyboard following only a frame that goes off screen.
+    /// Returns the output and its old active frame.
+    pub(crate) fn show_strip_frame(&mut self, id: u64) -> Option<(Output, Option<u64>)> {
+        let shown =
+            self.with_frame_container(id, |monitor, idx| monitor.strip.set_active(idx), |_| {});
+        self.settle_focus();
+        shown
+    }
+
+    /// End the strip swipe on `output`, snapping to the nearest frame. Returns the output and its
+    /// old active frame.
+    pub(crate) fn strip_gesture_end(
+        &mut self,
+        output: &Output,
+        working_w: f64,
+    ) -> Option<(Output, Option<u64>)> {
+        let monitor = self.monitor_of_mut(output)?;
+        let prev_active = monitor.strip.active_frame_id();
+        monitor.strip.gesture_end(working_w);
+        let output = monitor.output.clone();
+        self.settle_focus();
+        Some((output, prev_active))
     }
 
     /// A layout has laid every output out anew.
@@ -895,6 +941,7 @@ impl Layout {
         for monitor in &mut self.monitors {
             monitor.settle_pins();
         }
+        self.settle_focus();
     }
 
     /// The view a fullscreen float pinned over strip frame `id` shows, with the float.
@@ -1215,8 +1262,15 @@ impl Layout {
         );
         for monitor in &self.monitors {
             assert!(
-                !monitor.floating.is_focused() || monitor.floating.active_frame().is_some(),
-                "floating space on {} holds the keyboard with no active float",
+                !monitor.floating.is_focused() || monitor.active_float_shown(),
+                "floating space on {} holds the keyboard with no shown float",
+                monitor.name
+            );
+            assert!(
+                monitor.floating.frames().is_empty()
+                    || !monitor.strip.frames().is_empty()
+                    || monitor.floating.is_focused(),
+                "floats on {} beside an empty strip hold no keyboard",
                 monitor.name
             );
         }
@@ -1469,9 +1523,9 @@ impl Ewm {
             .find(|location| location.entry.surface_id() == Some(id))
     }
 
-    /// Give frame `id` the keyboard, on view `entry` when given, and show it active.
-    pub(crate) fn activate_frame(&mut self, id: u64, entry: Option<LayoutEntryId>) {
-        let Some((output, prev_active)) = self.layout.activate_frame(id, entry) else {
+    /// Follow a layout change of some output's active frame, `shown` its output and old active.
+    pub(crate) fn settle_shown(&mut self, shown: Option<(Output, Option<u64>)>) {
+        let Some((output, prev_active)) = shown else {
             return;
         };
         // An active flip may shift a surface's largest visible entry to or from
