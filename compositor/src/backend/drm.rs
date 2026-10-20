@@ -77,7 +77,7 @@ use smithay::{
             Display, DisplayHandle, backend::GlobalId, protocol::wl_surface::WlSurface,
         },
     },
-    utils::{DeviceFd, Scale},
+    utils::DeviceFd,
     wayland::dmabuf::{DmabufFeedback, DmabufFeedbackBuilder, DmabufGlobal},
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
@@ -94,7 +94,7 @@ use crate::{
         map_initial_output,
     },
     cursor::{CursorConfig, CursorTextureCache},
-    render::{collect_render_elements_for_output, process_screencopies_for_output},
+    render::{RenderFor, collect_render_elements_for_output, process_screencopies_for_output},
     vblank_throttle::VBlankThrottle,
 };
 
@@ -1446,13 +1446,6 @@ impl DrmBackendState {
 
         let render_node = device.render_node;
 
-        let output_scale = Scale::from(output.current_scale().fractional_scale());
-
-        // Get output geometry in global space
-        let output_geo = ewm.space.output_geometry(output).unwrap_or_default();
-        let output_pos = output_geo.loc;
-        let output_size = output_geo.size;
-
         // Get a renderer for the GPU that owns this output.
         let Some(gpu_manager) = &mut self.gpu_manager else {
             return super::RenderResult::Skipped;
@@ -1470,13 +1463,9 @@ impl DrmBackendState {
         let (mut content, cursor) = collect_render_elements_for_output(
             ewm,
             renderer.as_mut(),
-            output_scale,
             &self.cursor_texture_cache,
-            output_pos,
-            output_size,
-            true, // include_cursor
-            true, // include_layers
             output,
+            RenderFor::Display,
         );
         // DRM render needs all elements merged (cursor in front)
         content.splice(0..0, cursor);
@@ -1707,6 +1696,8 @@ impl DrmBackendState {
         // Render to active screen casts
         #[cfg(feature = "screencast")]
         {
+            use smithay::utils::Scale;
+
             use crate::utils::get_monotonic_time;
 
             let output_scale = Scale::from(output.current_scale().fractional_scale());

@@ -17,6 +17,7 @@
 //! 3. **Layout-based rendering**: Views draw at the window rects their layout entries declare,
 //!    Emacs frames at the origin their strip or floating space gives them.
 
+use std::collections::HashMap;
 use std::ptr;
 
 use anyhow::{Context, ensure};
@@ -50,8 +51,10 @@ use tracing::warn;
 
 use crate::cursor::{CursorTextureCache, RenderCursor, XCursor};
 use crate::layout::closing_frame::Closing;
+use crate::layout::overview::Geometry;
 use crate::layout::resize_fade::{Fit, ResizeFade, contents_rect};
 use crate::layout::snapshot::Snapshot;
+use crate::layout::strip;
 use crate::layout::{FrameLocation, LayoutEntryLocation};
 use crate::protocols::screencopy::{Screencopy, ScreencopyBuffer};
 use crate::render_helpers::background_effect;
@@ -60,7 +63,7 @@ use crate::render_helpers::shadow_style::{BackgroundEffect, Blur, CornerRadius};
 use crate::render_helpers::texture::TextureRenderElement;
 use crate::render_helpers::zoom::ZoomRenderElement;
 use crate::surface::SurfaceState;
-use crate::{Ewm, LayoutEntry, State, tracy_span};
+use crate::{Ewm, LayoutEntry, LayoutEntryId, State, tracy_span};
 
 /// Render a window's surface tree without its popups. Popups are emitted once
 /// per surface via `window_popup_placements`. Smithay's `Window::render_elements`
@@ -202,23 +205,28 @@ fn push_background_effect<E: From<FramebufferEffectElement>>(
     );
 }
 
+/// Where a view's contents sit on the output, at `element_scale`, cropped to `clip`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ViewBox {
+    pub loc: Point<i32, Physical>,
+    pub element_scale: Scale<f64>,
+    pub output_scale: Scale<f64>,
+    pub clip: Rectangle<i32, Physical>,
+}
+
 /// Blur behind one view of `window`, clipped like the view itself.
-#[allow(clippy::too_many_arguments)]
 fn push_view_background_effect<E: From<FramebufferEffectElement>>(
     elements: &mut Vec<E>,
     ns: Option<usize>,
     window: &smithay::desktop::Window,
-    loc: Point<i32, Physical>,
-    element_scale: Scale<f64>,
-    output_scale: Scale<f64>,
-    constrain: Rectangle<i32, Physical>,
+    view: ViewBox,
     blur_config: Blur,
 ) {
     let Some(surface) = window.wl_surface() else {
         return;
     };
-    let geometry = constrain.to_f64().to_logical(output_scale);
-    let surface_off = loc.to_f64().to_logical(output_scale) - geometry.loc;
+    let geometry = view.clip.to_f64().to_logical(view.output_scale);
+    let surface_off = view.loc.to_f64().to_logical(view.output_scale) - geometry.loc;
     push_background_effect(
         elements,
         ns,
@@ -226,8 +234,8 @@ fn push_view_background_effect<E: From<FramebufferEffectElement>>(
         geometry,
         true,
         surface_off,
-        element_scale,
-        output_scale.x,
+        view.element_scale,
+        view.output_scale.x,
         blur_config,
     );
 }
@@ -427,23 +435,28 @@ fn push_view(
             );
             // The old contents fade where they were, over the whole slot through a fullscreen flip.
             let under = fade.map_or_else(Vec::new, |fade| {
-                let old_scale = Scale::from(fade.scale(entry));
-                let old_loc = fade
-                    .at(entry)
-                    .map_or(at.loc, |was| was.loc.to_physical_precise_round(scale));
+                let old = ViewBox {
+                    loc: fade
+                        .at(entry)
+                        .map_or(at.loc, |was| was.loc.to_physical_precise_round(scale)),
+                    element_scale: Scale::from(fade.scale(entry)),
+                    output_scale: scale,
+                    clip: crop,
+                };
                 let reach = if fade.flips() { slot } else { clip };
-                fade_elements(
-                    fade, progress, old_loc, old_scale, scale, reach, crop, alpha,
-                )
+                fade_elements(fade, progress, old, reach, alpha)
             });
+            let view = ViewBox {
+                loc: at.loc,
+                element_scale: content_scale,
+                output_scale: scale,
+                clip: crop,
+            };
             push_view_elements(
                 content,
                 &surface.window,
                 view_elements,
-                at.loc,
-                content_scale,
-                scale,
-                crop,
+                view,
                 Some(entry.id.get() as usize),
                 under,
                 blur_config,
@@ -473,10 +486,7 @@ fn push_view(
 pub(crate) fn push_constrained<I, E>(
     elements: &mut Vec<E>,
     view_elements: impl IntoIterator<Item = I>,
-    loc: Point<i32, Physical>,
-    element_scale: Scale<f64>,
-    output_scale: Scale<f64>,
-    constrain: Rectangle<i32, Physical>,
+    view: ViewBox,
 ) where
     I: Into<ViewContentElement>,
     E: From<ConstrainedRenderElement>,
@@ -484,23 +494,19 @@ pub(crate) fn push_constrained<I, E>(
     elements.extend(
         view_elements
             .into_iter()
-            .map(|e| RescaleRenderElement::from_element(e.into(), loc, element_scale))
-            .filter_map(|e| CropRenderElement::from_element(e, output_scale, constrain))
+            .map(|e| RescaleRenderElement::from_element(e.into(), view.loc, view.element_scale))
+            .filter_map(|e| CropRenderElement::from_element(e, view.output_scale, view.clip))
             .map(E::from),
     );
 }
 
-/// `fade`'s old contents at `location`, scaled, over `reach`: under the live view in `covered`
-/// they sum with it to `alpha`, beyond it they fade out on their own.
-#[allow(clippy::too_many_arguments)]
+/// `fade`'s old contents in `old`, over `reach`: under the live view in `old.clip` they sum with
+/// it to `alpha`, beyond it they fade out on their own.
 fn fade_elements(
     fade: &ResizeFade,
     progress: f32,
-    location: Point<i32, Physical>,
-    element_scale: Scale<f64>,
-    output_scale: Scale<f64>,
+    old: ViewBox,
     reach: Rectangle<i32, Physical>,
-    covered: Rectangle<i32, Physical>,
     alpha: f32,
 ) -> Vec<ConstrainedRenderElement> {
     // Under a live view at alpha * progress, the old contents sum to alpha * (1 - progress).
@@ -512,18 +518,18 @@ fn fade_elements(
     };
     let mut elements = Vec::new();
     let mut push = |constrain: Rectangle<i32, Physical>, alpha: f32| {
-        let elem = fade.render(location.to_f64().to_logical(output_scale), alpha);
-        let elem = RescaleRenderElement::from_element(elem.into(), location, element_scale);
+        let elem = fade.render(old.loc.to_f64().to_logical(old.output_scale), alpha);
+        let elem = RescaleRenderElement::from_element(elem.into(), old.loc, old.element_scale);
         elements.extend(CropRenderElement::from_element(
             elem,
-            output_scale,
+            old.output_scale,
             constrain,
         ));
     };
-    if let Some(covered) = reach.intersection(covered) {
+    if let Some(covered) = reach.intersection(old.clip) {
         push(covered, under);
     }
-    for fringe in reach.subtract_rect(covered) {
+    for fringe in reach.subtract_rect(old.clip) {
         push(fringe, alpha * (1. - progress));
     }
     elements
@@ -548,293 +554,385 @@ fn frame_bounds(
 }
 
 /// A view's elements, scaled and cropped, over the old contents `under`, over the blur.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn push_view_elements<
     E: From<ConstrainedRenderElement> + From<FramebufferEffectElement>,
 >(
     elements: &mut Vec<E>,
     window: &smithay::desktop::Window,
     view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
-    loc: Point<i32, Physical>,
-    element_scale: Scale<f64>,
-    output_scale: Scale<f64>,
-    constrain: Rectangle<i32, Physical>,
+    view: ViewBox,
     ns: Option<usize>,
     under: Vec<ConstrainedRenderElement>,
     blur_config: Blur,
 ) {
-    push_constrained(
-        elements,
-        view_elements,
-        loc,
-        element_scale,
-        output_scale,
-        constrain,
-    );
+    push_constrained(elements, view_elements, view);
     elements.extend(under.into_iter().map(E::from));
-    push_view_background_effect(
-        elements,
-        ns,
-        window,
-        loc,
-        element_scale,
-        output_scale,
-        constrain,
-        blur_config,
-    );
+    push_view_background_effect(elements, ns, window, view, blur_config);
 }
 
-/// Collect the render elements of `output`, filtering during collection so nothing from another
-/// output damages this one.
-///
-/// Returns `(content_elements, cursor_elements)`, the cursor apart so a screencast skips a full
-/// re-render when only the cursor moved. `include_layers` false leaves out layer surfaces and the
-/// DnD icon, for workspace-transition snapshots that must not re-draw panels over the live ones.
-///
-/// Rendering order (front to back):
-/// 1. Cursor
-/// 2. Overlay layer
-/// 3. Top layer and layer-shell popups
-/// 4. Zoomed by the overview: window popups, floating frames, views, frames (these four also slide
-///    off when hidden), panel exclusive zones in the fill colour, bottom and background layers, the
-///    output fill and the overview shadow
-/// 5. Overview backdrop
-#[allow(clippy::too_many_arguments)]
-pub fn collect_render_elements_for_output(
-    ewm: &mut Ewm,
-    renderer: &mut GlesRenderer,
+/// What an output is rendered for, which decides whether the cursor and the layers come along.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderFor {
+    /// The live display, with everything.
+    Display,
+    /// A screen copy or cast, the cursor as the client asked.
+    Cast { cursor: bool },
+    /// A transition snapshot, without the cursor, layers and DnD icon that stay live over it.
+    Snapshot,
+}
+
+impl RenderFor {
+    fn cursor(self) -> bool {
+        matches!(self, Self::Display | Self::Cast { cursor: true })
+    }
+
+    fn layers(self) -> bool {
+        self != Self::Snapshot
+    }
+}
+
+/// The layer-shell layers of one pass, the top two above the zoomed content, the rest within it.
+#[derive(Default)]
+struct Layers {
+    overlay: Vec<EwmRenderElement>,
+    top: Vec<EwmRenderElement>,
+    bottom: Vec<ContentRenderElement>,
+    background: Vec<ContentRenderElement>,
+}
+
+/// The working area, its origin and the output size in physical pixels, and the strip viewport.
+struct FrameGeo {
+    working_area: Rectangle<i32, Logical>,
+    working_area_origin: Point<i32, Physical>,
+    view_size: Size<f64, Logical>,
+    strip_viewport: Rectangle<f64, Logical>,
+    output_phys: Size<i32, Physical>,
+}
+
+/// What every view of a pass is drawn with, its frame's place aside.
+struct ViewCommon<'a> {
+    surfaces: &'a HashMap<u64, SurfaceState>,
+    backdrop: Option<&'a SolidColorBuffer>,
+    focused_entry_id: Option<LayoutEntryId>,
+    unfocused_alpha: f32,
+    output_size: Size<i32, Logical>,
     scale: Scale<f64>,
-    cursor_texture_cache: &CursorTextureCache,
-    output_pos: Point<i32, smithay::utils::Logical>,
-    output_size: Size<i32, smithay::utils::Logical>,
-    include_cursor: bool,
-    include_layers: bool,
-    output: &Output,
-) -> (Vec<EwmRenderElement>, Vec<EwmRenderElement>) {
-    tracy_span!("collect_render_elements");
-    crate::render_helpers::init(renderer);
+    blur: Blur,
+}
 
-    let blur_config = ewm.blur_config;
-    let mut elements: Vec<EwmRenderElement> = Vec::new();
-    let mut cursor_elements: Vec<EwmRenderElement> = Vec::new();
-    let output_rect: Rectangle<i32, Logical> = Rectangle::new(output_pos, output_size);
+impl ViewCommon<'_> {
+    fn backdrop_alpha(&self, entry: &LayoutEntry) -> f32 {
+        entry
+            .surface_id()
+            .and_then(|id| self.surfaces.get(&id))
+            .map_or(0., |surface| surface.backdrop_alpha(entry))
+    }
 
-    // Per-frame screen-space x-offset for layout surfaces is derived from
-    // the strip's `view_offset` and `column_x` (see `Strip::screen_x_of_frame`).
-    // Layer surfaces (waybar, etc.) stay fixed -- only frame contents slide.
+    /// Whether `frame`'s fullscreen view has an opaque backdrop, hiding whatever it covers.
+    fn fullscreen_covers(&self, frame: &strip::Frame) -> bool {
+        frame
+            .fullscreen_entry()
+            .is_some_and(|entry| self.backdrop_alpha(entry) >= 1.)
+    }
 
-    // The cursor goes on top.
-    if include_cursor && !ewm.cursor_hide.is_hidden {
-        let (pointer_x, pointer_y) = ewm.cursor_location();
+    /// `frame`'s views in `space`, only the fullscreen one when `covered`.
+    fn push_frame_views(
+        &self,
+        content: &mut Vec<ContentRenderElement>,
+        renderer: &mut GlesRenderer,
+        frame: &strip::Frame,
+        space: FrameSpace,
+        covered: bool,
+    ) {
+        let mut views: Vec<&LayoutEntry> = frame.entries.iter().collect();
+        // Backdrop carriers first, so it covers their siblings, which hide only under an
+        // opaque one.
+        views.sort_by_cached_key(|entry| self.backdrop_alpha(entry) <= 0.);
+        for entry in views {
+            if covered && !entry.fullscreen() {
+                continue;
+            }
+            let Some(surface) = entry.surface_id().and_then(|id| self.surfaces.get(&id)) else {
+                continue;
+            };
+            // Fullscreen forced opaque so the backdrop doesn't bleed through.
+            let focused = entry.fullscreen() || self.focused_entry_id == Some(entry.id);
+            let alpha = if focused { 1.0 } else { self.unfocused_alpha } * surface.open_alpha();
+            if let Some(place) =
+                ViewPlace::new(surface, entry, alpha, space, self.output_size, self.scale)
+            {
+                push_view(
+                    content,
+                    renderer,
+                    &place,
+                    self.backdrop,
+                    self.scale,
+                    self.blur,
+                );
+            }
+        }
+    }
+}
+
+/// One output's render pass: its geometry and zoom, and the elements collected so far.
+struct OutputRender<'a> {
+    ewm: &'a mut Ewm,
+    renderer: &'a mut GlesRenderer,
+    output: &'a Output,
+    purpose: RenderFor,
+    scale: Scale<f64>,
+    rect: Rectangle<i32, Logical>,
+    blur: Blur,
+    geometry: Geometry,
+    zoom_offset: Point<i32, Physical>,
+    slide_offset: Point<i32, Physical>,
+    /// Front to back, as rendering wants them.
+    elements: Vec<EwmRenderElement>,
+    cursor: Vec<EwmRenderElement>,
+    /// The zoomed section under construction, in output-local coordinates.
+    content: Vec<ContentRenderElement>,
+}
+
+impl<'a> OutputRender<'a> {
+    fn new(
+        ewm: &'a mut Ewm,
+        renderer: &'a mut GlesRenderer,
+        output: &'a Output,
+        purpose: RenderFor,
+    ) -> Self {
+        let scale = Scale::from(output.current_scale().fractional_scale());
+        let rect = ewm.space.output_geometry(output).unwrap_or_default();
+        let blur = ewm.blur_config;
+        // Everything under the top layer scales with the overview, and slides up one output height
+        // in content space while the frames hide.
+        let geometry = ewm.overview_geometry(output);
+        let zoom_offset = geometry.offset.to_physical_precise_round(scale);
+        let slide = ewm.hide.current() * f64::from(rect.size.h) * geometry.zoom;
+        let slide_offset = zoom_offset
+            + Point::<f64, Logical>::from((0., -slide)).to_physical_precise_round(scale);
+        Self {
+            ewm,
+            renderer,
+            output,
+            purpose,
+            scale,
+            rect,
+            blur,
+            geometry,
+            zoom_offset,
+            slide_offset,
+            elements: Vec::new(),
+            cursor: Vec::new(),
+            content: Vec::new(),
+        }
+    }
+
+    /// The cursor goes on top, kept apart from the content.
+    fn cursor(&mut self, cache: &CursorTextureCache) {
+        if !self.purpose.cursor() || self.ewm.cursor_hide.is_hidden {
+            return;
+        }
+        let (pointer_x, pointer_y) = self.ewm.cursor_location();
         let pointer_pos = Point::from((pointer_x as i32, pointer_y as i32));
-
-        if output_rect.contains(pointer_pos) {
+        if self.rect.contains(pointer_pos) {
             let pointer_pos = Point::from((
-                pointer_x - output_pos.x as f64,
-                pointer_y - output_pos.y as f64,
+                pointer_x - self.rect.loc.x as f64,
+                pointer_y - self.rect.loc.y as f64,
             ));
-            cursor_elements.extend(render_cursor_elements(
-                ewm,
-                renderer,
-                cursor_texture_cache,
-                output,
-                scale,
+            self.cursor.extend(render_cursor_elements(
+                self.ewm,
+                self.renderer,
+                cache,
+                self.output,
+                self.scale,
                 pointer_pos,
             ));
         }
     }
 
-    // DnD icon renders above everything except the cursor.
-    if include_layers && let Some(dnd_icon) = ewm.dnd_icon.as_ref() {
-        let (pointer_x, pointer_y) = ewm.cursor_location();
+    /// The DnD icon rides under the cursor, above everything else.
+    fn dnd_icon(&mut self) {
+        if !self.purpose.layers() {
+            return;
+        }
+        let Some(dnd_icon) = self.ewm.dnd_icon.as_ref() else {
+            return;
+        };
+        let (pointer_x, pointer_y) = self.ewm.cursor_location();
         let icon_pos = Point::from((
-            pointer_x + dnd_icon.offset.x as f64 - output_pos.x as f64,
-            pointer_y + dnd_icon.offset.y as f64 - output_pos.y as f64,
+            pointer_x + dnd_icon.offset.x as f64 - self.rect.loc.x as f64,
+            pointer_y + dnd_icon.offset.y as f64 - self.rect.loc.y as f64,
         ));
         let icon_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
             render_elements_from_surface_tree(
-                renderer,
+                self.renderer,
                 &dnd_icon.surface,
-                icon_pos.to_physical_precise_round(scale),
-                scale,
+                icon_pos.to_physical_precise_round(self.scale),
+                self.scale,
                 1.,
                 Kind::ScanoutCandidate,
             );
-        elements.extend(icon_elements.into_iter().map(EwmRenderElement::Surface));
+        self.elements
+            .extend(icon_elements.into_iter().map(EwmRenderElement::Surface));
     }
 
-    // If the session is locked, draw the lock surface.
-    if ewm.is_locked() {
-        let state = ewm.output_state.get(output).unwrap();
+    /// Under a session lock only the lock surface and its backdrop show. True when locked.
+    fn lock(&mut self) -> bool {
+        if !self.ewm.is_locked() {
+            return false;
+        }
+        let state = self.ewm.output_state.get(self.output).unwrap();
         if let Some(surface) = state.lock_surface.as_ref() {
             let lock_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
                 render_elements_from_surface_tree(
-                    renderer,
+                    self.renderer,
                     surface.wl_surface(),
                     Point::from((0, 0)),
-                    scale,
+                    self.scale,
                     1.,
                     Kind::ScanoutCandidate,
                 );
-            elements.extend(lock_elements.into_iter().map(EwmRenderElement::Surface));
+            self.elements
+                .extend(lock_elements.into_iter().map(EwmRenderElement::Surface));
         }
-
-        // Draw the solid color background.
-        elements.push(EwmRenderElement::SolidColor(solid(
+        self.elements.push(EwmRenderElement::SolidColor(solid(
             &state.lock_color_buffer,
             (0, 0),
-            scale,
+            self.scale,
         )));
-
-        return (elements, cursor_elements);
+        true
     }
 
-    // Collect all layer elements in a tight scope to avoid holding the RefCell
-    // borrow across the rest of the function. layer_map_for_output() returns
-    // RefMut<LayerMap>. Calling it again (e.g. via get_working_area) while
-    // this borrow is alive would panic.
-    let (mut overlay_elems, mut top_elems, mut bottom_elems, mut bg_elems) = if include_layers {
-        let layer_map = layer_map_for_output(output);
-        let mut overlay: Vec<EwmRenderElement> = Vec::new();
-        let mut top: Vec<EwmRenderElement> = Vec::new();
-        let mut bottom: Vec<ContentRenderElement> = Vec::new();
-        let mut bg: Vec<ContentRenderElement> = Vec::new();
-        render_layer(
-            &layer_map,
-            Layer::Overlay,
-            renderer,
-            scale,
-            blur_config,
-            &mut overlay,
-        );
-        render_layer(
-            &layer_map,
-            Layer::Top,
-            renderer,
-            scale,
-            blur_config,
-            &mut top,
-        );
-        render_layer(
-            &layer_map,
-            Layer::Bottom,
-            renderer,
-            scale,
-            blur_config,
-            &mut bottom,
-        );
-        render_layer(
-            &layer_map,
-            Layer::Background,
-            renderer,
-            scale,
-            blur_config,
-            &mut bg,
-        );
-        (overlay, top, bottom, bg)
-        // layer_map (RefMut) dropped here
-    } else {
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new())
-    };
-
-    // Overlay layer
-    elements.append(&mut overlay_elems);
-
-    // Top layer, deferred if fullscreen (fullscreen covers Top layer)
-    let above_top_layer = ewm.render_above_top_layer(output);
-
-    if !above_top_layer {
-        elements.append(&mut top_elems);
+    /// The four layer-shell layers, each in stacking order, all empty for a snapshot.
+    fn layers(&mut self) -> Layers {
+        let mut layers = Layers::default();
+        if !self.purpose.layers() {
+            return layers;
+        }
+        // The RefMut lives for this scope only. Taking the layer map again meanwhile, as
+        // get_working_area does, would panic.
+        let layer_map = layer_map_for_output(self.output);
+        for (layer, out) in [
+            (Layer::Overlay, &mut layers.overlay),
+            (Layer::Top, &mut layers.top),
+        ] {
+            render_layer(&layer_map, layer, self.renderer, self.scale, self.blur, out);
+        }
+        for (layer, out) in [
+            (Layer::Bottom, &mut layers.bottom),
+            (Layer::Background, &mut layers.background),
+        ] {
+            render_layer(&layer_map, layer, self.renderer, self.scale, self.blur, out);
+        }
+        layers
     }
 
-    // Popups of the unzoomed layers stay at unit scale above the zoomed content.
-    if include_layers {
-        for placement in layer_popup_placements(output, output_rect, &[Layer::Overlay, Layer::Top])
-        {
+    /// Popups of `layers` at unit scale, straight into the elements.
+    fn layer_popups(&mut self, layers: &[Layer]) {
+        if !self.purpose.layers() {
+            return;
+        }
+        for placement in layer_popup_placements(self.output, self.rect, layers) {
             push_popup(
-                &mut elements,
-                renderer,
-                scale,
-                output_pos,
+                &mut self.elements,
+                self.renderer,
+                self.scale,
+                self.rect.loc,
                 &placement,
-                blur_config,
+                self.blur,
             );
         }
     }
 
-    // Everything below scales with the overview. Elements are built in
-    // output-local coordinates and wrapped on the way into `elements`.
-    let geometry = ewm.overview_geometry(output);
-    let zoom_offset = geometry.offset.to_physical_precise_round(scale);
-    let zoomed = move |elem| {
-        EwmRenderElement::Zoomed(ZoomRenderElement::new(elem, geometry.zoom, zoom_offset))
-    };
-    // Frames and what sits on them slide up one output height in content space when hidden.
-    let slide = ewm.hide.current() * f64::from(output_size.h) * geometry.zoom;
-    let slide_offset =
-        zoom_offset + Point::<f64, Logical>::from((0., -slide)).to_physical_precise_round(scale);
-    let slid = move |elem| {
-        EwmRenderElement::Zoomed(ZoomRenderElement::new(elem, geometry.zoom, slide_offset))
-    };
-    let mut content: Vec<ContentRenderElement> = Vec::new();
-
-    // Window popups, above their frames, culled against the content the zoom shows.
-    for placement in window_popup_placements(ewm, geometry.visible_content(output_rect)) {
-        push_popup(
-            &mut content,
-            renderer,
-            scale,
-            output_pos,
-            &placement,
-            blur_config,
-        );
-    }
-    elements.extend(content.drain(..).map(slid));
-
-    // Popups of the zoomed layers zoom with them.
-    if include_layers {
-        let layers = &[Layer::Bottom, Layer::Background];
-        for placement in layer_popup_placements(output, output_rect, layers) {
+    /// Popups of the zoomed `layers`, zooming with them.
+    fn zoomed_layer_popups(&mut self, layers: &[Layer]) {
+        if !self.purpose.layers() {
+            return;
+        }
+        for placement in layer_popup_placements(self.output, self.rect, layers) {
             push_popup(
-                &mut content,
-                renderer,
-                scale,
-                output_pos,
+                &mut self.content,
+                self.renderer,
+                self.scale,
+                self.rect.loc,
                 &placement,
-                blur_config,
+                self.blur,
             );
         }
-        elements.extend(content.drain(..).map(zoomed));
+        self.flush_zoomed();
     }
 
-    // Render declared surfaces from the layout. Frames outside the viewport are culled.
-    let working_area = ewm.get_working_area(output);
-    let view_size =
-        Size::<f64, Logical>::from((working_area.size.w as f64, working_area.size.h as f64));
-    let strip_viewport = geometry.strip_viewport(working_area);
-    let backdrop = ewm
-        .output_state
-        .get(output)
-        .map(|state| &state.fullscreen_backdrop);
-    let output_phys = output_size.to_physical_precise_round(scale);
-    // Floats in view with their slots, and how far their pin slid them.
-    let float_viewport = geometry.to_content_rect(Rectangle::from_size(output_size.to_f64()));
-    let floats: Vec<(u64, Rectangle<f64, Logical>, f64)> =
-        ewm.layout.monitor_of(output).map_or(Vec::new(), |monitor| {
-            ewm.visible_floats(monitor)
-                .filter(|(_, slot)| float_viewport.overlaps(*slot))
-                .map(|(frame, slot)| (frame.surface_id, slot, monitor.pin_offset(frame)))
-                .collect()
-        });
-    let focused_entry_id = ewm.focused_entry_id();
-    let focused_frame_id = ewm.focused_frame_id();
-    if let Some(floating) = ewm.layout.floating_mut(output) {
-        let unfocused_alpha = ewm.unfocused_alpha;
-        let surfaces = &ewm.surfaces;
+    /// Window popups above their frames, culled against the content the zoom shows.
+    fn window_popups(&mut self) {
+        let visible = self.geometry.visible_content(self.rect);
+        for placement in window_popup_placements(self.ewm, visible) {
+            push_popup(
+                &mut self.content,
+                self.renderer,
+                self.scale,
+                self.rect.loc,
+                &placement,
+                self.blur,
+            );
+        }
+        self.flush_slid();
+    }
+
+    fn frame_geo(&self) -> FrameGeo {
+        let working_area = self.ewm.get_working_area(self.output);
+        FrameGeo {
+            working_area,
+            working_area_origin: working_area.loc.to_physical_precise_round(self.scale),
+            view_size: Size::<f64, Logical>::from((
+                working_area.size.w as f64,
+                working_area.size.h as f64,
+            )),
+            strip_viewport: self.geometry.strip_viewport(working_area),
+            output_phys: self.rect.size.to_physical_precise_round(self.scale),
+        }
+    }
+
+    /// The floats in view, closing ones on top: their views, then each frame's own surface and
+    /// shadow unless a fullscreen view covers them.
+    fn floats(&mut self, geo: &FrameGeo) {
+        let scale = self.scale;
+        // Floats in view with their slots, and how far their pin slid them.
+        let float_viewport = self
+            .geometry
+            .to_content_rect(Rectangle::from_size(self.rect.size.to_f64()));
+        let floats: Vec<(u64, Rectangle<f64, Logical>, f64)> = self
+            .ewm
+            .layout
+            .monitor_of(self.output)
+            .map_or(Vec::new(), |monitor| {
+                self.ewm
+                    .visible_floats(monitor)
+                    .filter(|(_, slot)| float_viewport.overlaps(*slot))
+                    .map(|(frame, slot)| (frame.surface_id, slot, monitor.pin_offset(frame)))
+                    .collect()
+            });
+        let focused_frame_id = self.ewm.focused_frame_id();
+        let views = ViewCommon {
+            surfaces: &self.ewm.surfaces,
+            backdrop: self
+                .ewm
+                .output_state
+                .get(self.output)
+                .map(|state| &state.fullscreen_backdrop),
+            focused_entry_id: self.ewm.focused_entry_id(),
+            unfocused_alpha: self.ewm.unfocused_alpha,
+            output_size: self.rect.size,
+            scale,
+            blur: self.blur,
+        };
+        let Some(floating) = self.ewm.layout.floating_mut(self.output) else {
+            return;
+        };
 
         // Draw the closing frames on top of the other frames.
         for (pos, closing) in floating.closing_frames().iter().rev() {
-            content.push(ContentRenderElement::Texture(closing.render(*pos)));
+            self.content
+                .push(ContentRenderElement::Texture(closing.render(*pos)));
         }
 
         for (frame, data) in floating.frames_with_data_mut() {
@@ -844,48 +942,24 @@ pub fn collect_render_elements_for_output(
                 continue;
             };
             push_closing_views(
-                &mut content,
+                &mut self.content,
                 &frame.closing_views,
                 data.render_pos() + Point::from((dx, 0.)),
             );
-            let frame_surface = surfaces.get(&frame.surface_id);
+            let frame_surface = views.surfaces.get(&frame.surface_id);
             let frame_box = frame_rect.to_physical_precise_round(scale);
             let space = FrameSpace {
                 origin: frame_rect.loc,
                 bounds: frame_bounds(frame_surface, frame_box, scale),
                 slot: Rectangle::new(
                     Point::<f64, Logical>::from((dx, 0.)).to_physical_precise_round(scale),
-                    output_phys,
+                    geo.output_phys,
                 ),
             };
             // A fullscreen view fills the slot. Its siblings, frame and shadow hide under it once
             // its backdrop is opaque.
-            let backdrop_alpha = |entry: &LayoutEntry| {
-                entry
-                    .surface_id()
-                    .and_then(|id| surfaces.get(&id))
-                    .map_or(0., |surface| surface.backdrop_alpha(entry))
-            };
-            let covered = frame
-                .fullscreen_entry()
-                .is_some_and(|entry| backdrop_alpha(entry) >= 1.);
-            let mut views: Vec<&LayoutEntry> = frame.entries.iter().collect();
-            views.sort_by_cached_key(|entry| backdrop_alpha(entry) <= 0.);
-            for entry in views {
-                if covered && !entry.fullscreen() {
-                    continue;
-                }
-                let Some(surface) = entry.surface_id().and_then(|id| surfaces.get(&id)) else {
-                    continue;
-                };
-                let focused = entry.fullscreen() || focused_entry_id == Some(entry.id);
-                let alpha = if focused { 1.0 } else { unfocused_alpha } * surface.open_alpha();
-                if let Some(place) =
-                    ViewPlace::new(surface, entry, alpha, space, output_size, scale)
-                {
-                    push_view(&mut content, renderer, &place, backdrop, scale, blur_config);
-                }
-            }
+            let covered = views.fullscreen_covers(frame);
+            views.push_frame_views(&mut self.content, self.renderer, frame, space, covered);
             if covered {
                 continue;
             }
@@ -901,186 +975,261 @@ pub fn collect_render_elements_for_output(
             }
             let frame_alpha = frame_surface.open_alpha();
             let frame_offset = frame_box.loc;
-            let view_elements =
-                render_window_without_popups(window, renderer, frame_offset, scale, frame_alpha);
-            content.extend(view_elements.into_iter().map(ContentRenderElement::Surface));
+            let view_elements = render_window_without_popups(
+                window,
+                self.renderer,
+                frame_offset,
+                scale,
+                frame_alpha,
+            );
+            self.content
+                .extend(view_elements.into_iter().map(ContentRenderElement::Surface));
             push_view_background_effect(
-                &mut content,
+                &mut self.content,
                 None,
                 window,
-                frame_offset,
-                Scale::from(1.),
-                scale,
-                frame_box,
-                blur_config,
+                ViewBox {
+                    loc: frame_offset,
+                    element_scale: Scale::from(1.),
+                    output_scale: scale,
+                    clip: frame_box,
+                },
+                self.blur,
             );
 
             let shadow = data.shadow_mut();
             shadow.update_render_elements(
                 frame_rect.size,
                 focused_frame_id == frame.surface_id,
-                crate::render_helpers::shadow_style::CornerRadius::default(),
+                CornerRadius::default(),
                 scale.x,
                 frame_alpha,
             );
-            shadow.render(renderer, frame_rect.loc, &mut |shadow| {
-                content.push(ContentRenderElement::Shadow(shadow));
+            shadow.render(self.renderer, frame_rect.loc, &mut |shadow| {
+                self.content.push(ContentRenderElement::Shadow(shadow));
             });
         }
     }
-    let working_area_loc_physical =
-        Point::<i32, Logical>::from((working_area.loc.x, working_area.loc.y))
-            .to_physical_precise_round(scale);
-    let strip = ewm.layout.strip(output);
-    if let Some(strip) = strip {
+
+    /// The views of the strip frames in view, closing views first. Frames slide by the strip's
+    /// view offset, layer surfaces stay put.
+    fn strip_views(&mut self, geo: &FrameGeo, above_top_layer: bool) {
+        let scale = self.scale;
+        let views = ViewCommon {
+            surfaces: &self.ewm.surfaces,
+            backdrop: self
+                .ewm
+                .output_state
+                .get(self.output)
+                .map(|state| &state.fullscreen_backdrop),
+            focused_entry_id: self.ewm.focused_entry_id(),
+            unfocused_alpha: self.ewm.unfocused_alpha,
+            output_size: self.rect.size,
+            scale,
+            blur: self.blur,
+        };
+        let Some(strip) = self.ewm.layout.strip(self.output) else {
+            return;
+        };
         let active_idx = strip.active_idx();
         for (frame_idx, frame, frame_rect, screen_x) in
-            strip.frames_with_render_geo(view_size, strip_viewport)
+            strip.frames_with_render_geo(geo.view_size, geo.strip_viewport)
         {
             let frame_offset: Point<i32, Physical> =
                 Point::<f64, Logical>::from((screen_x, 0.0)).to_physical_precise_round(scale);
             let space = FrameSpace {
                 origin: Point::from((
-                    f64::from(working_area.loc.x) + screen_x,
-                    f64::from(working_area.loc.y),
+                    f64::from(geo.working_area.loc.x) + screen_x,
+                    f64::from(geo.working_area.loc.y),
                 )),
                 bounds: frame_bounds(
-                    ewm.surfaces.get(&frame.surface_id),
+                    views.surfaces.get(&frame.surface_id),
                     Rectangle::new(
-                        working_area_loc_physical + frame_offset,
+                        geo.working_area_origin + frame_offset,
                         frame_rect.size.to_physical_precise_round(scale),
                     ),
                     scale,
                 ),
-                slot: Rectangle::new(frame_offset, output_phys),
+                slot: Rectangle::new(frame_offset, geo.output_phys),
             };
-            push_closing_views(&mut content, &frame.closing_views, space.origin);
-            let in_active_frame = frame_idx == active_idx;
-            let backdrop_alpha = |entry: &LayoutEntry| {
-                entry
-                    .surface_id()
-                    .and_then(|id| ewm.surfaces.get(&id))
-                    .map_or(0., |surface| surface.backdrop_alpha(entry))
-            };
-            let mut views: Vec<&LayoutEntry> = frame.entries.iter().collect();
-            // Backdrop carriers first, so it covers their siblings, which hide only under an
-            // opaque one.
-            views.sort_by_cached_key(|entry| backdrop_alpha(entry) <= 0.);
-            let covered = above_top_layer
-                && in_active_frame
-                && frame
-                    .fullscreen_entry()
-                    .is_some_and(|entry| backdrop_alpha(entry) >= 1.);
-            for entry in views {
-                if covered && !entry.fullscreen() {
-                    continue;
-                }
-                let Some(surface) = entry.surface_id().and_then(|id| ewm.surfaces.get(&id)) else {
-                    continue;
-                };
-                // Fullscreen forced opaque so the backdrop doesn't bleed through.
-                let focused = entry.fullscreen() || focused_entry_id == Some(entry.id);
-                let alpha = if focused { 1.0 } else { ewm.unfocused_alpha } * surface.open_alpha();
-                if let Some(place) =
-                    ViewPlace::new(surface, entry, alpha, space, output_size, scale)
-                {
-                    push_view(&mut content, renderer, &place, backdrop, scale, blur_config);
-                }
-            }
+            push_closing_views(&mut self.content, &frame.closing_views, space.origin);
+            // The top layer waits only for the active frame's fullscreen view.
+            let covered =
+                above_top_layer && frame_idx == active_idx && views.fullscreen_covers(frame);
+            views.push_frame_views(&mut self.content, self.renderer, frame, space, covered);
         }
     }
-    elements.extend(content.drain(..).map(slid));
 
-    // Deferred Top layer (behind fullscreen surface)
-    if above_top_layer {
-        elements.append(&mut top_elems);
-    }
-
-    // The frames' own surfaces, culled like their views.
-    if let Some(strip) = strip {
+    /// The strip frames' own surfaces, culled like their views, closing frames beneath them.
+    fn strip_frames(&mut self, geo: &FrameGeo) {
+        let scale = self.scale;
+        let Some(strip) = self.ewm.layout.strip(self.output) else {
+            return;
+        };
         for (_, frame, frame_rect, screen_x) in
-            strip.frames_with_render_geo(view_size, strip_viewport)
+            strip.frames_with_render_geo(geo.view_size, geo.strip_viewport)
         {
-            let Some(frame_surface) = ewm.surfaces.get(&frame.surface_id) else {
+            let Some(frame_surface) = self.ewm.surfaces.get(&frame.surface_id) else {
                 continue;
             };
             let window = &frame_surface.window;
             let frame_offset_emacs: Point<i32, Physical> =
                 Point::<f64, Logical>::from((screen_x, 0.0)).to_physical_precise_round(scale);
             let frame_alpha = frame_surface.open_alpha();
-            let frame_loc = working_area_loc_physical + frame_offset_emacs;
+            let frame_loc = geo.working_area_origin + frame_offset_emacs;
             let view_elements =
-                render_window_without_popups(window, renderer, frame_loc, scale, frame_alpha);
-            content.extend(view_elements.into_iter().map(ContentRenderElement::Surface));
+                render_window_without_popups(window, self.renderer, frame_loc, scale, frame_alpha);
+            self.content
+                .extend(view_elements.into_iter().map(ContentRenderElement::Surface));
             let frame_size: Size<i32, Physical> = frame_rect.size.to_physical_precise_round(scale);
             push_view_background_effect(
-                &mut content,
+                &mut self.content,
                 None,
                 window,
-                frame_loc,
-                Scale::from(1.),
-                scale,
-                Rectangle::new(frame_loc, frame_size),
-                blur_config,
+                ViewBox {
+                    loc: frame_loc,
+                    element_scale: Scale::from(1.),
+                    output_scale: scale,
+                    clip: Rectangle::new(frame_loc, frame_size),
+                },
+                self.blur,
             );
         }
 
         // Draw the closing frames beneath the other frames.
         for (closing, pos) in strip.closing_frames_with_render_pos() {
-            let elem = closing.render(pos + working_area.loc.to_f64());
-            content.push(ContentRenderElement::Texture(elem));
+            let elem = closing.render(pos + geo.working_area.loc.to_f64());
+            self.content.push(ContentRenderElement::Texture(elem));
         }
     }
 
-    elements.extend(content.drain(..).map(slid));
-
-    // Panel exclusive zones in the fill colour, the wallpaper layers, then the output fill.
-    // The overview adds its shadow and backdrop.
-    let mut backdrop = None;
-    if let Some(state) = ewm.output_state.get_mut(output) {
-        let background_color = ewm.overview.background_color;
-        let zones = Rectangle::from_size(output_size).subtract_rect(working_area);
-        for (buffer, zone) in state.bands.iter_mut().zip(zones) {
-            buffer.update(zone.size, background_color);
-            let loc = zone.loc.to_physical_precise_round(scale);
-            content.push(ContentRenderElement::SolidColor(solid(buffer, loc, scale)));
-        }
-        content.append(&mut bottom_elems);
-        content.append(&mut bg_elems);
-        state.background.set_color(background_color);
-        content.push(ContentRenderElement::SolidColor(solid(
-            &state.background,
-            (0, 0),
-            scale,
-        )));
-
-        if let Some(progress) = ewm.overview.progress() {
-            state.overview_shadow.update_render_elements(
-                output_size.to_f64(),
-                true,
-                crate::render_helpers::shadow_style::CornerRadius::default(),
-                scale.x,
-                progress.clamp(0., 1.) as f32,
-            );
-            state
-                .overview_shadow
-                .render(renderer, Point::from((0., 0.)), &mut |shadow| {
-                    content.push(ContentRenderElement::Shadow(shadow));
-                });
-            state
-                .overview_backdrop
-                .set_color(ewm.overview.backdrop_color);
-            backdrop = Some(EwmRenderElement::SolidColor(solid(
-                &state.overview_backdrop,
+    /// Panel exclusive zones in the fill colour, the wallpaper layers, the output fill, and in the
+    /// overview its shadow and backdrop.
+    fn background(&mut self, geo: &FrameGeo, mut layers: Layers) {
+        let scale = self.scale;
+        let output_size = self.rect.size;
+        let mut backdrop = None;
+        if let Some(state) = self.ewm.output_state.get_mut(self.output) {
+            let background_color = self.ewm.overview.background_color;
+            let zones = Rectangle::from_size(output_size).subtract_rect(geo.working_area);
+            for (buffer, zone) in state.bands.iter_mut().zip(zones) {
+                buffer.update(zone.size, background_color);
+                let loc = zone.loc.to_physical_precise_round(scale);
+                self.content
+                    .push(ContentRenderElement::SolidColor(solid(buffer, loc, scale)));
+            }
+            self.content.append(&mut layers.bottom);
+            self.content.append(&mut layers.background);
+            state.background.set_color(background_color);
+            self.content.push(ContentRenderElement::SolidColor(solid(
+                &state.background,
                 (0, 0),
                 scale,
             )));
-        }
-    }
-    elements.extend(content.into_iter().map(zoomed));
-    elements.extend(backdrop);
 
-    (elements, cursor_elements)
+            if let Some(progress) = self.ewm.overview.progress() {
+                state.overview_shadow.update_render_elements(
+                    output_size.to_f64(),
+                    true,
+                    CornerRadius::default(),
+                    scale.x,
+                    progress.clamp(0., 1.) as f32,
+                );
+                state
+                    .overview_shadow
+                    .render(self.renderer, Point::from((0., 0.)), &mut |shadow| {
+                        self.content.push(ContentRenderElement::Shadow(shadow));
+                    });
+                state
+                    .overview_backdrop
+                    .set_color(self.ewm.overview.backdrop_color);
+                backdrop = Some(EwmRenderElement::SolidColor(solid(
+                    &state.overview_backdrop,
+                    (0, 0),
+                    scale,
+                )));
+            }
+        }
+        self.flush_zoomed();
+        self.elements.extend(backdrop);
+    }
+
+    /// Move the section into the elements, zoomed about the output.
+    fn flush_zoomed(&mut self) {
+        let (zoom, offset) = (self.geometry.zoom, self.zoom_offset);
+        self.elements.extend(
+            self.content
+                .drain(..)
+                .map(|elem| EwmRenderElement::Zoomed(ZoomRenderElement::new(elem, zoom, offset))),
+        );
+    }
+
+    /// Move the section into the elements, zoomed and slid with the frames.
+    fn flush_slid(&mut self) {
+        let (zoom, offset) = (self.geometry.zoom, self.slide_offset);
+        self.elements.extend(
+            self.content
+                .drain(..)
+                .map(|elem| EwmRenderElement::Zoomed(ZoomRenderElement::new(elem, zoom, offset))),
+        );
+    }
+
+    fn finish(self) -> (Vec<EwmRenderElement>, Vec<EwmRenderElement>) {
+        (self.elements, self.cursor)
+    }
+}
+
+/// Collect the render elements of `output`, filtering during collection so nothing from another
+/// output damages this one.
+///
+/// Returns `(content_elements, cursor_elements)`, the cursor apart so a screencast skips a full
+/// re-render when only the cursor moved.
+///
+/// Rendering order (front to back):
+/// 1. Cursor
+/// 2. Overlay layer
+/// 3. Top layer and layer-shell popups
+/// 4. Zoomed by the overview: window popups, floating frames, views, frames (these four also slide
+///    off when hidden), panel exclusive zones in the fill colour, bottom and background layers, the
+///    output fill and the overview shadow
+/// 5. Overview backdrop
+pub fn collect_render_elements_for_output(
+    ewm: &mut Ewm,
+    renderer: &mut GlesRenderer,
+    cursor_texture_cache: &CursorTextureCache,
+    output: &Output,
+    purpose: RenderFor,
+) -> (Vec<EwmRenderElement>, Vec<EwmRenderElement>) {
+    tracy_span!("collect_render_elements");
+    crate::render_helpers::init(renderer);
+    let mut pass = OutputRender::new(ewm, renderer, output, purpose);
+    pass.cursor(cursor_texture_cache);
+    pass.dnd_icon();
+    if pass.lock() {
+        return pass.finish();
+    }
+    let mut layers = pass.layers();
+    pass.elements.append(&mut layers.overlay);
+    // The top layer waits behind a fullscreen view, which covers it.
+    let above_top_layer = pass.ewm.render_above_top_layer(output);
+    if !above_top_layer {
+        pass.elements.append(&mut layers.top);
+    }
+    // Popups of the unzoomed layers stay at unit scale above the zoomed content.
+    pass.layer_popups(&[Layer::Overlay, Layer::Top]);
+    pass.window_popups();
+    pass.zoomed_layer_popups(&[Layer::Bottom, Layer::Background]);
+    let geo = pass.frame_geo();
+    pass.floats(&geo);
+    pass.strip_views(&geo, above_top_layer);
+    pass.flush_slid();
+    if above_top_layer {
+        pass.elements.append(&mut layers.top);
+    }
+    pass.strip_frames(&geo);
+    pass.flush_slid();
+    pass.background(&geo, layers);
+    pass.finish()
 }
 
 /// `frame`'s views about its own origin, closing ones on top, the fullscreen one over the rest.
@@ -1577,19 +1726,14 @@ fn collect_screencopy_elements_for_output(
     cursor_texture_cache: &CursorTextureCache,
     include_cursor: bool,
 ) -> Vec<EwmRenderElement> {
-    let output_scale = Scale::from(output.current_scale().fractional_scale());
-    let output_geo = ewm.space.output_geometry(output).unwrap_or_default();
-
     let (mut content, cursor) = collect_render_elements_for_output(
         ewm,
         renderer,
-        output_scale,
         cursor_texture_cache,
-        output_geo.loc,
-        output_geo.size,
-        include_cursor,
-        true, // include_layers
         output,
+        RenderFor::Cast {
+            cursor: include_cursor,
+        },
     );
 
     content.splice(0..0, cursor);
@@ -1886,13 +2030,9 @@ pub fn capture_output_to_texture(
     let (content, _cursor) = collect_render_elements_for_output(
         ewm,
         renderer,
-        output_scale,
         cursor_texture_cache,
-        output_geo.loc,
-        output_geo.size,
-        false, // include_cursor
-        false, // include_layers
         output,
+        RenderFor::Snapshot,
     );
 
     let (texture, _sync) = render_to_texture(

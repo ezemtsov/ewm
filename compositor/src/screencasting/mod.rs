@@ -370,10 +370,12 @@ impl Ewm {
         crate::render::push_constrained(
             &mut elements,
             view_elements,
-            Point::default(),
-            Scale::from(1.0),
-            output_scale,
-            Rectangle::from_size(entry_size),
+            crate::render::ViewBox {
+                loc: Point::default(),
+                element_scale: Scale::from(1.0),
+                output_scale,
+                clip: Rectangle::from_size(entry_size),
+            },
         );
         elements
     }
@@ -411,10 +413,12 @@ impl Ewm {
                     &mut elements,
                     window,
                     view_elements,
-                    Point::default(),
-                    element_scale,
-                    output_scale,
-                    constrain,
+                    crate::render::ViewBox {
+                        loc: Point::default(),
+                        element_scale,
+                        output_scale,
+                        clip: constrain,
+                    },
                     None,
                     Vec::new(),
                     self.blur_config,
@@ -615,13 +619,11 @@ impl Ewm {
                 crate::render::collect_render_elements_for_output(
                     self,
                     renderer,
-                    output_scale,
                     cursor_texture_cache,
-                    output_pos,
-                    output_size,
-                    include_cursor,
-                    true,
                     output,
+                    crate::render::RenderFor::Cast {
+                        cursor: include_cursor,
+                    },
                 )
             });
 
