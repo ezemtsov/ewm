@@ -874,7 +874,7 @@ impl Ewm {
                     .into_iter()
                     .collect()
             } else if moved.dst.is_none() {
-                moved.ids.iter().copied().collect()
+                moved.ids.to_vec()
             } else {
                 Vec::new()
             };

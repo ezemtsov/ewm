@@ -866,9 +866,10 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for ClientState {
         } = event
         {
             let has = |wanted: xdg_toplevel::State| {
-                states
-                    .chunks_exact(4)
-                    .map(|state| u32::from_ne_bytes(state.try_into().unwrap()))
+                let (words, _) = states.as_chunks::<4>();
+                words
+                    .iter()
+                    .map(|word| u32::from_ne_bytes(*word))
                     .any(|state| state == wanted as u32)
             };
             state.events.push(ClientEvent::ToplevelConfigure {

@@ -209,14 +209,11 @@ use smithay::wayland::xdg_foreign::{XdgForeignState};
 use smithay::wayland::xdg_system_bell::{XdgSystemBellState};
 use tracing::{debug, error, info, trace, warn};
 
-use crate::protocols::foreign_toplevel::{
-    ForeignToplevelManagerState, WindowInfo,
-};
-use crate::protocols::output_management::{OutputManagementState};
-use crate::protocols::screencopy::{ScreencopyManagerState};
-use crate::protocols::virtual_pointer::{
-    VirtualPointerManagerState, };
-use crate::protocols::workspace::{WorkspaceManagerState};
+use crate::protocols::foreign_toplevel::{ForeignToplevelManagerState, WindowInfo};
+use crate::protocols::output_management::OutputManagementState;
+use crate::protocols::screencopy::ScreencopyManagerState;
+use crate::protocols::virtual_pointer::VirtualPointerManagerState;
+use crate::protocols::workspace::WorkspaceManagerState;
 
 fn surface_root(surface: &WlSurface) -> WlSurface {
     let mut root = surface.clone();
