@@ -1,8 +1,12 @@
 use smithay::desktop::{PopupKind, layer_map_for_output};
-use smithay::wayland::shell::wlr_layer::{Layer, WlrLayerShellHandler, WlrLayerShellState};
-use tracing::{info, warn};
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::wayland::compositor::with_states;
+use smithay::wayland::shell::wlr_layer::{
+    KeyboardInteractivity, Layer, LayerSurfaceData, WlrLayerShellHandler, WlrLayerShellState,
+};
+use tracing::{debug, info, warn};
 
-use crate::State;
+use crate::{Ewm, State, surface_root};
 
 // Layer Shell
 impl WlrLayerShellHandler for State {
@@ -84,5 +88,68 @@ impl WlrLayerShellHandler for State {
         if let Err(err) = self.ewm.popups.track_popup(popup) {
             warn!("error tracking popup: {err:?}");
         }
+    }
+}
+
+impl Ewm {
+    /// Handle a layer surface commit, returning whether SURFACE was one.
+    pub(crate) fn handle_layer_surface_commit(&mut self, surface: &WlSurface) -> bool {
+        let root_surface = surface_root(surface);
+        let Some((output, layer)) = self.layer_for_root(&root_surface) else {
+            return false;
+        };
+
+        if surface == &root_surface {
+            let initial_configure_sent = with_states(surface, |states| {
+                states
+                    .data_map
+                    .get::<LayerSurfaceData>()
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .initial_configure_sent
+            });
+
+            let mut map = layer_map_for_output(&output);
+
+            // Arrange the layers before sending the initial configure
+            map.arrange();
+
+            if initial_configure_sent {
+                if crate::utils::is_mapped(surface) {
+                    let was_unmapped = self.unmapped_layer_surfaces.remove(surface);
+                    if was_unmapped {
+                        debug!("Layer surface mapped");
+
+                        // Auto-focus newly mapped OnDemand surfaces
+                        if layer.cached_state().keyboard_interactivity
+                            == KeyboardInteractivity::OnDemand
+                        {
+                            self.layer_shell_on_demand_focus = Some(layer.clone());
+                        }
+                    }
+                } else {
+                    self.unmapped_layer_surfaces.insert(surface.clone());
+                }
+            } else {
+                let scale = output.current_scale();
+                let transform = output.current_transform();
+                with_states(surface, |data| {
+                    crate::utils::send_scale_transform(surface, data, scale, transform);
+                });
+                layer.layer_surface().send_configure();
+            }
+            drop(map);
+
+            // Check for working area changes (exclusive zones from panels)
+            self.check_working_area_change(&output);
+
+            self.queue_redraw(&output);
+        } else {
+            // This is a layer-shell subsurface
+            self.queue_redraw(&output);
+        }
+
+        true
     }
 }
