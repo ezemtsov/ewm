@@ -6,6 +6,7 @@
 mod client;
 mod fixture;
 mod input;
+pub mod lisp;
 
 #[cfg(feature = "testing-layer-shell")]
 pub use client::LayerSurface;

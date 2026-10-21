@@ -1487,7 +1487,7 @@ fn swipe_trigger(name: &str) -> Option<Trigger> {
 }
 
 /// A key as Emacs names it: a character code or a key name like `left`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum KeyName {
     Code(u32),
@@ -1527,7 +1527,7 @@ impl KeyName {
 /// One intercepted key as Lisp spells it.
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
-struct KeySpec {
+pub(crate) struct KeySpec {
     key: KeyName,
     description: Option<String>,
     #[serde(default)]
@@ -1555,7 +1555,7 @@ enum Dispatch {
 }
 
 /// A key with the modifiers a client should see it under, as Lisp names it.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct ChordSpec {
     pub key: KeyName,
@@ -1597,7 +1597,7 @@ impl KeySpec {
     }
 }
 
-fn resolve_keys(specs: Vec<KeySpec>) -> Vec<InterceptedKey> {
+pub(crate) fn resolve_keys(specs: Vec<KeySpec>) -> Vec<InterceptedKey> {
     specs.into_iter().filter_map(KeySpec::resolve).collect()
 }
 
@@ -1612,12 +1612,6 @@ pub(crate) fn from_lisp<T: serde::de::DeserializeOwned>(text: &str) -> T {
 
 pub(crate) fn intercepted_keys_from_lisp(text: &str) -> Vec<InterceptedKey> {
     resolve_keys(from_lisp(text))
-}
-
-/// The command `ewm-send-key-module` would push for a printed `[surface-id keys]`.
-pub(crate) fn send_key_from_lisp(text: &str) -> ModuleCommand {
-    let (surface_id, keys) = from_lisp(text);
-    ModuleCommand::SendKey { surface_id, keys }
 }
 
 /// Set intercepted keys from KEYS, a vector of `KeySpec` plists.

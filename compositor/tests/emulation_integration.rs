@@ -1,8 +1,6 @@
 //! Emulated keys end to end: intercepts from the real Lisp payload driven through
 //! the seat, and the keys Emacs sends back replayed to real clients.
 
-mod common;
-
 use std::sync::{Mutex, MutexGuard};
 
 use Wire::{Key, Mods};
@@ -32,22 +30,6 @@ const KEY_END: u32 = 107 + 8;
 const KEY_DELETE: u32 = 111 + 8;
 
 /// Loads the real Lisp with the module stubbed to keep the last list and key sent.
-const LISP_PRELUDE: &str = r#"(setq load-prefer-newer t)
-  (dolist (f '(ewm-layout ewm-focus-target-module ewm-prepare-frame-close-module
-               ewm-get-active-frame-id ewm-get-strip-frame-ids ewm-get-output-origin))
-    (defalias f #'ignore))
-  (defvar capture nil)
-  (defun ewm-keyboard-redirect-capture-clear-module () (setq capture nil))
-  (defun ewm-keyboard-capture-active-module () capture)
-  (defvar keys nil)
-  (defvar sent nil)
-  (defun ewm-intercept-keys-module (k) (setq keys k))
-  (defun ewm-send-key-module (id k) (cl-assert (not capture)) (setq sent (vector id k)))
-  (provide 'ewm-core)
-  (require 'ewm)
-  (setq ewm--module-mode t)
-  (ewm--send-intercept-keys)"#;
-
 /// One keyboard event as a client sees it, in order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Wire {
@@ -133,21 +115,9 @@ impl Harness {
         h
     }
 
-    /// Run `config` after the real Lisp loads and return what `form` prints.
-    fn lisp(config: &str, form: &str) -> String {
-        let form = format!("(progn {LISP_PRELUDE} {config} (prin1 {form}))");
-        common::emacs(&["--eval", &form])
-    }
-
-    /// Load the list the real Lisp last sent once `config` has run.
-    fn load_lisp(&mut self, config: &str) {
-        self.fix
-            .set_intercepted_keys_from_lisp(&Self::lisp(config, "keys"));
-    }
-
     /// Replay the last `ewm-send-key` that `config` made and return each client's wire.
     fn send_lisp(&mut self, config: &str) -> Vec<Vec<Wire>> {
-        self.fix.send_key_from_lisp(&Self::lisp(config, "sent"));
+        self.fix.send_key_lisp(config);
         self.wires()
     }
 
@@ -233,7 +203,7 @@ impl Harness {
 #[test]
 fn key_entries_are_intercepted_on_their_surface_only() {
     let mut h = Harness::new();
-    h.load_lisp(&format!(
+    h.fix.configure_lisp(&format!(
         r#"(add-hook 'ewm-update-app-hook
                      (lambda () (when (equal ewm-surface-app "firefox")
                                   (setq-local ewm-surface-emulate-keys '(("C-n" . "<down>"))))))
@@ -301,7 +271,7 @@ fn emacs_sends_the_mapped_keys_for_both_entry_kinds() {
 #[test]
 fn mode_map_command_keys_are_intercepted() {
     let mut h = Harness::new();
-    h.load_lisp(
+    h.fix.configure_lisp(
         r#"(keymap-set ewm-mode-map "M-w" #'kill-ring-save)
            (keymap-set ewm-mode-map "C-y" #'yank)
            (setopt ewm-surface-emulate-keys '((kill-ring-save . "C-c") (yank . "C-v")))"#,

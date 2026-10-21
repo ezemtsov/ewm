@@ -16,8 +16,8 @@ use tracing::info;
 use crate::backend::{Backend, HeadlessBackend};
 use crate::config::{Config, Cursor};
 use crate::layout::strip::Frame;
-use crate::testing::TestClient;
 use crate::testing::input::{TestAbsoluteEvent, TestDevice, TestGestureEvent, TestInputBackend};
+use crate::testing::{TestClient, lisp};
 use crate::{ClientState, Ewm, OutputInfo, State, register_display_source};
 
 /// Test fixture for integration testing
@@ -775,8 +775,21 @@ impl Fixture {
         self.set_intercepted_keys(crate::module::intercepted_keys_from_lisp(payload));
     }
 
-    pub fn send_key_from_lisp(&mut self, payload: &str) {
-        self.handle_module_command(crate::module::send_key_from_lisp(payload));
+    /// Run `config` in a batch Emacs with EWM loaded and take what it sends: the intercept list
+    /// and the options.
+    pub fn configure_lisp(&mut self, config: &str) {
+        let session = lisp::session(config);
+        self.set_intercepted_keys(session.intercepts.clone());
+        self.configure(session.config.clone());
+    }
+
+    /// Replay the last `ewm-send-key` that `config` makes, run as `configure_lisp` runs it.
+    pub fn send_key_lisp(&mut self, config: &str) {
+        let (surface_id, keys) = lisp::session(config)
+            .sent
+            .clone()
+            .expect("a key `config` sends");
+        self.handle_module_command(crate::module::ModuleCommand::SendKey { surface_id, keys });
     }
 
     pub fn set_fullscreen(&mut self, entry_id: crate::LayoutEntryId, on: bool) {
