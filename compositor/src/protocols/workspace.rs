@@ -8,7 +8,7 @@
 //! protocol mirrors, and sends only changes. Clients always get current state
 //! because `refresh()` runs after bind.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::layout::Layout;
 use crate::layout::strip::Frame;
@@ -47,8 +47,6 @@ enum Action {
 
 /// Per-workspace-group protocol mirror.
 struct GroupData {
-    /// The output this group represents.
-    output: Output,
     /// One handle per manager binding (per client).
     instances: Vec<ExtWorkspaceGroupHandleV1>,
 }
@@ -64,6 +62,7 @@ impl GroupData {
         display: &DisplayHandle,
         client: &Client,
         manager: &ExtWorkspaceManagerV1,
+        output: &Output,
     ) -> Option<ExtWorkspaceGroupHandleV1>
     where
         D: Dispatch<ExtWorkspaceGroupHandleV1, WrappedManager> + 'static,
@@ -78,7 +77,7 @@ impl GroupData {
         manager.workspace_group(&handle);
         handle.capabilities(ext_workspace_group_handle_v1::GroupCapabilities::empty());
 
-        for wl_output in self.output.client_outputs(client) {
+        for wl_output in output.client_outputs(client) {
             handle.output_enter(&wl_output);
         }
 
@@ -89,10 +88,8 @@ impl GroupData {
 
 /// Per-workspace protocol mirror, stores current state for diffing.
 struct WorkspaceData {
-    /// Output this workspace currently belongs to. Tracked here so a
-    /// cross-output move can be detected as a leave-from-old/enter-new on
-    /// the same workspace handle.
-    output: String,
+    /// Current group, for leave/enter on a cross-output move.
+    output: Output,
     /// Protocol `id`: workspace name when named, unset for unnamed workspaces.
     id: Option<String>,
     name: String,
@@ -104,7 +101,7 @@ struct WorkspaceData {
 
 impl WorkspaceData {
     fn new(
-        output: String,
+        output: Output,
         id: Option<String>,
         name: String,
         coordinates: [u32; 2],
@@ -200,9 +197,7 @@ pub struct WorkspaceManagerState {
     display: DisplayHandle,
     /// Per-manager-binding action queue, drained on Commit.
     instances: HashMap<ExtWorkspaceManagerV1, Vec<Action>>,
-    /// output_name -> group
-    groups: HashMap<String, GroupData>,
-    /// (output_name, tab_index) -> workspace
+    groups: HashMap<Output, GroupData>,
     workspaces: HashMap<WorkspaceKey, WorkspaceData>,
 }
 
@@ -229,7 +224,7 @@ struct WorkspaceDebugWorkspace {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DesiredWorkspace {
-    output: String,
+    output: Output,
     id: Option<String>,
     name: String,
     coordinates: [u32; 2],
@@ -239,7 +234,7 @@ struct DesiredWorkspace {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DesiredWorkspaceSnapshot {
-    groups: Vec<String>,
+    groups: Vec<Output>,
     workspace_order: Vec<WorkspaceKey>,
     workspaces: HashMap<WorkspaceKey, DesiredWorkspace>,
 }
@@ -264,7 +259,7 @@ impl WorkspaceManagerState {
     }
 
     pub(crate) fn debug_state(&self) -> WorkspaceDebugState {
-        let mut groups: Vec<_> = self.groups.keys().cloned().collect();
+        let mut groups: Vec<_> = self.groups.keys().map(Output::name).collect();
         groups.sort();
 
         let mut workspaces: Vec<_> = self
@@ -272,7 +267,7 @@ impl WorkspaceManagerState {
             .iter()
             .map(|(&surface_id, ws)| WorkspaceDebugWorkspace {
                 surface_id,
-                output: ws.output.clone(),
+                output: ws.output.name(),
                 id: ws.id.clone(),
                 name: ws.name.clone(),
                 coordinates: ws.coordinates,
@@ -339,11 +334,10 @@ fn desired_workspace_snapshot(
     let mut workspace_order = Vec::new();
     let mut workspaces = HashMap::new();
     for output in sorted_outputs {
-        let output_name = output.name();
         let Some(strip) = layout.strip(output) else {
             continue;
         };
-        groups.push(output_name.clone());
+        groups.push(output.clone());
 
         for (idx, frame) in strip.frames().iter().enumerate() {
             let key = frame.surface_id;
@@ -353,7 +347,7 @@ fn desired_workspace_snapshot(
                 .insert(
                     key,
                     DesiredWorkspace {
-                        output: output_name.clone(),
+                        output: output.clone(),
                         id,
                         name,
                         coordinates: [0, idx as u32],
@@ -415,75 +409,70 @@ fn remove_workspace(workspace_state: &mut WorkspaceManagerState, key: WorkspaceK
     true
 }
 
+/// Remove groups whose `Output` is gone, with `workspace_leave` for every
+/// member first. An output re-created under its old name is a new `Output`.
 fn remove_stale_groups(
     workspace_state: &mut WorkspaceManagerState,
     desired: &DesiredWorkspaceSnapshot,
 ) -> bool {
-    let dead_group_keys: Vec<String> = workspace_state
-        .groups
-        .keys()
-        .filter(|name| !desired.groups.contains(name))
-        .cloned()
-        .collect();
+    let WorkspaceManagerState {
+        groups, workspaces, ..
+    } = workspace_state;
 
     let mut changed = false;
-    for name in dead_group_keys {
-        let Some(group) = workspace_state.groups.remove(&name) else {
-            continue;
-        };
+    groups.retain(|output, group| {
+        if desired.groups.contains(output) {
+            return true;
+        }
+        for ws in workspaces.values() {
+            if ws.output == *output {
+                send_workspace_leave(&group.instances, &ws.instances);
+            }
+        }
         for inst in &group.instances {
             inst.removed();
         }
         changed = true;
-    }
+        false
+    });
 
     changed
 }
 
-fn group_for_output<D>(workspace_state: &WorkspaceManagerState, output: Output) -> GroupData
-where
-    D: Dispatch<ExtWorkspaceGroupHandleV1, WrappedManager> + 'static,
-{
-    let mut group = GroupData {
-        output,
-        instances: Vec::new(),
-    };
-
-    for manager in workspace_state.instances.keys() {
-        if let Some(client) = manager.client() {
-            let _ = group.add_instance::<D>(&workspace_state.display, &client, manager);
-        }
-    }
-
-    group
-}
-
+/// Create groups for new outputs, entering the workspaces already on them.
 fn sync_groups<D>(
     workspace_state: &mut WorkspaceManagerState,
-    sorted_outputs: &[Output],
     desired: &DesiredWorkspaceSnapshot,
-) -> HashSet<String>
+) -> bool
 where
     D: Dispatch<ExtWorkspaceGroupHandleV1, WrappedManager> + 'static,
 {
-    let mut new_groups = HashSet::new();
+    let mut changed = false;
 
-    for output_name in &desired.groups {
-        if workspace_state.groups.contains_key(output_name) {
+    for output in &desired.groups {
+        if workspace_state.groups.contains_key(output) {
             continue;
         }
 
-        let output = sorted_outputs
-            .iter()
-            .find(|output| output.name() == output_name.as_str())
-            .expect("desired groups only contain live outputs");
-        let group = group_for_output::<D>(workspace_state, output.clone());
+        let mut group = GroupData {
+            instances: Vec::new(),
+        };
+        for manager in workspace_state.instances.keys() {
+            if let Some(client) = manager.client() {
+                let _ = group.add_instance::<D>(&workspace_state.display, &client, manager, output);
+            }
+        }
+        for ws in workspace_state.workspaces.values() {
+            if ws.output == *output {
+                send_workspace_enter(&group.instances, &ws.instances);
+            }
+        }
 
-        workspace_state.groups.insert(output_name.clone(), group);
-        new_groups.insert(output_name.clone());
+        workspace_state.groups.insert(output.clone(), group);
+        changed = true;
     }
 
-    new_groups
+    changed
 }
 
 fn desired_workspaces_in_protocol_order(
@@ -502,28 +491,19 @@ fn desired_workspaces_in_protocol_order(
 }
 
 fn sync_workspace_group_membership(
-    groups: &HashMap<String, GroupData>,
+    groups: &HashMap<Output, GroupData>,
     workspace: &mut WorkspaceData,
     desired: &DesiredWorkspace,
-    new_groups: &HashSet<String>,
 ) -> bool {
-    if workspace.output != desired.output {
-        if let Some(old_group) = groups.get(&workspace.output) {
-            send_workspace_leave(&old_group.instances, &workspace.instances);
-        }
-        workspace.output = desired.output.clone();
-        if let Some(new_group) = groups.get(&desired.output) {
-            send_workspace_enter(&new_group.instances, &workspace.instances);
-        }
-        return true;
-    }
-
-    if !new_groups.contains(&desired.output) {
+    if workspace.output == desired.output {
         return false;
     }
-
-    if let Some(group) = groups.get(&desired.output) {
-        send_workspace_enter(&group.instances, &workspace.instances);
+    if let Some(old_group) = groups.get(&workspace.output) {
+        send_workspace_leave(&old_group.instances, &workspace.instances);
+    }
+    workspace.output = desired.output.clone();
+    if let Some(new_group) = groups.get(&desired.output) {
+        send_workspace_enter(&new_group.instances, &workspace.instances);
     }
     true
 }
@@ -549,23 +529,21 @@ fn insert_workspace<D>(
 }
 
 fn sync_existing_workspace(
-    groups: &HashMap<String, GroupData>,
+    groups: &HashMap<Output, GroupData>,
     workspaces: &mut HashMap<WorkspaceKey, WorkspaceData>,
     key: WorkspaceKey,
     desired: &DesiredWorkspace,
-    new_groups: &HashSet<String>,
 ) -> Option<bool> {
     let workspace = workspaces.get_mut(&key)?;
 
     let mut changed = workspace.apply_desired_properties(desired);
-    changed |= sync_workspace_group_membership(groups, workspace, desired, new_groups);
+    changed |= sync_workspace_group_membership(groups, workspace, desired);
     Some(changed)
 }
 
 fn sync_workspaces<D>(
     workspace_state: &mut WorkspaceManagerState,
     desired: &DesiredWorkspaceSnapshot,
-    new_groups: &HashSet<String>,
 ) -> bool
 where
     D: Dispatch<ExtWorkspaceHandleV1, WrappedManager> + 'static,
@@ -589,7 +567,6 @@ where
             &mut workspace_state.workspaces,
             key,
             desired_workspace,
-            new_groups,
         ) {
             changed |= workspace_changed;
             continue;
@@ -626,9 +603,8 @@ pub fn refresh<D>(
     let mut changed = remove_stale_workspaces(workspace_state, &desired);
     changed |= remove_stale_groups(workspace_state, &desired);
 
-    let new_groups = sync_groups::<D>(workspace_state, sorted_outputs, &desired);
-    changed |= !new_groups.is_empty();
-    changed |= sync_workspaces::<D>(workspace_state, &desired, &new_groups);
+    changed |= sync_workspaces::<D>(workspace_state, &desired);
+    changed |= sync_groups::<D>(workspace_state, &desired);
 
     if changed {
         notify_managers_done(workspace_state);
@@ -644,8 +620,7 @@ pub fn on_output_bound(
     output: &Output,
     wl_output: &WlOutput,
 ) {
-    let output_name = output.name();
-    let Some(group) = workspace_state.groups.get(&output_name) else {
+    let Some(group) = workspace_state.groups.get(output) else {
         return;
     };
 
@@ -722,27 +697,25 @@ where
         // Create workspace instances for the new client, grouped by their
         // current output so the freshly-created group can issue
         // workspace_enter for each.
-        let mut new_ws_by_output: HashMap<String, Vec<ExtWorkspaceHandleV1>> = HashMap::new();
+        let mut new_ws_by_output: HashMap<Output, Vec<ExtWorkspaceHandleV1>> = HashMap::new();
         for ws_data in ps.workspaces.values_mut() {
-            let output_name = ws_data.output.clone();
+            let output = ws_data.output.clone();
             let Some(ws_handle) = ws_data.add_instance::<D>(&ps.display, client, &manager) else {
                 continue;
             };
-            new_ws_by_output
-                .entry(output_name)
-                .or_default()
-                .push(ws_handle);
+            new_ws_by_output.entry(output).or_default().push(ws_handle);
         }
 
         // Create group instances for all tracked outputs, with workspace_enter.
-        for (output_name, group_data) in &mut ps.groups {
-            let Some(group_handle) = group_data.add_instance::<D>(&ps.display, client, &manager)
+        for (output, group_data) in &mut ps.groups {
+            let Some(group_handle) =
+                group_data.add_instance::<D>(&ps.display, client, &manager, output)
             else {
                 continue;
             };
 
             // Send workspace_enter for workspaces on this output.
-            for ws_handle in new_ws_by_output.get(output_name).into_iter().flatten() {
+            for ws_handle in new_ws_by_output.get(output).into_iter().flatten() {
                 group_handle.workspace_enter(ws_handle);
             }
         }
@@ -930,11 +903,7 @@ mod tests {
             }
 
             let snapshot = desired_workspace_snapshot(&layout, &|_| false, &outputs);
-            let expected_groups = outputs
-                .iter()
-                .map(Output::name)
-                .collect::<Vec<_>>();
-            prop_assert_eq!(&snapshot.groups, &expected_groups);
+            prop_assert_eq!(&snapshot.groups, &outputs);
             prop_assert_eq!(
                 snapshot.workspaces.len(),
                 if a_live { a_len } else { 0 } + if b_live { b_len } else { 0 },
@@ -968,7 +937,7 @@ mod tests {
                         continue;
                     }
                     let ws = snapshot.workspaces.get(&key).expect("workspace exists");
-                    prop_assert_eq!(ws.output.as_str(), output);
+                    prop_assert_eq!(ws.output.name(), output);
                     prop_assert_eq!(ws.id.as_deref(), None);
                     prop_assert_eq!(ws.name.as_str(), (idx + 1).to_string());
                     prop_assert_eq!(ws.coordinates, [0, idx as u32]);

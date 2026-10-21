@@ -22,6 +22,11 @@ use wayland_protocols::ext::background_effect::v1::client::ext_background_effect
 use wayland_protocols::ext::session_lock::v1::client::{
     ext_session_lock_manager_v1, ext_session_lock_v1,
 };
+use wayland_protocols::ext::workspace::v1::client::{
+    ext_workspace_group_handle_v1::{self, ExtWorkspaceGroupHandleV1},
+    ext_workspace_handle_v1::{self, ExtWorkspaceHandleV1},
+    ext_workspace_manager_v1::{self, ExtWorkspaceManagerV1},
+};
 use wayland_protocols::wp::pointer_gestures::zv1::client::{
     zwp_pointer_gesture_hold_v1, zwp_pointer_gesture_pinch_v1, zwp_pointer_gesture_swipe_v1,
     zwp_pointer_gestures_v1,
@@ -140,6 +145,24 @@ pub enum ClientEvent {
     BackgroundEffectCapabilities {
         flags: WEnum<ext_background_effect_manager_v1::Capability>,
     },
+    WorkspaceGroupOutputEnter {
+        group: ExtWorkspaceGroupHandleV1,
+        output: wl_output::WlOutput,
+    },
+    WorkspaceGroupRemoved {
+        group: ExtWorkspaceGroupHandleV1,
+    },
+    WorkspaceEnter {
+        group: ExtWorkspaceGroupHandleV1,
+        workspace: ExtWorkspaceHandleV1,
+    },
+    WorkspaceLeave {
+        group: ExtWorkspaceGroupHandleV1,
+        workspace: ExtWorkspaceHandleV1,
+    },
+    WorkspaceRemoved {
+        workspace: ExtWorkspaceHandleV1,
+    },
     SessionLocked,
     SessionLockFinished,
     #[cfg(feature = "testing-layer-shell")]
@@ -152,6 +175,7 @@ pub struct TestClient {
     pub(crate) server_client_id: ClientId,
     pub(crate) conn: Connection,
     pub(crate) eq: EventQueue<ClientState>,
+    pub(crate) registry: wl_registry::WlRegistry,
     pub(crate) state: ClientState,
 }
 
@@ -171,6 +195,9 @@ pub struct ClientState {
     pub kde_decoration_manager: Option<OrgKdeKwinServerDecorationManager>,
     pub background_effect_manager: Option<ExtBackgroundEffectManagerV1>,
     pub session_lock_manager: Option<ext_session_lock_manager_v1::ExtSessionLockManagerV1>,
+    pub workspace_manager: Option<ExtWorkspaceManagerV1>,
+    /// Name and version of the `ext_workspace_manager_v1` global, bound on demand.
+    pub(crate) workspace_manager_global: Option<(u32, u32)>,
     #[cfg(feature = "testing-layer-shell")]
     pub layer_shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
     /// `wl_output` protocol id -> server-advertised name.
@@ -209,11 +236,12 @@ impl TestClient {
         let conn = Connection::from_socket(stream)?;
         let eq = conn.new_event_queue::<ClientState>();
         let qh = eq.handle();
-        let _registry = conn.display().get_registry(&qh, ());
+        let registry = conn.display().get_registry(&qh, ());
         Ok(Self {
             server_client_id,
             conn,
             eq,
+            registry,
             state: ClientState::default(),
         })
     }
@@ -262,6 +290,16 @@ impl TestClient {
             .values()
             .filter(|g| g.as_str() == interface)
             .count()
+    }
+
+    /// Bind `ext_workspace_manager_v1`, as a bar does once it holds its wl_outputs.
+    pub fn bind_workspace_manager(&mut self) {
+        let (name, version) = self
+            .state
+            .workspace_manager_global
+            .expect("server advertises ext_workspace_manager_v1");
+        let qh = self.eq.handle();
+        self.state.workspace_manager = Some(self.registry.bind(name, version, &qh, ()));
     }
 
     /// Request the session lock. The answer arrives as `SessionLocked` or
@@ -584,6 +622,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientState {
             == ext_session_lock_manager_v1::ExtSessionLockManagerV1::interface().name
         {
             state.session_lock_manager = Some(registry.bind(name, version, qh, ()));
+        } else if interface == ExtWorkspaceManagerV1::interface().name {
+            state.workspace_manager_global = Some((name, version));
         }
         #[cfg(feature = "testing-layer-shell")]
         if interface == zwlr_layer_shell_v1::ZwlrLayerShellV1::interface().name {
@@ -1063,5 +1103,63 @@ impl Dispatch<zwp_input_method_v2::ZwpInputMethodV2, ()> for ClientState {
         }
     }
 }
+
+impl Dispatch<ExtWorkspaceManagerV1, ()> for ClientState {
+    fn event(
+        _: &mut Self,
+        _: &ExtWorkspaceManagerV1,
+        _: ext_workspace_manager_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+
+    wayland_client::event_created_child!(ClientState, ExtWorkspaceManagerV1, [
+        ext_workspace_manager_v1::EVT_WORKSPACE_GROUP_OPCODE => (ExtWorkspaceGroupHandleV1, ()),
+        ext_workspace_manager_v1::EVT_WORKSPACE_OPCODE => (ExtWorkspaceHandleV1, ()),
+    ]);
+}
+
+impl Dispatch<ExtWorkspaceGroupHandleV1, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        group: &ExtWorkspaceGroupHandleV1,
+        event: ext_workspace_group_handle_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        use ext_workspace_group_handle_v1::Event;
+        let group = group.clone();
+        state.events.push(match event {
+            Event::OutputEnter { output } => {
+                ClientEvent::WorkspaceGroupOutputEnter { group, output }
+            }
+            Event::WorkspaceEnter { workspace } => ClientEvent::WorkspaceEnter { group, workspace },
+            Event::WorkspaceLeave { workspace } => ClientEvent::WorkspaceLeave { group, workspace },
+            Event::Removed => ClientEvent::WorkspaceGroupRemoved { group },
+            _ => return,
+        });
+    }
+}
+
+impl Dispatch<ExtWorkspaceHandleV1, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        workspace: &ExtWorkspaceHandleV1,
+        event: ext_workspace_handle_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let ext_workspace_handle_v1::Event::Removed = event {
+            state.events.push(ClientEvent::WorkspaceRemoved {
+                workspace: workspace.clone(),
+            });
+        }
+    }
+}
+
 #[cfg(feature = "testing-layer-shell")]
 wayland_client::delegate_noop!(ClientState: ignore zwlr_layer_shell_v1::ZwlrLayerShellV1);

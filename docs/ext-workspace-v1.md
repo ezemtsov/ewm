@@ -24,7 +24,9 @@ sources of truth.
 
 ## Mapping to ext-workspace-v1
 
-- **Workspace group**: one per output.
+- **Workspace group**: one per output object. A reconnected output,
+  even under its old name, is a new group: the old one is `removed`,
+  the new one enters the live `wl_output`.
 - **Workspace handle**: one per Emacs frame. Bound to the frame's
   `surface_id` for the frame's lifetime. The handle is *not*
   recreated on reorder.
