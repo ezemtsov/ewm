@@ -54,34 +54,11 @@ impl Ewm {
     pub fn remove_output(&mut self, output: &Output) {
         let output_name = output.name();
 
-        // Clean up gamma control for this output
-        self.gamma_control_state.output_removed(output);
-
-        // Stop screen casts for this output
-        #[cfg(feature = "screencast")]
-        {
-            let target = dbus::CastTarget::Output {
-                name: output_name.to_string(),
-            };
-            let sessions_to_stop: Vec<screencasting::CastSessionId> = self
-                .casting
-                .casts
-                .iter()
-                .filter(|cast| cast.target == target)
-                .map(|cast| cast.session_id)
-                .collect();
-            for session_id in sessions_to_stop {
-                info!(output = %output_name, %session_id, "stopping cast due to output disconnect");
-                self.stop_cast(session_id);
-            }
-        }
-
         // The output goes first, then the frames it took with it.
         self.queue_event(Event::OutputDisconnected {
             name: output_name.clone(),
         });
         self.detach_output(output);
-        self.screencopy_state.remove_output(output);
 
         // Cancel pending estimated-VBlank timers
         if let Some(output_state) = self.output_state.remove(output)
@@ -94,6 +71,26 @@ impl Ewm {
         self.check_lock_on_output_removed();
 
         info!("Output removed: {}", output_name);
+    }
+
+    /// Stop the screen casts of an output that left the space.
+    #[cfg(feature = "screencast")]
+    pub(crate) fn stop_output_casts(&mut self, output: &Output) {
+        let output_name = output.name();
+        let target = dbus::CastTarget::Output {
+            name: output_name.clone(),
+        };
+        let sessions_to_stop: Vec<screencasting::CastSessionId> = self
+            .casting
+            .casts
+            .iter()
+            .filter(|cast| cast.target == target)
+            .map(|cast| cast.session_id)
+            .collect();
+        for session_id in sessions_to_stop {
+            info!(output = %output_name, %session_id, "stopping cast, its output left");
+            self.stop_cast(session_id);
+        }
     }
 
     /// Withdraw the wl_output global now and drop it once clients had time to notice.

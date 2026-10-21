@@ -89,7 +89,7 @@ impl Ewm {
         removed.map(|change| change.output)
     }
 
-    /// Move `output`'s frames to the next output in order, else park them, and unmap it.
+    /// Move `output`'s frames to the next output, else park them, and withdraw it from clients.
     pub(crate) fn detach_output(&mut self, output: &Output) {
         let fallback = self.output_next_of(output).filter(|next| next != output);
         let moved = self.layout.detach_output(output, fallback.as_ref());
@@ -104,6 +104,11 @@ impl Ewm {
             layers.unmap_layer(&layer);
         }
         drop(layers);
+        self.gamma_control_state.output_removed(output);
+        self.screencopy_state.remove_output(output);
+        #[cfg(feature = "screencast")]
+        self.stop_output_casts(output);
+        self.output_state.get_mut(output).unwrap().lock_surface = None;
         self.retire_output_global(output);
         self.sync_sorted_outputs();
         self.refresh_cursor_outputs();
