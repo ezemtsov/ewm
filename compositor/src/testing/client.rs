@@ -142,6 +142,10 @@ pub enum ClientEvent {
     },
     SessionLocked,
     SessionLockFinished,
+    #[cfg(feature = "testing-layer-shell")]
+    LayerClosed {
+        layer_surface: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+    },
 }
 
 pub struct TestClient {
@@ -171,8 +175,8 @@ pub struct ClientState {
     pub layer_shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
     /// `wl_output` protocol id -> server-advertised name.
     pub output_names: HashMap<u32, String>,
-    /// Interface names of every global the server advertised.
-    pub globals: Vec<String>,
+    /// Registry name -> interface of every global currently advertised.
+    pub globals: HashMap<u32, String>,
     pub events: Vec<ClientEvent>,
 }
 
@@ -249,7 +253,15 @@ impl TestClient {
     }
 
     pub fn has_global(&self, interface: &str) -> bool {
-        self.state.globals.iter().any(|g| g == interface)
+        self.global_count(interface) > 0
+    }
+
+    pub fn global_count(&self, interface: &str) -> usize {
+        self.state
+            .globals
+            .values()
+            .filter(|g| g.as_str() == interface)
+            .count()
     }
 
     /// Request the session lock. The answer arrives as `SessionLocked` or
@@ -531,6 +543,10 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientState {
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
+        if let wl_registry::Event::GlobalRemove { name } = &event {
+            state.globals.remove(name);
+            return;
+        }
         let wl_registry::Event::Global {
             name,
             interface,
@@ -539,7 +555,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientState {
         else {
             return;
         };
-        state.globals.push(interface.clone());
+        state.globals.insert(name, interface.clone());
         if interface == wl_compositor::WlCompositor::interface().name {
             state.compositor = Some(registry.bind(name, version, qh, ()));
         } else if interface == xdg_wm_base::XdgWmBase::interface().name {
@@ -793,15 +809,21 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for ClientState {
 #[cfg(feature = "testing-layer-shell")]
 impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for ClientState {
     fn event(
-        _: &mut Self,
+        state: &mut Self,
         layer_surface: &zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
         event: zwlr_layer_surface_v1::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let zwlr_layer_surface_v1::Event::Configure { serial, .. } = event {
-            layer_surface.ack_configure(serial);
+        match event {
+            zwlr_layer_surface_v1::Event::Configure { serial, .. } => {
+                layer_surface.ack_configure(serial);
+            }
+            zwlr_layer_surface_v1::Event::Closed => state.events.push(ClientEvent::LayerClosed {
+                layer_surface: layer_surface.clone(),
+            }),
+            _ => {}
         }
     }
 }

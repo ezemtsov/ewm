@@ -5,7 +5,7 @@ use std::mem;
 
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::desktop::utils::under_from_surface_tree;
-use smithay::desktop::{Window, WindowSurfaceType};
+use smithay::desktop::{Window, WindowSurfaceType, layer_map_for_output};
 use smithay::output::Output;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgToplevelState;
 use smithay::utils::{Logical, Point, Rectangle, Size};
@@ -98,6 +98,13 @@ impl Ewm {
             self.queue_event(Event::Close { id });
         }
         self.space.unmap_output(output);
+        let mut layers = layer_map_for_output(output);
+        for layer in layers.layers().cloned().collect::<Vec<_>>() {
+            layer.layer_surface().send_close();
+            layers.unmap_layer(&layer);
+        }
+        drop(layers);
+        self.retire_output_global(output);
         self.sync_sorted_outputs();
         self.refresh_cursor_outputs();
         self.recalculate_output_size();

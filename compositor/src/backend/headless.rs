@@ -20,7 +20,7 @@ use tracing::{debug, info};
 use crate::backend::{
     OutputInfos, apply_enabled_output_config, apply_initial_output_config, map_initial_output,
 };
-use crate::{Ewm, OutputState, RedrawState, State};
+use crate::{Ewm, OutputState, RedrawState};
 
 /// A virtual output for headless testing.
 struct VirtualOutput {
@@ -109,16 +109,11 @@ impl HeadlessBackend {
         let config = ewm.output_config.get(name).cloned();
         apply_initial_output_config(&output, mode, config.as_ref());
 
-        // Create global for Wayland clients
-        output.create_global::<State>(&ewm.display_handle);
-
-        let (position, is_enabled) = map_initial_output(ewm, &output, config.as_ref());
-
-        // Initialize output state in Ewm
         ewm.output_state.insert(
             output.clone(),
             OutputState::new(name, Some(Duration::from_micros(16_667)), (width, height)), // ~60Hz
         );
+        let (position, is_enabled) = map_initial_output(ewm, &output, config.as_ref());
 
         self.outputs.insert(
             name.to_string(),

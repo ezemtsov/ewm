@@ -2,9 +2,11 @@
 
 use std::collections::HashMap;
 use std::mem;
+use std::time::Duration;
 
 use smithay::desktop::layer_map_for_output;
 use smithay::output::Output;
+use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 use tracing::info;
@@ -20,13 +22,13 @@ use crate::{
 use crate::{dbus, screencasting};
 
 impl Ewm {
-    pub(crate) fn output_exists(&self, output: &Output) -> bool {
-        self.output_state.contains_key(output)
+    pub(crate) fn output_mapped(&self, output: &Output) -> bool {
+        self.layout.monitor_of(output).is_some()
     }
 
-    /// Convert a `WlOutput` to an `Output` that EWM still tracks.
+    /// Convert a `WlOutput` to an `Output` that is mapped.
     pub(crate) fn output_from_resource(&self, wl_output: &WlOutput) -> Option<Output> {
-        Output::from_resource(wl_output).filter(|output| self.output_exists(output))
+        Output::from_resource(wl_output).filter(|output| self.output_mapped(output))
     }
 
     /// Find a connected output by name, whether or not it is currently mapped.
@@ -40,7 +42,7 @@ impl Ewm {
     /// Unmap a connected output while keeping its head available for
     /// output-management so it can be re-enabled later.
     pub(crate) fn disable_output(&mut self, output: &Output) {
-        if self.layout.output_rect(output).is_none() {
+        if !self.output_mapped(output) {
             return;
         }
 
@@ -51,16 +53,6 @@ impl Ewm {
     /// Drop every record of a removed output once the backend has torn it down.
     pub fn remove_output(&mut self, output: &Output) {
         let output_name = output.name();
-
-        // Cancel pending estimated-VBlank timers
-        if let Some(output_state) = self.output_state.remove(output)
-            && let RedrawState::WaitingForEstimatedVBlank(token)
-            | RedrawState::WaitingForEstimatedVBlankAndQueued(token) = output_state.redraw_state
-        {
-            self.loop_handle.remove(token);
-        }
-
-        self.check_lock_on_output_removed();
 
         // Clean up gamma control for this output
         self.gamma_control_state.output_removed(output);
@@ -91,7 +83,37 @@ impl Ewm {
         self.detach_output(output);
         self.screencopy_state.remove_output(output);
 
+        // Cancel pending estimated-VBlank timers
+        if let Some(output_state) = self.output_state.remove(output)
+            && let RedrawState::WaitingForEstimatedVBlank(token)
+            | RedrawState::WaitingForEstimatedVBlankAndQueued(token) = output_state.redraw_state
+        {
+            self.loop_handle.remove(token);
+        }
+
+        self.check_lock_on_output_removed();
+
         info!("Output removed: {}", output_name);
+    }
+
+    /// Withdraw the wl_output global now and drop it once clients had time to notice.
+    pub(crate) fn retire_output_global(&mut self, output: &Output) {
+        let Some(global) = self.output_state.get_mut(output).unwrap().global.take() else {
+            return;
+        };
+        self.display_handle.disable_global::<State>(global.clone());
+        self.loop_handle
+            .insert_source(
+                Timer::from_duration(Duration::from_secs(10)),
+                move |_, _, state| {
+                    state
+                        .ewm
+                        .display_handle
+                        .remove_global::<State>(global.clone());
+                    TimeoutAction::Drop
+                },
+            )
+            .unwrap();
     }
 
     /// Build a snapshot of all output states for the output management protocol.
@@ -373,12 +395,17 @@ impl Ewm {
             .collect()
     }
 
-    /// Map `output` at `position` and give it a monitor.
+    /// Map `output` at `position`, give it a monitor and advertise it to clients.
     pub(crate) fn map_output(&mut self, output: &Output, position: Point<i32, Logical>) {
         self.space.map_output(output, position);
         output.change_current_state(None, None, None, Some(position));
         let working_area = self.get_working_area(output);
         self.layout.add_output(output.clone(), working_area);
+        self.output_state
+            .get_mut(output)
+            .unwrap()
+            .global
+            .get_or_insert_with(|| output.create_global::<State>(&self.display_handle));
     }
 
     pub(crate) fn sync_sorted_outputs(&mut self) {
@@ -414,7 +441,7 @@ impl Ewm {
             height: working_area.size.h,
         });
 
-        if self.layout.output_rect(output).is_some() {
+        if self.output_mapped(output) {
             self.attach_output(output);
             self.introspect_windows_dirty = true;
         }

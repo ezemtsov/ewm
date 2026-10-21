@@ -520,6 +520,9 @@ fn disabling_and_reenabling_headless_output_updates_protocol_state() {
     let mut fixture = Fixture::new().expect("Failed to create fixture");
     fixture.add_output("Virtual-1", 1280, 720);
     fixture.dispatch();
+    let mut client = fixture.new_client().expect("Failed to create client");
+    fixture.roundtrip(&mut client);
+    assert_eq!(client.global_count("wl_output"), 1);
 
     fixture.ewm().output_management_state.output_heads_changed = false;
     fixture.ewm().output_config.insert(
@@ -537,6 +540,7 @@ fn disabling_and_reenabling_headless_output_updates_protocol_state() {
             .output_management_state
             .output_heads_changed
     );
+    fixture.roundtrip(&mut client);
     assert!(
         !fixture
             .ewm_ref()
@@ -544,6 +548,7 @@ fn disabling_and_reenabling_headless_output_updates_protocol_state() {
             .outputs()
             .any(|output| output.name() == "Virtual-1")
     );
+    assert_eq!(client.global_count("wl_output"), 0);
     let output_infos = fixture.output_info_list();
     assert!(!fixture.ewm_ref().build_output_head_states(&output_infos)["Virtual-1"].enabled);
 
@@ -563,6 +568,7 @@ fn disabling_and_reenabling_headless_output_updates_protocol_state() {
             .output_management_state
             .output_heads_changed
     );
+    fixture.roundtrip(&mut client);
     assert!(
         fixture
             .ewm_ref()
@@ -570,11 +576,45 @@ fn disabling_and_reenabling_headless_output_updates_protocol_state() {
             .outputs()
             .any(|output| output.name() == "Virtual-1")
     );
+    assert_eq!(client.global_count("wl_output"), 1);
     let output_infos = fixture.output_info_list();
     let heads = fixture.ewm_ref().build_output_head_states(&output_infos);
     let head = &heads["Virtual-1"];
     assert!(head.enabled);
     assert!(head.current_mode.is_some());
+}
+
+#[cfg(feature = "testing-layer-shell")]
+#[test]
+fn disabling_an_output_closes_its_layer_surfaces() {
+    let mut fixture = Fixture::new().expect("Failed to create fixture");
+    fixture.add_output("Virtual-1", 1280, 720);
+    fixture.dispatch();
+    let mut client = fixture.new_client().expect("Failed to create client");
+    fixture.roundtrip(&mut client);
+    let layer =
+        fixture.open_layer_surface(&mut client, "closes-with-output", Size::from((300, 30)));
+    let output = fixture.output("Virtual-1");
+
+    fixture.ewm().output_config.insert(
+        "Virtual-1".to_string(),
+        OutputConfig {
+            enabled: false,
+            ..Default::default()
+        },
+    );
+    fixture.apply_output_config("Virtual-1");
+    fixture.roundtrip(&mut client);
+
+    assert_eq!(
+        smithay::desktop::layer_map_for_output(&output)
+            .layers()
+            .count(),
+        0
+    );
+    assert!(client.drain_events().contains(&ClientEvent::LayerClosed {
+        layer_surface: layer.layer_surface.clone(),
+    }));
 }
 
 #[test]
@@ -590,6 +630,8 @@ fn headless_output_respects_initial_disabled_config() {
 
     fixture.add_output("Virtual-1", 1280, 720);
     fixture.dispatch();
+    let mut client = fixture.new_client().expect("Failed to create client");
+    fixture.roundtrip(&mut client);
 
     assert!(
         !fixture
@@ -598,6 +640,7 @@ fn headless_output_respects_initial_disabled_config() {
             .outputs()
             .any(|output| output.name() == "Virtual-1")
     );
+    assert_eq!(client.global_count("wl_output"), 0);
     let output_infos = fixture.output_info_list();
     assert!(!fixture.ewm_ref().build_output_head_states(&output_infos)["Virtual-1"].enabled);
 }

@@ -73,9 +73,7 @@ use smithay::{
         },
         input::Libinput,
         rustix::fs::OFlags,
-        wayland_server::{
-            Display, DisplayHandle, backend::GlobalId, protocol::wl_surface::WlSurface,
-        },
+        wayland_server::{Display, DisplayHandle, protocol::wl_surface::WlSurface},
     },
     utils::DeviceFd,
     wayland::dmabuf::{DmabufFeedback, DmabufFeedbackBuilder, DmabufGlobal},
@@ -540,8 +538,6 @@ type GbmDrmCompositor = DrmCompositor<
 /// Per-output surface state (DRM-specific, redraw state is in Ewm::output_state)
 struct OutputSurface {
     output: Output,
-    /// wl_output global ID (stored for verification/lifecycle)
-    global_id: GlobalId,
     compositor: GbmDrmCompositor,
     /// Connector handle for mode lookups
     connector: connector::Handle,
@@ -889,7 +885,7 @@ pub struct DrmBackendState {
     loop_handle: Option<LoopHandle<'static, State>>,
     /// Cursor texture cache for rendering named cursor images.
     cursor_texture_cache: CursorTextureCache,
-    /// Display handle for creating output globals on hotplug
+    /// Display handle for the dmabuf global
     display_handle: Option<DisplayHandle>,
     /// Pending initialization data - Some until DRM is initialized
     pending: Option<DrmPendingInit>,
@@ -1161,9 +1157,6 @@ impl DrmBackendState {
         // Re-scan connectors to detect monitors added/removed during suspend.
         let lid_state_changed = self.refresh_lid_state_from_acpi();
         self.scan_all_device_connectors(ewm);
-
-        // Verify output globals survived the session pause/resume cycle
-        self.verify_output_globals();
 
         let lid_policy_handled = self.lid_supported
             && (self.lid_closed || lid_state_changed)
@@ -1983,10 +1976,6 @@ impl DrmBackendState {
             bail!("DRM device not initialized");
         };
 
-        let Some(display_handle) = &self.display_handle else {
-            bail!("Display handle not available");
-        };
-
         let connector_name = format_connector_name(&connector);
         let config = ewm.output_config.get(&connector_name).cloned();
 
@@ -2097,11 +2086,6 @@ impl DrmBackendState {
 
         let smithay_mode = Mode::from(mode);
         apply_initial_output_config(&output, smithay_mode, config.as_ref());
-        let global_id = output.create_global::<State>(display_handle);
-        warn!(
-            "Created wl_output global for {}: {:?}",
-            connector_name, global_id
-        );
 
         // Create DrmCompositor
         let cursor_size = device.drm.cursor_size();
@@ -2194,7 +2178,6 @@ impl DrmBackendState {
             crtc,
             OutputSurface {
                 output: output.clone(),
-                global_id,
                 compositor,
                 connector: connector.handle(),
                 vblank_throttle,
@@ -2293,44 +2276,8 @@ impl DrmBackendState {
             return;
         };
 
-        // Remove the wl_output global before dropping the surface.
-        // Without this, each reconnect cycle creates a new global while the
-        // old one remains advertised to clients, causing duplicates.
-        if let Some(dh) = &self.display_handle {
-            dh.remove_global::<State>(surface.global_id);
-        }
-
         self.output_infos.remove(&surface.output.name());
         ewm.remove_output(&surface.output);
-    }
-
-    /// Verify all connected outputs have valid wl_output globals.
-    /// Re-creates any that are missing (defensive against silent global loss).
-    fn verify_output_globals(&mut self) {
-        let Some(dh) = &self.display_handle else {
-            return;
-        };
-        for device in self.devices.values_mut() {
-            for surface in device.surfaces.values_mut() {
-                let backend = dh.backend_handle();
-                if backend.global_info(surface.global_id.clone()).is_err() {
-                    warn!(
-                        "Output {} has invalid wl_output global {:?}, re-creating",
-                        surface.output.name(),
-                        surface.global_id
-                    );
-                    // Remove the old (invalid) global before creating a new one
-                    // to avoid duplicate wl_output globals.
-                    dh.remove_global::<State>(surface.global_id.clone());
-                    surface.global_id = surface.output.create_global::<State>(dh);
-                    warn!(
-                        "Re-created wl_output global for {}: {:?}",
-                        surface.output.name(),
-                        surface.global_id
-                    );
-                }
-            }
-        }
     }
 
     /// Suspend again after a wake (charger, unplug) that left the lid closed.
@@ -2751,7 +2698,7 @@ impl DrmBackendState {
         };
 
         let crtcs: Vec<_> = device.surfaces.keys().copied().collect();
-        // Put it back while disconnect_output removes surfaces and Wayland globals.
+        // Put it back while disconnect_output removes surfaces.
         self.devices.insert(node, device);
         for crtc in crtcs {
             self.disconnect_output(node, crtc, ewm);
@@ -2874,9 +2821,6 @@ fn initialize_drm(
             );
         }
     }
-
-    // Verify all output globals are valid (defensive against silent global loss).
-    state.backend.as_drm_mut().unwrap().verify_output_globals();
 
     let lid_policy_handled = {
         let drm_backend = state.backend.as_drm_mut().unwrap();

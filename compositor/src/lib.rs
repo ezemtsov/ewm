@@ -153,7 +153,7 @@ use smithay::reexports::calloop::{
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgToplevelState;
 use smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration_manager::Mode as KdeDefaultMode;
 use smithay::reexports::wayland_server::backend::{
-    ClientData, ClientId, Credentials, DisconnectReason,
+    ClientData, ClientId, Credentials, DisconnectReason, GlobalId,
 };
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, Display, DisplayHandle, Resource};
@@ -313,6 +313,8 @@ impl Default for OutputConfig {
 
 /// Per-output state for redraw synchronization
 pub struct OutputState {
+    /// The wl_output global, advertised while the output is mapped.
+    pub global: Option<GlobalId>,
     pub redraw_state: RedrawState,
     /// Frame clock for accurate VBlank prediction (replaces raw refresh_interval_us)
     pub frame_clock: frame_clock::FrameClock,
@@ -348,6 +350,7 @@ impl OutputState {
     /// Create a new OutputState for the given output name and size.
     pub fn new(output_name: &str, refresh_interval: Option<Duration>, size: (i32, i32)) -> Self {
         Self {
+            global: None,
             redraw_state: RedrawState::Queued,
             frame_clock: frame_clock::FrameClock::new(refresh_interval),
             unfinished_animations_remain: false,

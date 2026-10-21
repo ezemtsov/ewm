@@ -145,7 +145,7 @@ pub(crate) fn map_output_for_config(
     output: &Output,
     position: Option<(i32, i32)>,
 ) -> bool {
-    let was_mapped = ewm.space.output_geometry(output).is_some();
+    let was_mapped = ewm.output_mapped(output);
     let position = position
         .map(Point::from)
         .or_else(|| (!was_mapped).then(|| Point::from((ewm.output_size.w, 0))));
@@ -154,7 +154,7 @@ pub(crate) fn map_output_for_config(
         ewm.map_output(output, position);
         ewm.reconcile_output_entries(output);
     }
-    !was_mapped && ewm.space.output_geometry(output).is_some()
+    !was_mapped && ewm.output_mapped(output)
 }
 
 pub(crate) fn apply_initial_output_config(

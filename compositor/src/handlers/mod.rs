@@ -506,8 +506,8 @@ impl OutputManagementHandler for State {
 // Screencopy protocol
 impl ScreencopyHandler for State {
     fn frame(&mut self, manager: &ZwlrScreencopyManagerV1, screencopy: Screencopy) {
-        if !self.ewm.output_exists(screencopy.output()) {
-            trace!("screencopy output no longer exists");
+        if !self.ewm.output_mapped(screencopy.output()) {
+            trace!("screencopy output is not mapped");
             return;
         }
 
