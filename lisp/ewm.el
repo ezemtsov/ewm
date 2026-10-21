@@ -104,11 +104,7 @@ new ones.  Toggling is live -- the compositor flips the shared
 animation clock and the next frame settles."
   :type 'boolean
   :group 'ewm-appearance
-  :set (ewm--send-on-set #'ewm--send-animations-enabled))
-
-(defun ewm--send-animations-enabled ()
-  "Send `ewm-animations-enabled' to the compositor."
-  (ewm-set-animations-enabled ewm-animations-enabled))
+  :set (ewm--send-on-set #'ewm--send-config))
 
 (defcustom ewm-unfocused-alpha 1.0
   "Alpha multiplier for unfocused application toplevels.
@@ -117,25 +113,21 @@ dim non-focused windows so the focused one stands out.  Emacs frames
 and layer surfaces (panels, lock screen) are never dimmed."
   :type 'float
   :group 'ewm-appearance
-  :set (ewm--send-on-set #'ewm--send-unfocused-alpha))
-
-(defun ewm--send-unfocused-alpha ()
-  "Send `ewm-unfocused-alpha' to the compositor."
-  (ewm-set-unfocused-alpha (float ewm-unfocused-alpha)))
+  :set (ewm--send-on-set #'ewm--send-config))
 
 (defcustom ewm-overview-zoom 0.5
   "Scale of each output's content in the overview.
 A float above 0.0 and at most 0.75; smaller values show more of the strip."
   :type 'float
   :group 'ewm-appearance
-  :set (ewm--send-on-set #'ewm--send-overview-config))
+  :set (ewm--send-on-set #'ewm--send-config))
 
 (defcustom ewm-overview-backdrop-color "#262626"
   "Color behind the zoomed-out output in the overview.
-A color name or #RRGGBB spec; unknown names fall back to the default."
+A color name or #RRGGBB spec, the default for an unknown one."
   :type 'color
   :group 'ewm-appearance
-  :set (ewm--send-on-set #'ewm--send-overview-config))
+  :set (ewm--send-on-set #'ewm--send-config))
 
 (defun ewm--color-rgb (color)
   "COLOR as red, green and blue in 0.0..1.0, or nil for an unknown spec."
@@ -143,50 +135,37 @@ A color name or #RRGGBB spec; unknown names fall back to the default."
   (when-let* ((rgb (tty-color-standard-values (tty-color-canonicalize color))))
     (mapcar (lambda (c) (/ c 65535.0)) rgb)))
 
-(defun ewm--send-overview-config ()
-  "Send overview zoom and backdrop color to the compositor."
-  (let ((rgb (or (ewm--color-rgb ewm-overview-backdrop-color)
-                 (ewm--color-rgb
-                  (eval (car (get 'ewm-overview-backdrop-color 'standard-value)) t)))))
-    (apply #'ewm-configure-overview-module (float ewm-overview-zoom) rgb)))
-
 (defcustom ewm-blur t
   "Whether to blur behind surfaces that ask for it.
 Clients request blur through the ext-background-effect protocol and
 the blurred area follows the region they set."
   :type 'boolean
   :group 'ewm-appearance
-  :set (ewm--send-on-set #'ewm--send-blur-config))
+  :set (ewm--send-on-set #'ewm--send-config))
 
 (defcustom ewm-blur-passes 3
   "Number of blur passes, 1 to 31. More passes blur further."
   :type 'natnum
   :group 'ewm-appearance
-  :set (ewm--send-on-set #'ewm--send-blur-config))
+  :set (ewm--send-on-set #'ewm--send-config))
 
 (defcustom ewm-blur-offset 3.0
   "Sampling offset per blur pass, in pixels."
   :type 'float
   :group 'ewm-appearance
-  :set (ewm--send-on-set #'ewm--send-blur-config))
+  :set (ewm--send-on-set #'ewm--send-config))
 
 (defcustom ewm-blur-noise 0.02
   "Noise added to blurred areas; 0.0 disables it."
   :type 'float
   :group 'ewm-appearance
-  :set (ewm--send-on-set #'ewm--send-blur-config))
+  :set (ewm--send-on-set #'ewm--send-config))
 
 (defcustom ewm-blur-saturation 1.5
   "Saturation multiplier for blurred areas; 1.0 keeps colors as they are."
   :type 'float
   :group 'ewm-appearance
-  :set (ewm--send-on-set #'ewm--send-blur-config))
-
-(defun ewm--send-blur-config ()
-  "Send blur settings to the compositor."
-  (ewm-configure-blur-module ewm-blur (truncate ewm-blur-passes)
-                             (float ewm-blur-offset) (float ewm-blur-noise)
-                             (float ewm-blur-saturation)))
+  :set (ewm--send-on-set #'ewm--send-config))
 
 (defcustom ewm-idle nil
   "Idle timeout and action.
@@ -203,21 +182,12 @@ Examples:
                  (cons :tag "Run command after N seconds"
                        (integer :tag "Seconds")
                        (string :tag "Shell command")))
-  :set (ewm--send-on-set #'ewm--send-idle-config)
+  :set (ewm--send-on-set #'ewm--send-config)
   :group 'ewm-output)
 
 (defvar ewm-idle-hook nil
   "Hook run when idle state changes.
 Called with one argument: t when entering idle, nil when waking.")
-
-(defun ewm--send-idle-config ()
-  "Send idle timeout configuration to compositor."
-  (pcase ewm-idle
-    ('nil (ewm-configure-idle-module nil nil))
-    ((pred integerp)
-     (ewm-configure-idle-module ewm-idle "blank"))
-    (`(,(and (pred integerp) secs) . ,(and (pred stringp) cmd))
-     (ewm-configure-idle-module secs cmd))))
 
 (defvar ewm-idle-inhibited nil
   "Whether idle is manually inhibited from Emacs.
@@ -241,20 +211,16 @@ requests are refused.  The screen turns sepia as a reminder."
   :global t
   :group 'ewm
   (when ewm--module-mode
-    (ewm--send-power-config))
+    (ewm--send-config))
   (when (called-interactively-p 'any)
     (message "Insomnia mode: %s" (if ewm-insomnia-mode "on" "off"))))
-
-(defun ewm--send-power-config ()
-  "Send `ewm-insomnia-mode' to the compositor."
-  (ewm-configure-power-module (not ewm-insomnia-mode) ewm-insomnia-mode))
 
 (defcustom ewm-cursor-theme nil
   "Xcursor theme used by EWM and clients launched from it.
 When nil, EWM picks a loadable theme from the session environment."
   :type '(choice (const :tag "Auto" nil)
                  (string :tag "Theme"))
-  :set (ewm--send-on-set #'ewm--send-cursor-config)
+  :set (ewm--send-on-set #'ewm--send-config)
   :group 'ewm-appearance)
 
 (defvar ewm--session-cursor-theme (getenv "XCURSOR_THEME")
@@ -267,7 +233,7 @@ When nil, EWM picks a loadable theme from the session environment."
       24)
   "Xcursor size used by EWM and clients launched from it."
   :type '(integer :tag "Pixels")
-  :set (ewm--send-on-set #'ewm--send-cursor-config)
+  :set (ewm--send-on-set #'ewm--send-config)
   :group 'ewm-appearance)
 
 (defun ewm--cursor-theme ()
@@ -290,11 +256,6 @@ When nil, EWM picks a loadable theme from the session environment."
                               ewm--session-cursor-theme))
   (setenv "XCURSOR_SIZE" (number-to-string (ewm--cursor-size))))
 
-(defun ewm--send-cursor-config ()
-  "Send cursor theme and size configuration to compositor."
-  (ewm--apply-cursor-env)
-  (ewm-configure-cursor-module (ewm--cursor-theme) (ewm--cursor-size)))
-
 (defcustom ewm-cursor-auto-hide 5
   "Hide the mouse cursor after this many seconds of pointer inactivity.
 nil disables auto-hide.  Only pointer motion and button events restore
@@ -305,7 +266,7 @@ Examples:
   5     ; hide after 5 seconds of no pointer activity"
   :type '(choice (const :tag "Disabled" nil)
                  (integer :tag "Hide after N seconds"))
-  :set (ewm--send-on-set #'ewm--send-cursor-hide-config)
+  :set (ewm--send-on-set #'ewm--send-config)
   :group 'ewm-input-devices)
 
 (defcustom ewm-cursor-hide-when-typing nil
@@ -313,14 +274,43 @@ Examples:
 Pointer motion restores it.  Independent from `ewm-cursor-auto-hide';
 both can be enabled together."
   :type 'boolean
-  :set (ewm--send-on-set #'ewm--send-cursor-hide-config)
+  :set (ewm--send-on-set #'ewm--send-config)
   :group 'ewm-input-devices)
 
-(defun ewm--send-cursor-hide-config ()
-  "Send cursor auto-hide configuration to compositor."
-  (ewm-configure-cursor-hide-module
-   (and (integerp ewm-cursor-auto-hide) ewm-cursor-auto-hide)
-   ewm-cursor-hide-when-typing))
+(defun ewm--background ()
+  "The default face background, nil until a graphical frame shows the theme."
+  (let ((bg (face-attribute 'default :background)))
+    (and (stringp bg) (not (string-prefix-p "unspecified" bg)) bg)))
+
+(defun ewm--config ()
+  "Every option as the plist `ewm-configure-module' takes."
+  (list :input (ewm--input-config)
+        :gestures (ewm--gestures-config)
+        :idle (pcase ewm-idle
+                ((pred integerp) (list :timeout ewm-idle))
+                (`(,(and (pred integerp) secs) . ,(and (pred stringp) command))
+                 (list :timeout secs :command command)))
+        :cursor (list :theme (ewm--cursor-theme) :size (ewm--cursor-size))
+        :cursor-hide (list :timeout (and (integerp ewm-cursor-auto-hide) ewm-cursor-auto-hide)
+                           :when-typing ewm-cursor-hide-when-typing)
+        :focus-follows-mouse ewm-focus-follows-mouse
+        :unfocused-alpha (float ewm-unfocused-alpha)
+        :blur (list :off (not ewm-blur) :passes (truncate ewm-blur-passes)
+                    :offset (float ewm-blur-offset) :noise (float ewm-blur-noise)
+                    :saturation (float ewm-blur-saturation))
+        :animations ewm-animations-enabled
+        :overview (list :zoom (float ewm-overview-zoom)
+                        :backdrop-color (ewm--color-rgb ewm-overview-backdrop-color))
+        :background (when-let* ((bg (ewm--background))) (ewm--color-rgb bg))
+        :power (list :closed-lid-suspends (not ewm-insomnia-mode) :sepia ewm-insomnia-mode)))
+
+(defun ewm--send-config ()
+  "Send every option to the compositor, mirroring the ones Emacs reads itself.
+A section the compositor rejects is reported and stays at its default."
+  (ewm--apply-cursor-env)
+  (setq focus-follows-mouse (and ewm-focus-follows-mouse t))
+  (pcase-dolist (`(,section ,message) (ewm-configure-module (ewm--config)))
+    (display-warning 'ewm (format "%s config rejected: %s" section message))))
 
 ;;; Events
 
@@ -760,15 +750,13 @@ The compositor runs as a thread within the Emacs process."
 
 (defun ewm--apply-background (&rest _)
   "Push the default face background to the compositor and GTK."
-  (let* ((live (face-attribute 'default :background))
-         (bg (and (stringp live) (not (string-prefix-p "unspecified" live)) live)))
-    (when-let* ((rgb (and bg (ewm--color-rgb bg))))
-      (apply #'ewm-configure-background-module rgb))
-    (when (ewm--gtk-backed-p)
-      ;; Black before the first graphical frame, when the face is unspecified (bug#53232).
-      (condition-case err
-          (ewm-gtk-set-style (format "window { background-color: %s; }" (or bg "#000000")))
-        (error (message "EWM: ewm-gtk-set-style failed: %s" err))))))
+  (ewm--send-config)
+  (when (ewm--gtk-backed-p)
+    ;; Black before the first graphical frame, when the face is unspecified (bug#53232).
+    (condition-case err
+        (ewm-gtk-set-style (format "window { background-color: %s; }"
+                                   (or (ewm--background) "#000000")))
+      (error (message "EWM: ewm-gtk-set-style failed: %s" err)))))
 
 ;;; Global minor mode
 
@@ -783,18 +771,9 @@ The compositor runs as a thread within the Emacs process."
   (if after-init-time
       (ewm--send-intercept-keys)
     (add-hook 'after-init-hook #'ewm--send-intercept-keys))
-  (ewm--apply-user-config "ewm-input-config" #'ewm--send-input-config)
-  (ewm--send-gestures-config)
-  (ewm--send-idle-config)
-  (ewm--send-power-config)
-  (ewm--send-cursor-config)
-  (ewm--send-cursor-hide-config)
+  (setq ewm-focus-follows-mouse (or ewm-focus-follows-mouse (and mouse-autoselect-window t)))
+  (ewm--send-config)
   (ewm-text-input--send-provider)
-  (ewm--send-unfocused-alpha)
-  (ewm--send-animations-enabled)
-  (setopt ewm-focus-follows-mouse (or ewm-focus-follows-mouse (and mouse-autoselect-window t)))
-  (ewm--send-overview-config)
-  (ewm--send-blur-config)
   (ewm-text-input-auto-mode 1)
   (ewm--enable-process-advice)
   (add-function :override interprogram-cut-function #'ewm--interprogram-cut-function)

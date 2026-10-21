@@ -175,7 +175,7 @@ All `*-module` functions push to command queue:
 (ewm-configure-output-module name x y width height refresh scale transform enabled)
 (ewm-intercept-keys-module keys-vector)
 (ewm-action-module action)
-(ewm-configure-input-module configs-vector)
+(ewm-configure-module config-plist)
 (ewm-im-commit-module text surface-id)
 (ewm-text-input-intercept-module enable)
 (ewm-keyboard-capture-begin-module reason)

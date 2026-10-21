@@ -257,9 +257,7 @@ fn cursor_config_change_queues_pointer_output_redraw() {
         state.redraw_state = RedrawState::Idle;
     }
 
-    fix.handle_module_command(crate::module::ModuleCommand::ConfigureCursor {
-        config: cursor::CursorConfig::new("ConfiguredCursorTheme", 24),
-    });
+    fix.patch_config(|config| config.cursor.theme = Some("ConfiguredCursorTheme".into()));
 
     let redraws = fix
         .ewm_ref()

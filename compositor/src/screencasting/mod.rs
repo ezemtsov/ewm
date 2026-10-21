@@ -421,7 +421,7 @@ impl Ewm {
                     },
                     None,
                     Vec::new(),
-                    self.blur_config,
+                    self.config.blur,
                 );
             }
             return elements;

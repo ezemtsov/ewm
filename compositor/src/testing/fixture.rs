@@ -14,7 +14,7 @@ use smithay::utils::{Logical, Point, Rectangle, Size};
 use tracing::info;
 
 use crate::backend::{Backend, HeadlessBackend};
-use crate::cursor::CursorConfig;
+use crate::config::{Config, Cursor};
 use crate::layout::strip::Frame;
 use crate::testing::TestClient;
 use crate::testing::input::{TestAbsoluteEvent, TestDevice, TestGestureEvent, TestInputBackend};
@@ -57,12 +57,13 @@ impl Fixture {
     /// Initializes the event loop, display, and headless backend.
     /// The fixture starts with no outputs - use `add_output` to create virtual displays.
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        Self::new_with_cursor_config(CursorConfig::default())
+        Self::new_with_cursor_config(Cursor {
+            theme: Some("default".into()),
+            size: Some(24),
+        })
     }
 
-    pub fn new_with_cursor_config(
-        cursor_config: CursorConfig,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new_with_cursor_config(cursor: Cursor) -> Result<Self, Box<dyn std::error::Error>> {
         // Initialize event loop
         let event_loop: EventLoop<State> = EventLoop::try_new()?;
 
@@ -71,7 +72,7 @@ impl Fixture {
         let display_handle = display.handle();
 
         // Create compositor state with headless backend
-        let mut ewm = Ewm::new(display_handle, event_loop.handle(), false, cursor_config);
+        let mut ewm = Ewm::new(display_handle, event_loop.handle(), false, cursor);
         // Headless stands in for a touchscreen too
         ewm.seat.add_touch();
         let backend = Backend::Headless(HeadlessBackend::new());
@@ -782,11 +783,20 @@ impl Fixture {
         self.handle_module_command(crate::module::ModuleCommand::SetFullscreen { entry_id, on });
     }
 
-    pub fn configure_idle(&mut self, timeout_secs: Option<u64>, action: &str) {
-        self.handle_module_command(crate::module::ModuleCommand::ConfigureIdle {
-            timeout_secs,
-            action: action.into(),
-        });
+    pub fn configure(&mut self, config: Config) {
+        self.handle_module_command(crate::module::ModuleCommand::Configure { config });
+    }
+
+    /// Change one option on the config in effect.
+    pub fn patch_config(&mut self, patch: impl FnOnce(&mut Config)) {
+        let mut config = self.state.ewm.config.clone();
+        patch(&mut config);
+        self.configure(config);
+    }
+
+    /// Blank the monitors after `timeout_secs` of inactivity.
+    pub fn configure_idle(&mut self, timeout_secs: u64) {
+        self.patch_config(move |config| config.idle.timeout = Some(timeout_secs));
     }
 
     pub fn set_idle_inhibited(&mut self, inhibited: bool) {

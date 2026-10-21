@@ -117,7 +117,7 @@ fn a_held_modifier_picks_the_modified_binding() {
 fn the_gesture_knobs_move_the_built_in_swipes() {
     let _serial = SERIAL.lock().unwrap();
     let mut fix = fixture("[]");
-    fix.ewm().gestures = Gestures {
+    fix.ewm().config.gestures = Gestures {
         strip_swipe_fingers: Some(4),
         overview_swipe_fingers: None,
     };

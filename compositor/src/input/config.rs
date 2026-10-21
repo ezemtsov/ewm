@@ -92,7 +92,7 @@ pub const DEFAULT_KEYBOARD_REPEAT_RATE: i32 = 25;
 ///
 /// Type defaults have `device: None` and `device_type: Some(...)`.
 /// Device-specific overrides have `device: Some("name")` and optional `device_type`.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub struct InputConfigEntry {
     /// None = type default, Some("device name") = device-specific override

@@ -53,7 +53,7 @@ use smithay::input::keyboard::{keysyms, xkb};
 use smithay::reexports::calloop::LoopSignal;
 use tracing::{debug, info, trace};
 
-use crate::cursor::CursorConfig;
+use crate::config::{self, Config};
 use crate::im::TextInputProvider;
 use crate::input::SwipeDirection;
 use crate::layout::Placement;
@@ -61,8 +61,8 @@ use crate::layout::strip::{self, Frame};
 pub use crate::utils::reply::Reply;
 use crate::utils::reply::{ReplyError, reply_channel};
 use crate::{
-    Event, FocusId, FocusSource, IdleAction, InterceptDispatch, InterceptedKey, LayoutEntry,
-    LayoutEntryId, Notify, State, Trigger, tracy_span,
+    Event, FocusId, FocusSource, InterceptDispatch, InterceptedKey, LayoutEntry, LayoutEntryId,
+    Notify, State, Trigger, tracy_span,
 };
 
 // Shared State (read by Emacs, written by compositor)
@@ -489,27 +489,9 @@ pub enum ModuleCommand {
         entry_id: LayoutEntryId,
         on: bool,
     },
-    /// Configure input devices (unified)
-    ConfigureInput {
-        configs: Vec<crate::input::InputConfigEntry>,
-    },
-    /// Configure native idle timeout
-    ConfigureIdle {
-        timeout_secs: Option<u64>,
-        action: String,
-    },
-    /// Configure cursor auto-hide (inactivity timeout + hide-on-typing)
-    ConfigureCursorHide {
-        timeout_secs: Option<u64>,
-        hide_when_typing: bool,
-    },
-    /// Configure cursor theme and size.
-    ConfigureCursor {
-        config: CursorConfig,
-    },
-    /// Configure focus follows mouse
-    ConfigureFocusFollowsMouse {
-        state: bool,
+    /// Every option Emacs sets, applied where it changed.
+    Configure {
+        config: Config,
     },
     /// Mirror whether Emacs' `track-mouse' is `drag-source'.
     SetDragSource {
@@ -530,38 +512,9 @@ pub enum ModuleCommand {
     FocusTarget {
         focus_id: NonZeroU64,
     },
-    /// Set alpha multiplier for unfocused toplevels (1.0 = disabled).
-    ConfigureUnfocusedAlpha {
-        alpha: f32,
-    },
-    /// Blur settings for surfaces that request background blur.
-    ConfigureBlur {
-        config: crate::render_helpers::shadow_style::Blur,
-    },
-    /// Flip the animation `Clock` shared by every `Animation`.
-    ConfigureAnimations {
-        enabled: bool,
-    },
-    /// Overview zoom factor and backdrop colour.
-    ConfigureOverview {
-        zoom: f64,
-        backdrop_color: [f32; 4],
-    },
-    ConfigureGestures {
-        gestures: crate::input::Gestures,
-    },
-    /// Fill colour behind the frames.
-    ConfigureBackground {
-        color: [f32; 4],
-    },
     /// Set manual idle inhibition (from Emacs)
     SetIdleInhibited {
         inhibited: bool,
-    },
-    /// Closed-lid suspend and sepia tint
-    ConfigurePower {
-        closed_lid_suspends: bool,
-        sepia: bool,
     },
     /// Monitors off until a waking input, unlock or `PowerOnMonitors`
     PowerOffMonitors,
@@ -709,72 +662,13 @@ impl State {
                     self.set_surface_fullscreen(id, on);
                 }
             }
-            ModuleCommand::ConfigureInput { configs } => self.configure_input(configs),
-            ModuleCommand::ConfigureIdle {
-                timeout_secs,
-                action,
-            } => {
-                let idle_action = if action == "blank" {
-                    IdleAction::DeactivateMonitors
-                } else {
-                    IdleAction::RunCommand(action)
-                };
-                self.ewm
-                    .configure_idle(timeout_secs.map(Duration::from_secs), idle_action);
-            }
-            ModuleCommand::ConfigureCursorHide {
-                timeout_secs,
-                hide_when_typing,
-            } => {
-                self.ewm
-                    .configure_cursor_hide(timeout_secs.map(Duration::from_secs), hide_when_typing);
-            }
-            ModuleCommand::ConfigureCursor { config } => {
-                self.ewm.cursor_manager.reload(&config.theme, config.size);
-                self.backend.clear_cursor_texture_cache();
-                let env_vars = config.env_vars();
-                self.backend.import_environment(&env_vars);
-                self.ewm.queue_event(Event::Environment { vars: env_vars });
-                self.ewm.queue_redraw_for_pointer();
-            }
-            ModuleCommand::ConfigureFocusFollowsMouse { state: setting } => {
-                self.ewm.focus_follows_mouse_mode = setting;
-            }
+            ModuleCommand::Configure { config } => self.apply_config(config),
             ModuleCommand::SetDragSource { active } => {
                 self.ewm.emacs_drag_source = active;
-            }
-            ModuleCommand::ConfigureUnfocusedAlpha { alpha } => {
-                self.ewm.unfocused_alpha = alpha.clamp(0.0, 1.0);
-            }
-            ModuleCommand::ConfigureBlur { config } => {
-                if self.ewm.blur_config != config {
-                    self.ewm.blur_config = config;
-                    self.ewm.queue_redraw_all();
-                }
-            }
-            ModuleCommand::ConfigureAnimations { enabled } => {
-                self.ewm.animations_clock.set_complete_instantly(!enabled);
-            }
-            ModuleCommand::ConfigureOverview {
-                zoom,
-                backdrop_color,
-            } => {
-                self.ewm.overview.set_zoom(zoom);
-                self.ewm.overview.backdrop_color = backdrop_color;
-                self.ewm.queue_redraw_all();
-            }
-            ModuleCommand::ConfigureGestures { gestures } => self.ewm.gestures = gestures,
-            ModuleCommand::ConfigureBackground { color } => {
-                self.ewm.overview.background_color = color;
-                self.ewm.queue_redraw_all();
             }
             ModuleCommand::SetIdleInhibited { inhibited } => {
                 self.ewm.manual_idle_inhibited = inhibited;
             }
-            ModuleCommand::ConfigurePower {
-                closed_lid_suspends,
-                sepia,
-            } => self.configure_power(closed_lid_suspends, sepia),
             ModuleCommand::PowerOffMonitors => {
                 self.ewm.deactivate_monitors();
                 self.backend.clear_all_surfaces();
@@ -1125,7 +1019,8 @@ fn init_logging() {
     });
 }
 
-fn cursor_config(theme: Option<String>, size: i64) -> Result<CursorConfig> {
+/// The cursor THEME and SIZE Lisp asks for, checked.
+fn cursor_config(theme: Option<String>, size: i64) -> Result<config::Cursor> {
     if theme.as_ref().is_some_and(|theme| theme.is_empty()) {
         return Err(anyhow!("cursor theme must not be empty"));
     }
@@ -1135,7 +1030,10 @@ fn cursor_config(theme: Option<String>, size: i64) -> Result<CursorConfig> {
         .filter(|size| *size > 0)
         .ok_or_else(|| anyhow!("cursor size must be in 1..=255"))?;
 
-    Ok(CursorConfig::resolve(theme, size))
+    Ok(config::Cursor {
+        theme,
+        size: Some(size),
+    })
 }
 
 /// Start the compositor in a background thread.
@@ -1146,7 +1044,7 @@ fn start(cursor_theme: Option<String>, cursor_size: i64) -> Result<bool> {
     use crate::backend::drm::run_drm;
 
     init_logging();
-    let cursor_config = cursor_config(cursor_theme, cursor_size)?;
+    let cursor = cursor_config(cursor_theme, cursor_size)?;
 
     let mut state = compositor_state().lock().unwrap();
 
@@ -1166,8 +1064,7 @@ fn start(cursor_theme: Option<String>, cursor_size: i64) -> Result<bool> {
         tracing::info!("Compositor thread starting");
 
         // Catch panics so they don't crash Emacs
-        let result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_drm(cursor_config)));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_drm(cursor)));
 
         match result {
             Ok(Ok(())) => {
@@ -1705,7 +1602,7 @@ fn resolve_keys(specs: Vec<KeySpec>) -> Vec<InterceptedKey> {
 }
 
 /// Parse one printed Lisp form as `T`.
-fn from_lisp<T: serde::de::DeserializeOwned>(text: &str) -> T {
+pub(crate) fn from_lisp<T: serde::de::DeserializeOwned>(text: &str) -> T {
     let payload = elisp::read(text)
         .next()
         .expect("a payload")
@@ -1914,48 +1811,13 @@ fn set_selection_module(text: String) -> Result<()> {
     Ok(())
 }
 
-/// Configure native idle timeout (module mode).
-/// TIMEOUT is seconds of inactivity (nil to disable).
-/// ACTION is "blank" for monitor off, or a shell command string.
+/// Apply CONFIG, every option as one plist (module mode). Returns the sections that did not
+/// parse as (KEY MESSAGE) lists, each left at its default.
 #[defun]
-fn configure_idle_module(timeout: Option<i64>, action: Option<String>) -> Result<()> {
-    let timeout_secs = timeout.and_then(|t| if t > 0 { Some(t as u64) } else { None });
-    push_command(ModuleCommand::ConfigureIdle {
-        timeout_secs,
-        action: action.unwrap_or_else(|| "blank".to_string()),
-    });
-    Ok(())
-}
-
-/// Configure cursor auto-hide (module mode).
-/// TIMEOUT is seconds of pointer inactivity before hiding (nil to disable).
-/// HIDE-WHEN-TYPING (t/nil) hides the cursor on key press. Pointer motion restores it.
-#[defun]
-fn configure_cursor_hide_module(timeout: Option<i64>, hide_when_typing: Value<'_>) -> Result<()> {
-    let timeout_secs = timeout.and_then(|t| if t > 0 { Some(t as u64) } else { None });
-    push_command(ModuleCommand::ConfigureCursorHide {
-        timeout_secs,
-        hide_when_typing: hide_when_typing.is_not_nil(),
-    });
-    Ok(())
-}
-
-/// Configure cursor theme and size.
-#[defun]
-fn configure_cursor_module(theme: Option<String>, size: i64) -> Result<()> {
-    let config = cursor_config(theme, size)?;
-    push_command(ModuleCommand::ConfigureCursor { config });
-    Ok(())
-}
-
-/// Configure focus follows mouse (module mode).
-/// STATE is the state of focus follows mouse mode (nil to disable).
-#[defun]
-fn set_focus_follows_mouse(state: Value<'_>) -> Result<()> {
-    push_command(ModuleCommand::ConfigureFocusFollowsMouse {
-        state: state.is_not_nil(),
-    });
-    Ok(())
+fn configure_module(config: Lisp<Data>) -> Result<Lisp<Vec<(String, String)>>> {
+    let (config, rejected) = Config::from_sections(&config.0);
+    push_command(ModuleCommand::Configure { config });
+    Ok(Lisp(rejected))
 }
 
 /// Tell the compositor whether Emacs is tracking a drag source (module mode).
@@ -1964,49 +1826,6 @@ fn set_focus_follows_mouse(state: Value<'_>) -> Result<()> {
 fn set_drag_source(active: Value<'_>) -> Result<()> {
     push_command(ModuleCommand::SetDragSource {
         active: active.is_not_nil(),
-    });
-    Ok(())
-}
-
-/// Set alpha multiplier for unfocused toplevels (module mode).
-/// ALPHA is clamped to 0.0..=1.0. 1.0 disables the effect.
-#[defun]
-fn set_unfocused_alpha(alpha: f64) -> Result<()> {
-    let alpha = alpha.clamp(0.0, 1.0) as f32;
-    push_command(ModuleCommand::ConfigureUnfocusedAlpha { alpha });
-    Ok(())
-}
-
-/// Configure background blur (module mode).
-/// ON enables blur behind surfaces that request it. PASSES, OFFSET, NOISE
-/// and SATURATION tune how it looks.
-#[defun]
-fn configure_blur_module(
-    on: Value<'_>,
-    passes: i64,
-    offset: f64,
-    noise: f64,
-    saturation: f64,
-) -> Result<()> {
-    push_command(ModuleCommand::ConfigureBlur {
-        config: crate::render_helpers::shadow_style::Blur {
-            off: !on.is_not_nil(),
-            passes: passes.clamp(1, 31) as u8,
-            offset: offset.clamp(0., 100.),
-            noise: noise.clamp(0., 1000.),
-            saturation: saturation.clamp(0., 1000.),
-        },
-    });
-    Ok(())
-}
-
-/// Toggle cross-frame slide / open-fade animations (module mode).
-/// When ENABLED is nil, in-flight animations snap to target and new ones
-/// skip the easing.
-#[defun]
-fn set_animations_enabled(enabled: Value<'_>) -> Result<()> {
-    push_command(ModuleCommand::ConfigureAnimations {
-        enabled: enabled.is_not_nil(),
     });
     Ok(())
 }
@@ -2042,42 +1861,6 @@ fn action_module(action: Lisp<crate::Action>) -> Result<()> {
     Ok(())
 }
 
-/// Opaque colour from RED, GREEN and BLUE in 0.0..=1.0.
-fn rgb(red: f64, green: f64, blue: f64) -> [f32; 4] {
-    let channel = |value: f64| value.clamp(0.0, 1.0) as f32;
-    [channel(red), channel(green), channel(blue), 1.0]
-}
-
-/// Configure the overview (module mode).
-/// ZOOM scales the strip when zoomed out. RED, GREEN and BLUE in 0.0..=1.0
-/// colour the backdrop behind it.
-#[defun]
-fn configure_overview_module(zoom: f64, red: f64, green: f64, blue: f64) -> Result<()> {
-    push_command(ModuleCommand::ConfigureOverview {
-        zoom,
-        backdrop_color: rgb(red, green, blue),
-    });
-    Ok(())
-}
-
-/// Configure the touchpad gestures from GESTURES, a `Gestures` plist.
-#[defun]
-fn configure_gestures_module(gestures: Lisp<crate::input::Gestures>) -> Result<()> {
-    push_command(ModuleCommand::ConfigureGestures {
-        gestures: gestures.0,
-    });
-    Ok(())
-}
-
-/// Colour the fill behind the frames (module mode). RED, GREEN and BLUE in 0.0..=1.0.
-#[defun]
-fn configure_background_module(red: f64, green: f64, blue: f64) -> Result<()> {
-    push_command(ModuleCommand::ConfigureBackground {
-        color: rgb(red, green, blue),
-    });
-    Ok(())
-}
-
 /// Set manual idle inhibition (module mode).
 /// When INHIBITED is non-nil, idle timeout and idle notifications are
 /// suppressed regardless of other inhibition sources. When nil, manual
@@ -2087,16 +1870,6 @@ fn configure_background_module(red: f64, green: f64, blue: f64) -> Result<()> {
 fn set_idle_inhibited(inhibited: Value<'_>) -> Result<()> {
     push_command(ModuleCommand::SetIdleInhibited {
         inhibited: inhibited.is_not_nil(),
-    });
-    Ok(())
-}
-
-/// Configure closed-lid suspend and the sepia tint (module mode).
-#[defun]
-fn configure_power_module(closed_lid_suspends: Value<'_>, sepia: Value<'_>) -> Result<()> {
-    push_command(ModuleCommand::ConfigurePower {
-        closed_lid_suspends: closed_lid_suspends.is_not_nil(),
-        sepia: sepia.is_not_nil(),
     });
     Ok(())
 }
@@ -2112,13 +1885,6 @@ fn power_off_monitors_module() -> Result<()> {
 #[defun]
 fn power_on_monitors_module() -> Result<()> {
     push_command(ModuleCommand::PowerOnMonitors);
-    Ok(())
-}
-
-/// Configure input devices from CONFIGS, a vector of `InputConfigEntry` plists.
-#[defun]
-fn configure_input_module(configs: Lisp<Vec<crate::input::InputConfigEntry>>) -> Result<()> {
-    push_command(ModuleCommand::ConfigureInput { configs: configs.0 });
     Ok(())
 }
 

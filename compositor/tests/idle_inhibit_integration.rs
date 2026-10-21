@@ -49,7 +49,7 @@ fn lock_parks_every_hidden_source_until_unlock() {
         let mut fix = Fixture::new().unwrap();
         fix.add_output(OUTPUT, 1920, 1080);
         let (mut client, toplevel) = tiled_client(&mut fix);
-        fix.configure_idle(Some(300), "blank");
+        fix.configure_idle(300);
         if manual {
             fix.set_idle_inhibited(true);
         }
@@ -85,7 +85,7 @@ fn idle_blanks_behind_the_lock_despite_fullscreen() {
     let mut fix = Fixture::new().unwrap();
     fix.add_output(OUTPUT, 1920, 1080);
     let (mut client, toplevel) = tiled_client(&mut fix);
-    fix.configure_idle(Some(0), "blank");
+    fix.configure_idle(0);
     go_fullscreen(&mut fix, &mut client, &toplevel);
     assert!(inhibited(&mut fix));
     assert!(!timer_armed(&fix));

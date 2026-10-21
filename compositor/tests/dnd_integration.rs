@@ -100,7 +100,7 @@ fn dnd_grab_follows_pointer_and_drop_focuses_target() {
     assert!(s.fix.ewm_ref().pointer.is_grabbed());
     assert!(s.fix.ewm_ref().dnd_icon.is_some());
     // Focus-follows-mouse must stay quiet for the whole drag.
-    s.fix.ewm().focus_follows_mouse_mode = true;
+    s.fix.ewm().config.focus_follows_mouse = true;
     s.fix.enable_event_capture();
 
     s.fix.pointer_motion_to(1200.0, 450.0);

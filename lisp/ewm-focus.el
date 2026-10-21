@@ -17,18 +17,15 @@
 (require 'ewm-layout)
 (require 'ewm-frame)
 
+(declare-function ewm--send-config "ewm")
+
 (defcustom ewm-focus-follows-mouse nil
   "Whether moving the mouse pointer should focus applications.
 The compositor sends focus events with cursor coordinates; intra-frame
 window switching is handled by `ewm--handle-focus' from those events."
   :type 'boolean
   :group 'ewm-input-devices
-  :set (ewm--send-on-set #'ewm--send-focus-follows-mouse))
-
-(defun ewm--send-focus-follows-mouse ()
-  "Mirror `ewm-focus-follows-mouse' into Emacs and the compositor."
-  (setq focus-follows-mouse (and ewm-focus-follows-mouse t))
-  (ewm-set-focus-follows-mouse ewm-focus-follows-mouse))
+  :set (ewm--send-on-set #'ewm--send-config))
 
 (defvar ewm--mff-last-window nil
   "Last window for mouse-follows-focus, to avoid redundant warps.")

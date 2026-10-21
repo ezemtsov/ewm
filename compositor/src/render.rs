@@ -679,7 +679,7 @@ impl<'a> OutputRender<'a> {
     ) -> Self {
         let scale = Scale::from(output.current_scale().fractional_scale());
         let rect = ewm.layout.output_rect(output).unwrap_or_default();
-        let blur = ewm.blur_config;
+        let blur = ewm.config.blur;
         // Everything under the top layer scales with the overview, and slides up one output height
         // in content space while the frames hide.
         let geometry = ewm.overview_geometry(output);
@@ -714,7 +714,7 @@ impl<'a> OutputRender<'a> {
                 .get(self.output)
                 .map(|state| &state.fullscreen_backdrop),
             focused_entry_id: ewm.focused_entry_id(),
-            unfocused_alpha: ewm.unfocused_alpha,
+            unfocused_alpha: ewm.config.unfocused_alpha,
             output_size: self.rect.size,
             scale: self.scale,
             blur: self.blur,
@@ -1315,7 +1315,11 @@ fn push_frame_view(
         ..Blur::default()
     };
     let focused = entry.fullscreen() || ewm.focused_entry_id() == Some(entry.id);
-    let alpha = if focused { 1.0 } else { ewm.unfocused_alpha };
+    let alpha = if focused {
+        1.0
+    } else {
+        ewm.config.unfocused_alpha
+    };
     if let Some(place) = ViewPlace::new(surface, entry, alpha, space, bake.output_size, bake.scale)
     {
         push_view(

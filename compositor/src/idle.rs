@@ -8,7 +8,7 @@ use smithay::reexports::calloop::timer::Timer;
 use smithay::reexports::wayland_server::Resource;
 use tracing::{info, warn};
 
-use crate::{Ewm, State, animation, event, tracy_span};
+use crate::{Ewm, animation, event, tracy_span};
 
 pub(crate) const SEPIA_FADE_DURATION: Duration = Duration::from_millis(600);
 
@@ -424,18 +424,6 @@ impl Ewm {
         if let Some(mut child) = self.idle_timeout.child_process.take() {
             let _ = child.kill();
             let _ = child.wait();
-        }
-    }
-}
-
-impl State {
-    /// Apply the lid and sepia settings, the lid policy again when it changed.
-    pub(crate) fn configure_power(&mut self, closed_lid_suspends: bool, sepia: bool) {
-        let lid_changed = std::mem::replace(&mut self.ewm.closed_lid_suspends, closed_lid_suspends)
-            != closed_lid_suspends;
-        self.ewm.set_sepia(sepia);
-        if lid_changed && let Some(drm) = self.backend.as_drm_mut() {
-            drm.reapply_lid_policy(&mut self.ewm, crate::backend::drm::LidPolicyReason::Config);
         }
     }
 }

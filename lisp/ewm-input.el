@@ -30,6 +30,8 @@
 (require 'windmove)
 (require 'ewm-module)
 (ewm-module--declare)
+
+(declare-function ewm--send-config "ewm")
 (require 'ewm-surface)
 (require 'ewm-layout)
 (require 'ewm-frame)
@@ -153,21 +155,18 @@ Example:
       (\"ELAN0676:00 04F3:3195 Touchpad\" :tap nil :accel-speed -0.2)))"
   :type '(alist :key-type (choice symbol string)
                 :value-type plist)
-  :set (ewm--send-on-set #'ewm--send-input-config)
+  :set (ewm--send-on-set #'ewm--send-config)
   :group 'ewm-input-devices)
 
-(defun ewm--send-input-config ()
-  "Send input device configuration to compositor."
-  (ewm-configure-input-module
-   (vconcat
-    (mapcar (lambda (entry)
-              (let ((key (car entry))
-                    (props (cdr entry)))
-                (append (if (symbolp key)
-                            (list :type (symbol-name key))
-                          (list :device key))
-                        props)))
-            ewm-input-config))))
+(defun ewm--input-config ()
+  "`ewm-input-config' as the list of plists the compositor reads."
+  (mapcar (lambda (entry)
+            (pcase-let ((`(,key . ,props) entry))
+              (append (if (symbolp key)
+                          (list :type (symbol-name key))
+                        (list :device key))
+                      props)))
+          ewm-input-config))
 
 ;;; Touchpad gestures
 
@@ -175,21 +174,20 @@ Example:
   "Fingers of the touchpad swipe that scrolls the strip left and right.
 Nil disables the swipe."
   :type '(choice (const :tag "None" nil) (integer :tag "Fingers"))
-  :set (ewm--send-on-set #'ewm--send-gestures-config)
+  :set (ewm--send-on-set #'ewm--send-config)
   :group 'ewm-input-devices)
 
 (defcustom ewm-overview-swipe-fingers 3
   "Fingers of the touchpad swipe that opens and closes the overview.
 Nil disables the swipe."
   :type '(choice (const :tag "None" nil) (integer :tag "Fingers"))
-  :set (ewm--send-on-set #'ewm--send-gestures-config)
+  :set (ewm--send-on-set #'ewm--send-config)
   :group 'ewm-input-devices)
 
-(defun ewm--send-gestures-config ()
-  "Send the gesture knobs to the compositor."
-  (ewm-configure-gestures-module
-   (list :strip-swipe-fingers ewm-strip-swipe-fingers
-         :overview-swipe-fingers ewm-overview-swipe-fingers)))
+(defun ewm--gestures-config ()
+  "The touchpad gesture options as the plist the compositor reads."
+  (list :strip-swipe-fingers ewm-strip-swipe-fingers
+        :overview-swipe-fingers ewm-overview-swipe-fingers))
 
 ;;; Key interception
 

@@ -71,7 +71,7 @@ to the dynamic module.
 **Emacs -> Compositor (module functions):**
 
 ```elisp
-(ewm-configure-input-module configs) ; Set keyboard layouts/options
+(ewm-configure-module config)      ; Every option, keyboard layouts among them
 (ewm-switch-layout-module layout)    ; Switch to layout by name
 (ewm-get-layouts-module)             ; Query current layouts
 ```

@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use ewm_core::cursor::CursorConfig;
+use ewm_core::config::Cursor;
 use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{Fixture, nz};
 use ewm_core::{FocusSource, LayoutEntry, Notify};
@@ -255,8 +255,11 @@ fn workspace_protocol_reports_urgent_workspace_from_explicit_mark() {
 
 #[test]
 fn ewm_state_reports_explicit_cursor_config() {
-    let fix =
-        Fixture::new_with_cursor_config(CursorConfig::new("ConfiguredCursorTheme", 37)).unwrap();
+    let fix = Fixture::new_with_cursor_config(Cursor {
+        theme: Some("ConfiguredCursorTheme".into()),
+        size: Some(37),
+    })
+    .unwrap();
     let cursor = &fix.debug_state()["cursor"]["image"];
 
     assert_eq!(cursor["provider"], "named");

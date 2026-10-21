@@ -500,7 +500,7 @@ fn apply_op(h: &mut Harness, op: &Op) {
             }
         }
         Op::SetFocusFollowsMouse { on } => {
-            h.fix.ewm().focus_follows_mouse_mode = on;
+            h.fix.ewm().config.focus_follows_mouse = on;
         }
         Op::SetDragSource { on } => {
             h.fix.ewm().emacs_drag_source = on;
@@ -859,7 +859,7 @@ fn plain_entry_under_frame_pointer(h: &Harness) -> Option<LayoutEntryId> {
 
 fn check_f1(h: &Harness) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
-    if !ewm.focus_follows_mouse_mode || ewm.pointer.is_grabbed() {
+    if !ewm.config.focus_follows_mouse || ewm.pointer.is_grabbed() {
         return Ok(());
     }
     let Some(entry_id) = plain_entry_under_frame_pointer(h) else {

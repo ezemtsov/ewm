@@ -1,5 +1,7 @@
 use std::ops::{Mul, MulAssign};
 
+use serde::Deserialize;
+
 /// RGB color in [0, 1] with unpremultiplied alpha.
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct Color {
@@ -168,7 +170,8 @@ pub struct ShadowOffset {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FloatOrInt(pub f64);
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub struct Blur {
     pub off: bool,
     pub passes: u8,

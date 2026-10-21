@@ -91,7 +91,7 @@ use crate::{
         Backend, OutputInfos, apply_enabled_output_config, apply_initial_output_config,
         map_initial_output,
     },
-    cursor::{CursorConfig, CursorTextureCache},
+    cursor::CursorTextureCache,
     render::{collect_render_elements_for_output, process_screencopies_for_output},
     vblank_throttle::VBlankThrottle,
 };
@@ -2481,13 +2481,13 @@ impl DrmBackendState {
     fn set_unattended(&mut self, ewm: &mut Ewm, unattended: bool) {
         ewm.set_unattended(unattended);
         if let Some(logind) = &mut self.logind {
-            logind.set_sleep_inhibited(unattended && !ewm.closed_lid_suspends);
+            logind.set_sleep_inhibited(unattended && !ewm.config.power.closed_lid_suspends);
         }
     }
 
     /// Suspend with the panel lit so the kernel restores it, else stay awake with it dark.
     fn closed_lid_without_external(&mut self, ewm: &mut Ewm, reason: LidPolicyReason) {
-        if ewm.closed_lid_suspends && self.logind.is_some() {
+        if ewm.config.power.closed_lid_suspends && self.logind.is_some() {
             info!("Lid closed with no external display after {reason:?}, suspending");
             self.set_unattended(ewm, false);
             ewm.activate_monitors();
@@ -2887,8 +2887,9 @@ pub(crate) fn import_activation_environment(env_vars: &HashMap<String, String>) 
 }
 
 /// Run EWM with DRM/libinput backend (module mode only)
-pub fn run_drm(cursor_config: CursorConfig) -> anyhow::Result<()> {
+pub fn run_drm(cursor: crate::config::Cursor) -> anyhow::Result<()> {
     info!("Starting EWM with DRM backend (module mode)");
+    let cursor_config = cursor.resolve();
     cursor_config.apply_env();
 
     // Initialize libseat session
@@ -2913,12 +2914,7 @@ pub fn run_drm(cursor_config: CursorConfig) -> anyhow::Result<()> {
     let socket_name_str = socket_name.to_string_lossy().to_string();
     info!("Wayland socket: {:?}", socket_name);
 
-    let ewm = Ewm::new(
-        display_handle.clone(),
-        event_loop.handle(),
-        true,
-        cursor_config.clone(),
-    );
+    let ewm = Ewm::new(display_handle.clone(), event_loop.handle(), true, cursor);
 
     // Find primary GPU: env override or udev detection
     let gpu_path = match std::env::var("EWM_RENDER_DEVICE") {

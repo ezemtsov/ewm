@@ -28,6 +28,7 @@
 
 pub mod animation;
 pub mod backend;
+pub mod config;
 pub mod cursor;
 #[cfg(feature = "screencast")]
 pub mod dbus;
@@ -113,7 +114,7 @@ use std::time::{Duration, Instant};
 pub use backend::{Backend, DrmBackendState, HeadlessBackend};
 pub use event::{Event, OutputInfo, OutputMode};
 use layout::{overview, strip};
-use render_helpers::{floating_shadow, shadow_style};
+use render_helpers::floating_shadow;
 
 pub use focus::{FocusSource, Notify};
 pub use handlers::{LockRenderState, LockState};
@@ -547,20 +548,13 @@ pub struct Ewm {
     pub(crate) im_repeat: InterceptRepeatState,
     /// Introspected window list changed. Announce it next tick.
     pub introspect_windows_dirty: bool,
-    /// Focus follows mouse
-    pub focus_follows_mouse_mode: bool,
+    /// Every option Emacs sets.
+    pub config: config::Config,
     /// Emacs is tracking a drag source (`track-mouse' is `drag-source').
     pub emacs_drag_source: bool,
-    /// Alpha multiplier for inactive layout entries. 1.0 disables.
-    pub unfocused_alpha: f32,
-    /// Blur settings for surfaces that request background blur.
-    pub blur_config: shadow_style::Blur,
     /// UID of the layout entry currently under the pointer (for FFM view detection).
     pub pointer_entry_id: Option<LayoutEntryId>,
 
-    // Libinput device configuration
-    pub input_configs: Vec<input::InputConfigEntry>,
-    pub gestures: input::Gestures,
     /// Connected libinput devices, for re-applying configuration on change
     pub libinput_devices: std::collections::HashSet<smithay::reexports::input::Device>,
 
@@ -663,9 +657,6 @@ pub struct Ewm {
     /// Manually inhibited from Emacs (e.g., `ewm-idle-inhibit-mode').
     pub manual_idle_inhibited: bool,
 
-    /// Whether a closed lid without an external display suspends, else it turns the panel off.
-    pub closed_lid_suspends: bool,
-
     /// How far toward sepia the outputs are, fading to its target.
     sepia: animation::Animation,
 
@@ -752,8 +743,9 @@ impl Ewm {
         display_handle: DisplayHandle,
         loop_handle: LoopHandle<'static, State>,
         is_drm: bool,
-        cursor_config: cursor::CursorConfig,
+        cursor: config::Cursor,
     ) -> Self {
+        let resolved = cursor.resolve();
         let compositor_state = CompositorState::new_v6::<State>(&display_handle);
         use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::WmCapabilities;
         let xdg_shell_state = XdgShellState::new_with_capabilities::<State>(
@@ -949,16 +941,15 @@ impl Ewm {
                 input::DEFAULT_KEYBOARD_REPEAT_DELAY,
             ),
             introspect_windows_dirty: false,
-            focus_follows_mouse_mode: false,
+            config: config::Config {
+                cursor,
+                ..Default::default()
+            },
             emacs_drag_source: false,
-            unfocused_alpha: 1.0,
-            blur_config: shadow_style::Blur::default(),
             pointer_entry_id: None,
-            input_configs: Vec::new(),
             libinput_devices: std::collections::HashSet::new(),
             emacs_pid: None,
             swipe: input::Swipe::default(),
-            gestures: input::Gestures::default(),
             output_state: HashMap::new(),
             monitors_active: true,
             pending_early_imports: Vec::new(),
@@ -994,7 +985,6 @@ impl Ewm {
             is_fdo_idle_inhibited: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             idle_is_inhibited: false,
             manual_idle_inhibited: false,
-            closed_lid_suspends: true,
             sepia,
             unattended: false,
             dbus_screensaver_conn: None,
@@ -1033,7 +1023,7 @@ impl Ewm {
                 hide_when_typing: false,
             },
             notified_activity_this_iteration: false,
-            cursor_manager: cursor::CursorManager::new(&cursor_config.theme, cursor_config.size),
+            cursor_manager: cursor::CursorManager::new(&resolved.theme, resolved.size),
             captured_events: None,
             worker_event_tx,
         }
@@ -2323,7 +2313,7 @@ impl Ewm {
 
         // Don't retarget keyboard focus while grabbed. The grab owns it.
         if !grabbed
-            && self.focus_follows_mouse_mode
+            && self.config.focus_follows_mouse
             && (focus_changed || entry_changed)
             && !self.is_animating_at(pos)
         {

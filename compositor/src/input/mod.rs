@@ -354,7 +354,7 @@ impl State {
     pub(crate) fn process_libinput_event(&mut self, event: &mut InputEvent<LibinputInputBackend>) {
         match event {
             InputEvent::DeviceAdded { device } => {
-                apply_libinput_settings(device, &self.ewm.input_configs);
+                apply_libinput_settings(device, &self.ewm.config.input);
                 if device.has_capability(libinput::DeviceCapability::TabletTool)
                     && device.size().is_none()
                 {
@@ -1316,7 +1316,7 @@ impl State {
             bindings,
             self.ewm.focused_fullscreen_entry().is_some(),
             self.ewm.focused_surface_id(),
-            self.ewm.gestures,
+            self.ewm.config.gestures,
             fingers,
             direction,
             mods,
@@ -1635,7 +1635,7 @@ impl State {
     /// The output a touchscreen maps onto, the first output by default.
     fn output_for_touch<'a>(&'a self, device_name: &str) -> Option<&'a Output> {
         let (device_cfg, type_cfg) =
-            lookup_configs(&self.ewm.input_configs, device_name, DeviceType::Touch);
+            lookup_configs(&self.ewm.config.input, device_name, DeviceType::Touch);
         self.configured_output(device_cfg, type_cfg)
             .or_else(|| self.ewm.first_output())
     }
@@ -1765,7 +1765,7 @@ impl State {
     /// The output a tablet maps onto, resolved through the input config cascade.
     fn output_for_tablet<'a>(&'a self, device_name: &str) -> Option<&'a Output> {
         let (device_cfg, type_cfg) =
-            lookup_configs(&self.ewm.input_configs, device_name, DeviceType::Tablet);
+            lookup_configs(&self.ewm.config.input, device_name, DeviceType::Tablet);
 
         if resolve!(device_cfg, type_cfg, map_to_focused_output, false) {
             self.ewm.active_output()
@@ -2286,12 +2286,12 @@ pub fn apply_libinput_settings(device: &mut libinput::Device, configs: &[InputCo
 }
 
 impl State {
-    /// Store the input configs and apply them to the devices, the keyboard repeat and XKB.
-    pub(crate) fn configure_input(&mut self, configs: Vec<InputConfigEntry>) {
+    /// Apply the input configs to the devices, the keyboard repeat and XKB.
+    pub(crate) fn configure_input(&mut self) {
+        let configs = &self.ewm.config.input;
         info!("Input config updated: {} entries", configs.len());
 
-        // Extract keyboard settings before storing configs (avoids borrow conflict).
-        let kb_repeat = effective_keyboard_repeat(&configs);
+        let kb_repeat = effective_keyboard_repeat(configs);
         let kb_xkb = configs
             .iter()
             .find(|c| {
@@ -2303,9 +2303,8 @@ impl State {
                     .map(|layouts| (layouts, kb.xkb_variants.clone(), kb.xkb_options.clone()))
             });
 
-        self.ewm.input_configs = configs;
         for mut device in self.ewm.libinput_devices.iter().cloned() {
-            apply_libinput_settings(&mut device, &self.ewm.input_configs);
+            apply_libinput_settings(&mut device, &self.ewm.config.input);
         }
 
         // Apply the same effective repeat settings to Wayland clients
