@@ -177,7 +177,7 @@ impl Fixture {
         client.configured_sizes()
     }
 
-    /// Deliver the configures and commit a buffer of the last size asked, returning the sizes.
+    /// Deliver the configures, answer the last one with a buffer and return the sizes asked.
     pub fn answer_configure(
         &mut self,
         client: &mut TestClient,
@@ -185,7 +185,8 @@ impl Fixture {
     ) -> Vec<(i32, i32)> {
         let sizes = self.configured(client);
         if let Some(&(w, h)) = sizes.iter().rev().find(|&&(w, h)| w > 0 && h > 0) {
-            self.map_toplevel(client, toplevel, Size::from((w, h)));
+            let size = client.answer_size(toplevel, Size::from((w, h)));
+            self.map_toplevel(client, toplevel, size);
         }
         sizes
     }

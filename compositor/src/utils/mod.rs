@@ -135,6 +135,12 @@ pub fn surface_geo(states: &SurfaceData) -> Option<Rectangle<i32, Logical>> {
         })
 }
 
+/// `x` within `min` and `max`, zero meaning no bound.
+pub(crate) fn ensure_min_max_size(x: i32, min: i32, max: i32) -> i32 {
+    let x = if max > 0 { Ord::min(x, max) } else { x };
+    if min > 0 { Ord::max(x, min) } else { x }
+}
+
 /// The uniform scale at which `source` covers `constrain`.
 pub(crate) fn fill_scale<K>(source: Size<i32, K>, constrain: Size<i32, K>) -> Option<Scale<f64>> {
     (source.w > 0 && source.h > 0).then(|| {

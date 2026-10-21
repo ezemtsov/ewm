@@ -1,18 +1,26 @@
 //! Until the buffer a layout asked for comes, the views of its surface keep showing what they
-//! showed, whatever Emacs does to their windows meanwhile.
+//! showed, whatever Emacs does to their windows meanwhile. The client answers within its size
+//! hints or with a size it insists on, and whatever it commits settles the debt.
+//!
+//! Ported from niri's src/layout/tests.rs: the hints, the forced size and the answer op.
 
 use ewm_core::LayoutEntry;
-use ewm_core::layout::resize_fade::{RESIZE_FADE_THRESHOLD, size_change};
+use ewm_core::layout::resize_fade::{RESIZE_FADE_THRESHOLD, ViewRect, size_change};
 use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{Fixture, TestClient, Toplevel, nz};
 use proptest::prelude::*;
 use smithay::utils::{Logical, Rectangle, Size};
 
 const OUTPUT: &str = "HEAD-A";
+const OUTPUT_SIZE: (i32, i32) = (1920, 1080);
 const FRAME: u64 = 500;
 const ENTRIES: [u64; 2] = [7, 8];
+/// Hints and forced sizes reach this far, past the largest window.
+const SIDE: i32 = 1200;
 
 type Rect = Rectangle<i32, Logical>;
+/// A width and height, or a min and max of one side.
+type Pair = (i32, i32);
 
 #[derive(Debug, Clone, Copy)]
 struct RectSpec {
@@ -29,7 +37,14 @@ enum Op {
         entry: usize,
         on: bool,
     },
-    /// The client answers its last configure with a buffer of that size.
+    /// The client's min and max size, zero for none.
+    Hints {
+        min: Pair,
+        max: Pair,
+    },
+    /// A size the client commits whatever it is asked, or none to answer within its hints again.
+    Force(Option<Pair>),
+    /// The client answers its last configure.
     Answer,
 }
 
@@ -43,11 +58,37 @@ fn rect_strategy() -> impl Strategy<Value = RectSpec> {
         .prop_map(|(x, y, w, h)| RectSpec { x, y, w, h })
 }
 
+/// A min and max for one side, zero meaning none.
+fn min_max_strategy() -> impl Strategy<Value = Pair> {
+    prop_oneof![
+        Just((0, 0)),
+        (1..SIDE).prop_map(|n| (n, n)),
+        (1..SIDE).prop_map(|min| (min, 0)),
+        (1..SIDE).prop_map(|max| (0, max)),
+        (1..SIDE, 1..SIDE).prop_map(|(min, max)| (min, max.max(min))),
+    ]
+}
+
+/// Hints for both sides, now and then a fixed size.
+fn hints_strategy() -> impl Strategy<Value = Op> {
+    prop_oneof![
+        5 => (min_max_strategy(), min_max_strategy()).prop_map(|((min_w, max_w), (min_h, max_h))| {
+            Op::Hints {
+                min: (min_w, min_h),
+                max: (max_w, max_h),
+            }
+        }),
+        1 => min_max_strategy().prop_map(|size| Op::Hints { min: size, max: size }),
+    ]
+}
+
 fn op_strategy() -> impl Strategy<Value = Op> {
     prop_oneof![
         4 => (prop::option::of(rect_strategy()), prop::option::of(rect_strategy()))
             .prop_map(|(a, b)| Op::Layout([a, b])),
         2 => (0..2usize, any::<bool>()).prop_map(|(entry, on)| Op::Fullscreen { entry, on }),
+        1 => hints_strategy(),
+        1 => prop::option::of((1..SIDE, 1..SIDE)).prop_map(Op::Force),
         3 => Just(Op::Answer),
     ]
 }
@@ -57,6 +98,8 @@ struct Harness {
     client: TestClient,
     toplevel: Toplevel,
     sid: u64,
+    hints: (Pair, Pair),
+    forced: Option<Pair>,
 }
 
 impl Harness {
@@ -66,21 +109,34 @@ impl Harness {
         let mut client = fix.new_client().unwrap();
         fix.roundtrip(&mut client);
         let (toplevel, sid) = fix.open_toplevel_with_id(&mut client, "app", Size::from((400, 300)));
+        client.drain_events();
         Self {
             fix,
             client,
             toplevel,
             sid,
+            hints: ((0, 0), (0, 0)),
+            forced: None,
         }
+    }
+
+    /// The views of the surface, as drawn.
+    fn views(&self) -> Vec<ViewRect> {
+        self.fix
+            .ewm_ref()
+            .view_rects()
+            .into_iter()
+            .filter(|view| view.surface == self.sid)
+            .collect()
     }
 
     /// Each view's contents' rect, while shown.
     fn rects(&self) -> [Option<Rect>; 2] {
-        let views = self.fix.ewm_ref().view_rects();
+        let views = self.views();
         ENTRIES.map(|entry| {
             views
                 .iter()
-                .find(|view| view.surface == self.sid && view.entry == nz(entry))
+                .find(|view| view.entry == nz(entry))
                 .map(|view| view.rect)
         })
     }
@@ -89,7 +145,44 @@ impl Harness {
         self.fix.ewm_ref().surfaces[&self.sid].owes_buffer()
     }
 
-    fn apply(&mut self, op: &Op) {
+    /// The size the client last committed.
+    fn geometry(&self) -> Size<i32, Logical> {
+        self.fix.ewm_ref().surfaces[&self.sid]
+            .window
+            .geometry()
+            .size
+    }
+
+    /// What the client commits when asked `asked`: its forced size, else `asked` within its hints.
+    fn answer(&self, asked: Pair) -> Size<i32, Logical> {
+        let within = |x: i32, min: i32, max: i32| {
+            let x = if max > 0 { x.min(max) } else { x };
+            if min > 0 { x.max(min) } else { x }
+        };
+        let (min, max) = self.hints;
+        Size::from(
+            self.forced
+                .unwrap_or((within(asked.0, min.0, max.0), within(asked.1, min.1, max.1))),
+        )
+    }
+
+    /// The last configure: the output while fullscreen is pending, else the primary window if any.
+    fn expected_configure(&self) -> Option<Size<i32, Logical>> {
+        let ewm = self.fix.ewm_ref();
+        if ewm.pending_fullscreen(self.sid) {
+            return Some(Size::from(OUTPUT_SIZE));
+        }
+        ewm.layout
+            .monitors()
+            .iter()
+            .flat_map(|monitor| monitor.strip.frames())
+            .flat_map(|frame| &frame.entries)
+            .find(|entry| entry.surface_id() == Some(self.sid) && entry.primary())
+            .map(|entry| entry.rect().size)
+    }
+
+    /// Apply `op`, returning the configure an answer committed for.
+    fn apply(&mut self, op: &Op) -> Option<Pair> {
         match op {
             Op::Layout(specs) => {
                 let mut frame = Frame::new(FRAME);
@@ -112,11 +205,30 @@ impl Harness {
                     .collect();
                 frame.selected_entry_id = frame.entries.first().map(|entry| entry.id);
                 self.fix.tile(OUTPUT, vec![frame]);
+                None
             }
-            Op::Fullscreen { entry, on } => self.fix.set_fullscreen(nz(ENTRIES[*entry]), *on),
-            Op::Answer => {
-                self.fix.answer_configure(&mut self.client, &self.toplevel);
+            Op::Fullscreen { entry, on } => {
+                self.fix.set_fullscreen(nz(ENTRIES[*entry]), *on);
+                None
             }
+            Op::Hints { min, max } => {
+                self.hints = (*min, *max);
+                self.client
+                    .set_size_hints(&self.toplevel, Size::from(*min), Size::from(*max));
+                None
+            }
+            Op::Force(size) => {
+                self.forced = *size;
+                self.client
+                    .set_forced_size(&self.toplevel, size.map(Size::from));
+                None
+            }
+            Op::Answer => self
+                .fix
+                .answer_configure(&mut self.client, &self.toplevel)
+                .into_iter()
+                .rev()
+                .find(|&(w, h)| w > 0 && h > 0),
         }
     }
 }
@@ -132,24 +244,70 @@ proptest! {
         let mut h = Harness::new();
         for op in &ops {
             let before = h.rects();
-            h.apply(op);
+            let asked_for = h.expected_configure();
+            let answered = h.apply(op);
             let after = h.rects();
-            // A layout or a request that leaves a buffer owed changes no view's contents' size.
-            if matches!(op, Op::Answer) || !h.owes() {
-                continue;
-            }
-            for i in 0..2 {
-                let (Some(was), Some(now)) = (before[i], after[i]) else {
-                    continue;
-                };
-                prop_assert!(
-                    size_change(was.size, now.size) <= RESIZE_FADE_THRESHOLD,
-                    "view {} owed a buffer yet went from {:?} to {:?} on {:?}",
-                    ENTRIES[i],
-                    was,
-                    now,
-                    op
+            if let Some(asked) = answered {
+                // The configure followed the layout, and whatever came back settles the debt.
+                if let Some(asked_for) = asked_for {
+                    prop_assert_eq!(
+                        Size::from(asked),
+                        asked_for,
+                        "the configure answered by {:?}",
+                        op
+                    );
+                }
+                prop_assert!(!h.owes(), "answering {:?} left a buffer owed", asked);
+                prop_assert_eq!(
+                    h.geometry(),
+                    h.answer(asked),
+                    "the size committed for {:?}",
+                    asked
                 );
+            }
+            if h.owes() {
+                // A layout or a request that leaves a buffer owed changes no view's contents' size.
+                for i in 0..2 {
+                    let (Some(was), Some(now)) = (before[i], after[i]) else {
+                        continue;
+                    };
+                    prop_assert!(
+                        size_change(was.size, now.size) <= RESIZE_FADE_THRESHOLD,
+                        "view {} owed a buffer yet went from {:?} to {:?} on {:?}",
+                        ENTRIES[i],
+                        was,
+                        now,
+                        op
+                    );
+                }
+            } else {
+                // Settled, every view draws its contents by the fit computed now.
+                let buffer = h.geometry();
+                for view in h.views() {
+                    let scale = if view.fit.native {
+                        1.
+                    } else {
+                        let window = view.fit.window;
+                        f64::max(
+                            window.w as f64 / buffer.w as f64,
+                            window.h as f64 / buffer.h as f64,
+                        )
+                    };
+                    prop_assert_eq!(
+                        view.scale,
+                        scale,
+                        "view {} draws at the wrong scale on {:?}",
+                        view.entry,
+                        op
+                    );
+                    prop_assert_eq!(
+                        view.rect.size,
+                        buffer.to_f64().upscale(scale).to_i32_round(),
+                        "view {} draws the wrong size on {:?}",
+                        view.entry,
+                        op
+                    );
+                }
             }
         }
     }

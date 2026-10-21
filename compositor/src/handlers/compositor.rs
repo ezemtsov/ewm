@@ -11,6 +11,7 @@ use smithay::wayland::compositor::{
 use smithay::wayland::shell::xdg::{SurfaceCachedState, ToplevelSurface};
 use smithay::wayland::shm::{ShmHandler, ShmState};
 
+use crate::utils::ensure_min_max_size;
 use crate::{Event, Ewm, State, client_state, is_portal_surface, surface_root};
 
 // Buffer handling
@@ -247,11 +248,6 @@ fn compute_open_floating(toplevel: &ToplevelSurface) -> bool {
 
     // We open fixed-height windows as floating.
     min_size.h > 0 && min_size.h == max_size.h
-}
-
-fn ensure_min_max_size(x: i32, min: i32, max: i32) -> i32 {
-    let x = if max > 0 { x.min(max) } else { x };
-    if min > 0 { x.max(min) } else { x }
 }
 
 /// The window's geometry clamped to its min/max size hints.

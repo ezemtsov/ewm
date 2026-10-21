@@ -10,6 +10,7 @@ use std::os::unix::net::UnixStream;
 
 use smithay::reexports::wayland_server::backend::ClientId;
 use smithay::utils::{Logical, Rectangle, Size};
+use wayland_client::backend::ObjectId;
 use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_region, wl_registry, wl_seat,
     wl_shm, wl_shm_pool, wl_surface, wl_touch,
@@ -47,6 +48,8 @@ use wayland_protocols_misc::zwp_input_method_v2::client::{
 };
 #[cfg(feature = "testing-layer-shell")]
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
+
+use crate::utils::ensure_min_max_size;
 
 /// A touchpad gesture kind of zwp_pointer_gestures_v1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,6 +208,8 @@ pub struct ClientState {
     /// Registry name -> interface of every global currently advertised.
     pub globals: HashMap<u32, String>,
     pub events: Vec<ClientEvent>,
+    /// How each toplevel answers a configure, by its xdg_toplevel.
+    pub(crate) size_policies: HashMap<ObjectId, SizePolicy>,
 }
 
 #[derive(Clone)]
@@ -212,6 +217,36 @@ pub struct Toplevel {
     pub surface: wl_surface::WlSurface,
     pub xdg_surface: xdg_surface::XdgSurface,
     pub xdg_toplevel: xdg_toplevel::XdgToplevel,
+}
+
+/// How a toplevel answers a configure: within its size hints, or with a size it insists on.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SizePolicy {
+    min: Size<i32, Logical>,
+    max: Size<i32, Logical>,
+    forced: Option<Size<i32, Logical>>,
+}
+
+impl Default for SizePolicy {
+    fn default() -> Self {
+        Self {
+            min: Size::from((0, 0)),
+            max: Size::from((0, 0)),
+            forced: None,
+        }
+    }
+}
+
+impl SizePolicy {
+    /// The size committed for a configure asking `requested`.
+    fn answer(&self, requested: Size<i32, Logical>) -> Size<i32, Logical> {
+        self.forced.unwrap_or_else(|| {
+            Size::from((
+                ensure_min_max_size(requested.w, self.min.w, self.max.w),
+                ensure_min_max_size(requested.h, self.min.h, self.max.h),
+            ))
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -368,6 +403,44 @@ impl TestClient {
             xdg_surface,
             xdg_toplevel,
         }
+    }
+
+    /// Hint `min` and `max` for `toplevel`, zero for none, and answer configures within them.
+    pub fn set_size_hints(
+        &mut self,
+        toplevel: &Toplevel,
+        min: Size<i32, Logical>,
+        max: Size<i32, Logical>,
+    ) {
+        toplevel.xdg_toplevel.set_min_size(min.w, min.h);
+        toplevel.xdg_toplevel.set_max_size(max.w, max.h);
+        let policy = self.policy(toplevel);
+        policy.min = min;
+        policy.max = max;
+    }
+
+    /// Answer every configure of `toplevel` with `size`, or within its hints again with none.
+    pub fn set_forced_size(&mut self, toplevel: &Toplevel, size: Option<Size<i32, Logical>>) {
+        self.policy(toplevel).forced = size;
+    }
+
+    /// The size `toplevel` commits for a configure asking `requested`.
+    pub fn answer_size(
+        &self,
+        toplevel: &Toplevel,
+        requested: Size<i32, Logical>,
+    ) -> Size<i32, Logical> {
+        self.state
+            .size_policies
+            .get(&toplevel.xdg_toplevel.id())
+            .map_or(requested, |policy| policy.answer(requested))
+    }
+
+    fn policy(&mut self, toplevel: &Toplevel) -> &mut SizePolicy {
+        self.state
+            .size_policies
+            .entry(toplevel.xdg_toplevel.id())
+            .or_default()
     }
 
     /// Ask for swipe, pinch and hold gestures on the pointer.
