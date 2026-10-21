@@ -40,8 +40,12 @@
     hash = "sha256-+Dza0ioqXvLRNBjl+XjhXZjr5K4n3FjyNqHYi0GIjkc=";
   };
 
-  # Emacs 31.1 already carries the CVE-2024-53920 fix, and nixpkgs' backport no longer applies.
-  patches = lib.filter (p: !lib.hasSuffix "CVE-2024-53920.patch" (toString p)) old.patches;
+  # Emacs 31.1 already carries the CVE-2024-53920 and CVE-2026-108976 fixes,
+  # and nixpkgs' backports no longer apply.
+  patches = lib.filter
+    (p: !lib.any (name: lib.hasSuffix name (toString p))
+       [ "CVE-2024-53920.patch" "CVE-2026-108976.patch" ])
+    old.patches;
 
   # Drop the image opt-outs the bare (no-GTK) build inherits, then turn the
   # backends and image support we want back on.
