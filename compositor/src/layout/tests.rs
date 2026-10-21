@@ -370,7 +370,7 @@ proptest! {
         }
 
         let outputs = fix.ewm_ref().sorted_outputs.clone();
-        fix.ewm().layout.assign_primaries(&outputs);
+        fix.ewm().layout.assign_primaries(&outputs, |_| false);
 
         let expected = order
             .iter()

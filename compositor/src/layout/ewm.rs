@@ -1121,10 +1121,17 @@ impl Ewm {
         });
     }
 
-    /// Pick each surface's primary entry (largest active-frame slot) and
-    /// configure its toplevel. Off-screen frames don't bid.
+    /// Pick each surface's primary entry (largest active-frame slot) and configure its toplevel.
+    /// Off-screen frames don't bid, nor does fullscreen the surface no longer asks for.
     pub(crate) fn refresh_primary_assignments(&mut self) {
-        self.layout.assign_primaries(&self.sorted_outputs);
+        let surfaces = &self.surfaces;
+        let requested = |id| {
+            surfaces
+                .get(&id)
+                .is_some_and(|surface| surface.pending_fullscreen)
+        };
+        self.layout
+            .assign_primaries(&self.sorted_outputs, requested);
         self.refresh_mapped_cast_outputs();
         self.configure_primary_entries();
     }

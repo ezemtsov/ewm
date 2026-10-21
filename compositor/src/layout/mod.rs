@@ -1036,9 +1036,9 @@ impl Layout {
             .any(|monitor| monitor.presenting_fullscreen().is_some())
     }
 
-    /// Mark one view of each surface primary: its largest among the shown frames,
-    /// ties broken by `order`.
-    pub(crate) fn assign_primaries(&mut self, order: &[Output]) {
+    /// Mark one view of each surface primary: its largest among the shown frames, a view shown
+    /// fullscreen counting the output while `requested` of its surface, ties broken by `order`.
+    pub(crate) fn assign_primaries(&mut self, order: &[Output], requested: impl Fn(u64) -> bool) {
         let mut best: HashMap<u64, (u64, LayoutEntryId)> = HashMap::new();
         let shown = order
             .iter()
@@ -1049,7 +1049,8 @@ impl Layout {
             let Some(surface_id) = location.entry.surface_id() else {
                 continue;
             };
-            let area = entry_area(location.monitor.output(), location.entry);
+            let fullscreen = location.entry.fullscreen() && requested(surface_id);
+            let area = entry_area(location.monitor.output(), location.entry, fullscreen);
             let entry = best.entry(surface_id).or_insert((area, location.entry.id));
             // A tie keeps the primary.
             if area > entry.0 || (area == entry.0 && location.entry.primary()) {
@@ -1419,9 +1420,9 @@ impl Layout {
     }
 }
 
-/// Fullscreen entries claim the output's full size, not entry.w/h.
-fn entry_area(output: &Output, entry: &LayoutEntry) -> u64 {
-    if entry.fullscreen() {
+/// The entry's area, the output's when `fullscreen`.
+fn entry_area(output: &Output, entry: &LayoutEntry, fullscreen: bool) -> u64 {
+    if fullscreen {
         let size = crate::utils::output_size(output);
         size.w as u64 * size.h as u64
     } else {

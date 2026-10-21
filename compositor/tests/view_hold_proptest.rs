@@ -257,13 +257,13 @@ proptest! {
                         op
                     );
                 }
-                prop_assert!(!h.owes(), "answering {:?} left a buffer owed", asked);
                 prop_assert_eq!(
                     h.geometry(),
                     h.answer(asked),
                     "the size committed for {:?}",
                     asked
                 );
+                prop_assert!(!h.owes(), "answering {:?} left a buffer owed", asked);
             }
             if h.owes() {
                 // A layout or a request that leaves a buffer owed changes no view's contents' size.
