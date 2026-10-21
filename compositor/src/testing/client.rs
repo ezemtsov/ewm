@@ -13,7 +13,7 @@ use smithay::utils::{Logical, Rectangle, Size};
 use wayland_client::backend::ObjectId;
 use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_region, wl_registry, wl_seat,
-    wl_shm, wl_shm_pool, wl_surface, wl_touch,
+    wl_shm, wl_shm_pool, wl_subcompositor, wl_subsurface, wl_surface, wl_touch,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
 use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_manager_v1::{
@@ -187,6 +187,7 @@ pub struct ClientState {
     pub compositor: Option<wl_compositor::WlCompositor>,
     pub xdg_wm_base: Option<xdg_wm_base::XdgWmBase>,
     pub shm: Option<wl_shm::WlShm>,
+    pub subcompositor: Option<wl_subcompositor::WlSubcompositor>,
     pub seat: Option<wl_seat::WlSeat>,
     pub pointer: Option<wl_pointer::WlPointer>,
     pub touch: Option<wl_touch::WlTouch>,
@@ -254,6 +255,13 @@ pub struct Popup {
     pub surface: wl_surface::WlSurface,
     pub xdg_surface: xdg_surface::XdgSurface,
     pub xdg_popup: xdg_popup::XdgPopup,
+}
+
+/// A desynchronized subsurface, committing on its own.
+#[derive(Clone)]
+pub struct Subsurface {
+    pub surface: wl_surface::WlSurface,
+    pub subsurface: wl_subsurface::WlSubsurface,
 }
 
 #[cfg(feature = "testing-layer-shell")]
@@ -354,6 +362,13 @@ impl TestClient {
             .expect("wl_compositor not bound; roundtrip the registry first")
     }
 
+    fn subcompositor(&self) -> &wl_subcompositor::WlSubcompositor {
+        self.state
+            .subcompositor
+            .as_ref()
+            .expect("wl_subcompositor not bound; roundtrip the registry first")
+    }
+
     fn wm_base(&self) -> &xdg_wm_base::XdgWmBase {
         self.state
             .xdg_wm_base
@@ -402,6 +417,20 @@ impl TestClient {
             surface,
             xdg_surface,
             xdg_toplevel,
+        }
+    }
+
+    /// A desynchronized subsurface of `parent` at its origin.
+    pub fn create_subsurface(&mut self, parent: &wl_surface::WlSurface) -> Subsurface {
+        let qh = self.eq.handle();
+        let surface = self.compositor().create_surface(&qh, ());
+        let subsurface = self
+            .subcompositor()
+            .get_subsurface(&surface, parent, &qh, ());
+        subsurface.set_desync();
+        Subsurface {
+            surface,
+            subsurface,
         }
     }
 
@@ -673,6 +702,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientState {
             state.xdg_wm_base = Some(registry.bind(name, version, qh, ()));
         } else if interface == wl_shm::WlShm::interface().name {
             state.shm = Some(registry.bind(name, version, qh, ()));
+        } else if interface == wl_subcompositor::WlSubcompositor::interface().name {
+            state.subcompositor = Some(registry.bind(name, version, qh, ()));
         } else if interface == wl_seat::WlSeat::interface().name {
             state.seat = Some(registry.bind(name, version, qh, ()));
         } else if interface == wl_output::WlOutput::interface().name {
@@ -1095,6 +1126,8 @@ wayland_client::delegate_noop!(ClientState: ignore xdg_popup::XdgPopup);
 wayland_client::delegate_noop!(ClientState: ignore xdg_positioner::XdgPositioner);
 wayland_client::delegate_noop!(ClientState: ignore wl_shm::WlShm);
 wayland_client::delegate_noop!(ClientState: ignore wl_shm_pool::WlShmPool);
+wayland_client::delegate_noop!(ClientState: ignore wl_subcompositor::WlSubcompositor);
+wayland_client::delegate_noop!(ClientState: ignore wl_subsurface::WlSubsurface);
 wayland_client::delegate_noop!(ClientState: ignore wl_buffer::WlBuffer);
 wayland_client::delegate_noop!(ClientState: ignore zwp_text_input_manager_v3::ZwpTextInputManagerV3);
 wayland_client::delegate_noop!(ClientState: ignore zwp_pointer_gestures_v1::ZwpPointerGesturesV1);

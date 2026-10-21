@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc 8b332ba71144172a9243304b6e934806fe145d081583d571dba2526c61f07b43 # shrinks to ops = [Answer, Layout([None, Some(RectSpec { x: 0, y: 0, w: 300, h: 200 })]), Layout([Some(RectSpec { x: 0, y: 0, w: 300, h: 300 }), Some(RectSpec { x: 0, y: 0, w: 300, h: 200 })])]
 cc 49bd80dae20c7ecaf54f4738c23ad70ea61ba841fdd6223237319e8d445ee2f6 # shrinks to ops = [Layout([Some(RectSpec { x: 0, y: 0, w: 300, h: 200 }), Some(RectSpec { x: 0, y: 0, w: 300, h: 300 })]), Fullscreen { entry: 0, on: true }, Answer, Fullscreen { entry: 0, on: false }, Answer]
+cc 539b350805376be1f85d2615bbfc17375ba21f006b8d76d5c552223deb56977a # shrinks to ops = [Layout([Some(RectSpec { x: 0, y: 0, w: 300, h: 200 }), Some(RectSpec { x: 0, y: 0, w: 300, h: 300 })]), Answer, Fullscreen { entry: 0, on: true }, Ack, Fullscreen { entry: 0, on: false }]

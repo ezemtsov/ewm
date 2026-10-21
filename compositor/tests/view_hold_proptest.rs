@@ -1,13 +1,14 @@
 //! Until the buffer a layout asked for comes, the views of its surface keep showing what they
 //! showed, whatever Emacs does to their windows meanwhile. The client answers within its size
-//! hints or with a size it insists on, and whatever it commits settles the debt.
+//! hints or with a size it insists on, drawing into its surface, into a subsurface or not at
+//! all, and the commit carrying its ack settles the debt.
 //!
 //! Ported from niri's src/layout/tests.rs: the hints, the forced size and the answer op.
 
-use ewm_core::LayoutEntry;
 use ewm_core::layout::resize_fade::{RESIZE_FADE_THRESHOLD, ViewRect, size_change};
 use ewm_core::layout::strip::Frame;
-use ewm_core::testing::{Fixture, TestClient, Toplevel, nz};
+use ewm_core::testing::{Fixture, Subsurface, TestClient, Toplevel, nz};
+use ewm_core::{LayoutEntry, LayoutEntryId};
 use proptest::prelude::*;
 use smithay::utils::{Logical, Rectangle, Size};
 
@@ -44,8 +45,12 @@ enum Op {
     },
     /// A size the client commits whatever it is asked, or none to answer within its hints again.
     Force(Option<Pair>),
-    /// The client answers its last configure.
+    /// The client answers its last configure with a buffer on its surface.
     Answer,
+    /// The client acks its last configure and draws nothing.
+    Ack,
+    /// The client acks its last configure on its surface and draws into a subsurface.
+    AnswerBelow,
 }
 
 fn rect_strategy() -> impl Strategy<Value = RectSpec> {
@@ -90,6 +95,8 @@ fn op_strategy() -> impl Strategy<Value = Op> {
         1 => hints_strategy(),
         1 => prop::option::of((1..SIDE, 1..SIDE)).prop_map(Op::Force),
         3 => Just(Op::Answer),
+        1 => Just(Op::Ack),
+        1 => Just(Op::AnswerBelow),
     ]
 }
 
@@ -100,6 +107,7 @@ struct Harness {
     sid: u64,
     hints: (Pair, Pair),
     forced: Option<Pair>,
+    below: Option<Subsurface>,
 }
 
 impl Harness {
@@ -117,6 +125,7 @@ impl Harness {
             sid,
             hints: ((0, 0), (0, 0)),
             forced: None,
+            below: None,
         }
     }
 
@@ -181,6 +190,22 @@ impl Harness {
             .map(|entry| entry.rect().size)
     }
 
+    /// Whether `entry` is shown fullscreen while its surface no longer asks for it.
+    fn leaving_fullscreen(&self, entry: LayoutEntryId) -> bool {
+        let ewm = self.fix.ewm_ref();
+        !ewm.pending_fullscreen(self.sid)
+            && ewm
+                .layout
+                .monitors()
+                .iter()
+                .flat_map(|monitor| monitor.strip.frames())
+                .any(|frame| {
+                    frame
+                        .fullscreen_entry()
+                        .is_some_and(|shown| shown.id == entry)
+                })
+    }
+
     /// Apply `op`, returning the configure an answer committed for.
     fn apply(&mut self, op: &Op) -> Option<Pair> {
         match op {
@@ -223,13 +248,24 @@ impl Harness {
                     .set_forced_size(&self.toplevel, size.map(Size::from));
                 None
             }
-            Op::Answer => self
-                .fix
-                .answer_configure(&mut self.client, &self.toplevel)
-                .into_iter()
-                .rev()
-                .find(|&(w, h)| w > 0 && h > 0),
+            Op::Answer => Self::asked(self.fix.answer_configure(&mut self.client, &self.toplevel)),
+            Op::Ack => Self::asked(self.fix.ack_configure(&mut self.client, &self.toplevel)),
+            Op::AnswerBelow => {
+                let below = self
+                    .below
+                    .get_or_insert_with(|| self.client.create_subsurface(&self.toplevel.surface));
+                Self::asked(self.fix.answer_configure_below(
+                    &mut self.client,
+                    &self.toplevel,
+                    below,
+                ))
+            }
         }
+    }
+
+    /// The configure the answer drained `sizes` for, the last positive one.
+    fn asked(sizes: Vec<Pair>) -> Option<Pair> {
+        sizes.into_iter().rev().find(|&(w, h)| w > 0 && h > 0)
     }
 }
 
@@ -244,6 +280,7 @@ proptest! {
         let mut h = Harness::new();
         for op in &ops {
             let before = h.rects();
+            let geometry = h.geometry();
             let asked_for = h.expected_configure();
             let answered = h.apply(op);
             let after = h.rects();
@@ -257,12 +294,9 @@ proptest! {
                         op
                     );
                 }
-                prop_assert_eq!(
-                    h.geometry(),
-                    h.answer(asked),
-                    "the size committed for {:?}",
-                    asked
-                );
+                // A buffer brings the answered size, an ack alone leaves the last one.
+                let committed = if matches!(op, Op::Ack) { geometry } else { h.answer(asked) };
+                prop_assert_eq!(h.geometry(), committed, "the size committed for {:?}", asked);
                 prop_assert!(!h.owes(), "answering {:?} left a buffer owed", asked);
             }
             if h.owes() {
@@ -281,9 +315,13 @@ proptest! {
                     );
                 }
             } else {
-                // Settled, every view draws its contents by the fit computed now.
+                // Settled, every view draws by the fit computed now. A view still shown fullscreen
+                // after its surface asked to leave keeps its fit until the commit that leaves.
                 let buffer = h.geometry();
                 for view in h.views() {
+                    if h.leaving_fullscreen(view.entry) {
+                        continue;
+                    }
                     let scale = if view.fit.native {
                         1.
                     } else {

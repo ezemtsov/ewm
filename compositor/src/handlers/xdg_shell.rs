@@ -59,10 +59,8 @@ pub(crate) fn add_toplevel_pre_commit_hook(surface: &WlSurface, id: u64) -> Hook
         let Some(surface) = state.ewm.surfaces.get_mut(&id) else {
             return;
         };
-        // An ack without a buffer leaves the resize pending for the commit that brings one.
-        let mut answered = attached
-            .then(|| surface.take_answered_resize(serial))
-            .flatten();
+        // The commit carrying the ack applies the configure, buffer or not.
+        let mut answered = surface.take_answered_resize(serial);
         let flips = surface.fullscreen != fullscreen;
         if answered.is_some() || flips {
             let rects: Vec<_> = state
@@ -78,7 +76,8 @@ pub(crate) fn add_toplevel_pre_commit_hook(surface: &WlSurface, id: u64) -> Hook
                 surface.rects_before = rects;
             }
         }
-        if let Some(pending) = answered {
+        // Only new contents fade.
+        if let Some(pending) = answered.filter(|_| attached) {
             state.start_resize_fade(id, pending, flips);
         }
     })
