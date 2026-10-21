@@ -28,9 +28,10 @@
 //! 6. **VT switching**: Ctrl+Alt+F1-F12 arrive as XF86Switch_VT_N keysyms.
 //!
 //! 7. **Swipe bindings**: `<swipe-FINGERS-DIRECTION>` entries match by fingers, direction and
-//!    modifiers under the same first-match and surface-scope rules. Bound to the overview or a
-//!    one-frame focus action the swipe drives that gesture as the fingers move, anything else
-//!    runs when they lift, and the unbound directions of a bound finger count do nothing.
+//!    modifiers under the same first-match rule, the surface under the pointer deciding scope and
+//!    fullscreen since that is where the swipe would go. Bound to the overview or a one-frame
+//!    focus action the swipe drives that gesture as the fingers move, anything else runs when
+//!    they lift, and the unbound directions of a bound finger count do nothing.
 //!
 //! 8. **Scroll bindings**: `<wheel-DIRECTION>` entries match a wheel notch or ten units of
 //!    two-finger travel under the same rules and run once per tick. The direction is the one the
@@ -284,19 +285,26 @@ pub enum SwipeAction {
     Bound(Bound),
 }
 
+/// Where a pointer gesture goes: the surface under the pointer, and whether it shows fullscreen.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Scope {
+    pub surface_id: Option<u64>,
+    pub fullscreen: bool,
+}
+
 /// Pure classification of a swipe by its binding: an action with a gesture is driven, anything
 /// else runs when the fingers lift, unbound is the client's.
 pub fn classify_swipe(
     bindings: &[InterceptedKey],
-    fullscreen: bool,
-    surface_id: Option<u64>,
+    scope: Scope,
     fingers: u32,
     direction: Direction,
     mods: &ModifiersState,
 ) -> SwipeAction {
     let trigger = Trigger::Swipe { fingers, direction };
-    let binding = find_binding(bindings, surface_id, |ik| ik.matches_trigger(trigger, mods));
-    let Some(ik) = binding.filter(|ik| ik.runs_under(fullscreen)) else {
+    let matches = |ik: &InterceptedKey| ik.matches_trigger(trigger, mods);
+    let binding = find_binding(bindings, scope.surface_id, matches);
+    let Some(ik) = binding.filter(|ik| ik.runs_under(scope.fullscreen)) else {
         return SwipeAction::Forward;
     };
     if let InterceptDispatch::Action(action) = &ik.dispatch
@@ -312,14 +320,14 @@ pub fn classify_swipe(
 /// client's.
 pub fn classify_scroll(
     bindings: &[InterceptedKey],
-    fullscreen: bool,
-    surface_id: Option<u64>,
+    scope: Scope,
     direction: Direction,
     mods: &ModifiersState,
 ) -> Option<Bound> {
     let trigger = Trigger::Scroll { direction };
-    find_binding(bindings, surface_id, |ik| ik.matches_trigger(trigger, mods))
-        .filter(|ik| ik.runs_under(fullscreen))
+    let matches = |ik: &InterceptedKey| ik.matches_trigger(trigger, mods);
+    find_binding(bindings, scope.surface_id, matches)
+        .filter(|ik| ik.runs_under(scope.fullscreen))
         .and_then(InterceptedKey::bound)
 }
 
@@ -1327,39 +1335,25 @@ impl State {
         }
     }
 
-    /// What a swipe of `fingers` under `mods` does once it sets off in `direction`.
-    fn classify_swipe(
-        &self,
-        bindings: &[InterceptedKey],
-        fingers: u32,
-        direction: Direction,
-        mods: &ModifiersState,
-    ) -> SwipeAction {
-        classify_swipe(
-            bindings,
-            self.ewm.focused_fullscreen_entry().is_some(),
-            self.ewm.focused_surface_id(),
-            fingers,
-            direction,
-            mods,
-        )
+    /// Where a pointer gesture goes.
+    fn pointer_scope(&self) -> Scope {
+        let entry = self
+            .ewm
+            .pointer_entry_id
+            .and_then(|id| self.ewm.layout.entry_location(id))
+            .map(|at| at.entry);
+        Scope {
+            surface_id: entry.and_then(|entry| entry.surface_id()),
+            fullscreen: entry.is_some_and(|entry| entry.fullscreen()),
+        }
     }
 
     /// Run the scroll bindings once per tick of `amounts`, false when the held modifiers bind none.
     fn scroll_bindings_tick(&mut self, source: AxisSource, amounts: [Option<f64>; 2]) -> bool {
         let mods = self.ewm.keyboard.modifier_state();
-        let fullscreen_active = self.ewm.focused_fullscreen_entry().is_some();
-        let focused_surface_id = self.ewm.focused_surface_id();
+        let scope = self.pointer_scope();
         let bindings = module::intercepted_keys().read().unwrap();
-        let bound = |direction| {
-            classify_scroll(
-                &bindings,
-                fullscreen_active,
-                focused_surface_id,
-                direction,
-                &mods,
-            )
-        };
+        let bound = |direction| classify_scroll(&bindings, scope, direction, &mods);
         // Under the lock every scroll is the lock surface's, as every key is.
         let taken = !self.ewm.is_locked()
             && Direction::ALL
@@ -1407,9 +1401,10 @@ impl State {
         // Under the lock every swipe is the lock surface's, as every key is.
         if !self.ewm.is_locked() {
             let mods = self.ewm.keyboard.modifier_state();
+            let scope = self.pointer_scope();
             let bindings = module::intercepted_keys().read().unwrap();
             let taken = Direction::ALL.into_iter().any(|direction| {
-                self.classify_swipe(&bindings, fingers, direction, &mods) != SwipeAction::Forward
+                classify_swipe(&bindings, scope, fingers, direction, &mods) != SwipeAction::Forward
             });
             if taken {
                 self.ewm.swipe = Swipe::Deadzone {
@@ -1470,8 +1465,9 @@ impl State {
             // The travel through the deadzone counts from the first move.
             (dx, dy) = (*cx, *cy);
             let action = {
+                let scope = self.pointer_scope();
                 let bindings = module::intercepted_keys().read().unwrap();
-                self.classify_swipe(&bindings, fingers, direction, &mods)
+                classify_swipe(&bindings, scope, fingers, direction, &mods)
             };
             self.ewm.swipe = match action {
                 SwipeAction::Gesture(gesture) => match self.ewm.gesture_begin(gesture) {

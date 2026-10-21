@@ -42,7 +42,7 @@ pub struct InterceptedKey {
     pub dispatch: InterceptDispatch,
     #[serde(default)]
     pub repeat: bool,
-    /// Applies only while this surface has focus, or everywhere when `None`.
+    /// Applies only to input reaching this surface, or everywhere when `None`.
     pub surface: Option<u64>,
 }
 
@@ -52,10 +52,10 @@ impl InterceptedKey {
         self.allow_fullscreen || !fullscreen
     }
 
-    /// Whether this binding applies while `focused_surface_id` has focus.
-    pub fn in_scope(&self, focused_surface_id: Option<u64>) -> bool {
+    /// Whether this binding applies to input reaching `surface_id`.
+    pub fn in_scope(&self, surface_id: Option<u64>) -> bool {
         self.surface
-            .is_none_or(|surface| Some(surface) == focused_surface_id)
+            .is_none_or(|surface| Some(surface) == surface_id)
     }
 
     /// Check if this key matches the given keysym and modifiers.
@@ -111,15 +111,15 @@ impl InterceptedKey {
     }
 }
 
-/// The first binding in scope while `focused_surface_id` has focus that `matches`.
+/// The first binding that `matches` among those applying to input reaching `surface_id`.
 pub fn find_binding(
     bindings: &[InterceptedKey],
-    focused_surface_id: Option<u64>,
+    surface_id: Option<u64>,
     matches: impl Fn(&InterceptedKey) -> bool,
 ) -> Option<&InterceptedKey> {
     bindings
         .iter()
-        .find(|ik| ik.in_scope(focused_surface_id) && matches(ik))
+        .find(|ik| ik.in_scope(surface_id) && matches(ik))
 }
 
 /// What a bound trigger runs: a compositor action, or `key` as an Emacs command.

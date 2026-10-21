@@ -1,17 +1,21 @@
 //! Touchpad swipes and scrolls are bindings in `ewm-mode-map`. The overview and frame-focus
 //! actions follow the fingers and settle when they lift, every other swipe binding runs when they
 //! lift, and under the bound modifiers a wheel notch or ten units of two-finger travel runs its
-//! command once while the client sees no scroll at all.
+//! command once while the client sees no scroll at all. A gesture goes to the surface under the
+//! pointer, and that surface is the one a binding yields to.
 use std::sync::Mutex;
 
-use ewm_core::testing::{Fixture, frame_with_width};
+use ewm_core::testing::{Fixture, TestClient, Toplevel, frame_with_entry, frame_with_width, nz};
 use ewm_core::{Event, FocusSource, Notify};
 use smithay::backend::input::AxisSource;
+use smithay::utils::Size;
 
 // The intercept list is process-wide: tests run one at a time.
 static SERIAL: Mutex<()> = Mutex::new(());
 
 const OUTPUT: &str = "HEAD-A";
+const OUTPUTS: [&str; 2] = [OUTPUT, "HEAD-B"];
+const SIZE: (f64, f64) = (1920.0, 1080.0);
 const KEY_LEFTMETA: u32 = 125 + 8;
 
 /// Three frames, the middle one focused and under the pointer, bound as `config` leaves them.
@@ -30,10 +34,83 @@ fn fixture(config: &str) -> Fixture {
     fix
 }
 
+/// Two outputs of three frames each, ids 1-3 and 4-6, the middle ones active.
+fn two_output_fixture(config: &str) -> Fixture {
+    let mut fix = Fixture::new().unwrap();
+    for output in OUTPUTS {
+        fix.add_output(output, SIZE.0 as i32, SIZE.1 as i32);
+    }
+    fix.configure_lisp(config);
+    fix.ewm().animations_clock.set_complete_instantly(true);
+    for (index, output) in OUTPUTS.iter().enumerate() {
+        let first = 3 * index as u64 + 1;
+        fix.tile_command(
+            output,
+            (first..first + 3)
+                .map(|id| frame_with_width(id, SIZE.0))
+                .collect(),
+        );
+    }
+    for output in (0..2).rev() {
+        fix.ewm()
+            .set_focus_frame(middle(output), FocusSource::Test, Notify::None);
+    }
+    fix
+}
+
+/// The centre of `output`, in global coordinates.
+fn centre(fix: &Fixture, output: &str) -> (f64, f64) {
+    let rect = fix
+        .ewm_ref()
+        .layout
+        .output_rect(&fix.output(output))
+        .unwrap();
+    (
+        f64::from(rect.loc.x) + SIZE.0 / 2.0,
+        f64::from(rect.loc.y) + SIZE.1 / 2.0,
+    )
+}
+
+fn middle(output: usize) -> u64 {
+    3 * output as u64 + 2
+}
+
+/// A client view in the middle frame of output 0, fullscreen.
+fn fullscreen_view(fix: &mut Fixture) -> (TestClient, Toplevel) {
+    let mut client = fix.new_client().unwrap();
+    fix.roundtrip(&mut client);
+    let (toplevel, sid) = fix.open_toplevel_with_id(&mut client, "game", Size::from((400, 300)));
+    let mut frame = frame_with_entry(middle(0), nz(7), sid);
+    frame.width = SIZE.0;
+    fix.tile_command(
+        OUTPUTS[0],
+        vec![
+            frame_with_width(1, SIZE.0),
+            frame,
+            frame_with_width(3, SIZE.0),
+        ],
+    );
+    fix.roundtrip(&mut client);
+    fix.set_fullscreen(nz(7), true);
+    fix.answer_configure(&mut client, &toplevel);
+    (client, toplevel)
+}
+
 /// Put `fingers` down and move them by (`dx`, `dy`), past the deadzone.
 fn swipe(fix: &mut Fixture, fingers: u32, dx: f64, dy: f64) {
     fix.swipe_begin(fingers);
     fix.swipe_update(dx, dy);
+}
+
+/// The keys of the commands Emacs was sent since the last drain.
+fn commands(fix: &mut Fixture) -> Vec<String> {
+    fix.drain_events()
+        .into_iter()
+        .filter_map(|event| match event {
+            Event::InterceptedCommand { key } => Some(key),
+            _ => None,
+        })
+        .collect()
 }
 
 #[test]
@@ -116,15 +193,7 @@ fn a_command_binding_runs_when_the_fingers_lift() {
     swipe(&mut fix, 3, 0.0, -400.0);
     fix.swipe_end();
     assert!(!fix.ewm_ref().overview.is_active());
-    let keys: Vec<String> = fix
-        .drain_events()
-        .into_iter()
-        .filter_map(|event| match event {
-            Event::InterceptedCommand { key } => Some(key),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(keys, ["<swipe-3-up>"]);
+    assert_eq!(commands(&mut fix), ["<swipe-3-up>"]);
 
     // The other default swipes are untouched.
     swipe(&mut fix, 3, -1200.0, 0.0);
@@ -223,15 +292,7 @@ fn a_wheel_notch_under_the_bound_modifier_runs_the_command_once() {
     // A tick bound to an Emacs command sends the key, the unbound direction does nothing.
     fix.scroll(AxisSource::Wheel, -120.0, 0.0);
     fix.scroll(AxisSource::Wheel, 120.0, 0.0);
-    let keys: Vec<String> = fix
-        .drain_events()
-        .into_iter()
-        .filter_map(|event| match event {
-            Event::InterceptedCommand { key } => Some(key),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(keys, ["s-<wheel-left>"]);
+    assert_eq!(commands(&mut fix), ["s-<wheel-left>"]);
     assert_eq!(active(&fix), Some(1));
     fix.keyboard_key(KEY_LEFTMETA, false);
 }
@@ -271,4 +332,58 @@ fn natural_scrolling_keeps_the_direction_the_fingers_moved() {
     fix.scroll_natural(AxisSource::Finger, 0.0, 12.0);
     assert_eq!(active(&fix), Some(3));
     fix.keyboard_key(KEY_LEFTMETA, false);
+}
+
+#[test]
+fn a_binding_yields_to_the_fullscreen_surface_under_the_pointer_only() {
+    let _serial = SERIAL.lock().unwrap();
+    let mut fix = two_output_fixture(r#"(keymap-set ewm-mode-map "<swipe-4-up>" #'ewm-frame-new)"#);
+    let (_client, _toplevel) = fullscreen_view(&mut fix);
+    fix.ewm()
+        .set_focus_frame(middle(0), FocusSource::Test, Notify::None);
+    assert!(fix.ewm_ref().focused_fullscreen_entry().is_some());
+    fix.enable_event_capture();
+
+    // The keyboard sits on the fullscreen view, the pointer on the other output: the swipe is ours.
+    let (x, y) = centre(&fix, OUTPUTS[1]);
+    fix.pointer_motion_to(x, y);
+    fix.swipe_begin(4);
+    fix.swipe_update(0.0, -400.0);
+    fix.swipe_end();
+    assert_eq!(commands(&mut fix).len(), 1);
+
+    // Over the fullscreen view the swipe is the client's, the keyboard elsewhere or not.
+    fix.ewm()
+        .set_focus_frame(middle(1), FocusSource::Test, Notify::None);
+    let (x, y) = centre(&fix, OUTPUTS[0]);
+    fix.pointer_motion_to(x, y);
+    fix.drain_events();
+    fix.swipe_begin(4);
+    fix.swipe_update(0.0, -400.0);
+    fix.swipe_end();
+    assert!(commands(&mut fix).is_empty());
+}
+
+#[test]
+fn a_fullscreen_flag_keeps_a_gesture_over_the_fullscreen_view() {
+    let _serial = SERIAL.lock().unwrap();
+    let mut fix = two_output_fixture(
+        r#"(keymap-set ewm-mode-map "<swipe-4-up>" #'ewm-frame-new)
+           (keymap-set ewm-mode-map "s-<wheel-down>" #'ewm-frame-new)
+           (setopt ewm-intercept-prefixes '(("<swipe-4-up>" :fullscreen) ("s-<wheel-down>" :fullscreen)))"#,
+    );
+    let (_client, _toplevel) = fullscreen_view(&mut fix);
+    fix.ewm()
+        .set_focus_frame(middle(0), FocusSource::Test, Notify::None);
+    fix.enable_event_capture();
+
+    let (x, y) = centre(&fix, OUTPUTS[0]);
+    fix.pointer_motion_to(x, y);
+    fix.swipe_begin(4);
+    fix.swipe_update(0.0, -400.0);
+    fix.swipe_end();
+    fix.keyboard_key(KEY_LEFTMETA, true);
+    fix.scroll(AxisSource::Wheel, 0.0, 120.0);
+    fix.keyboard_key(KEY_LEFTMETA, false);
+    assert_eq!(commands(&mut fix), ["<swipe-4-up>", "s-<wheel-down>"]);
 }
