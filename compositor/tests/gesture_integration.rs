@@ -82,6 +82,24 @@ fn a_bound_swipe_sends_its_key_to_emacs_in_place_of_the_built_in() {
 }
 
 #[test]
+fn gestures_count_as_activity() {
+    let _serial = SERIAL.lock().unwrap();
+    let mut fix = fixture("[]");
+
+    fix.ewm().idle_timeout.last_activity -= std::time::Duration::from_secs(1);
+    let before = fix.ewm_ref().idle_timeout.last_activity;
+    fix.swipe_begin(3);
+    assert!(fix.ewm_ref().idle_timeout.last_activity > before);
+    fix.swipe_end();
+
+    fix.ewm().idle_timeout.last_activity -= std::time::Duration::from_secs(1);
+    let before = fix.ewm_ref().idle_timeout.last_activity;
+    fix.pinch_begin(2);
+    assert!(fix.ewm_ref().idle_timeout.last_activity > before);
+    fix.pinch_end();
+}
+
+#[test]
 fn a_cancelled_swipe_runs_nothing() {
     let _serial = SERIAL.lock().unwrap();
     let mut fix =

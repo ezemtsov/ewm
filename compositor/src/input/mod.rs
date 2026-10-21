@@ -302,11 +302,15 @@ impl State {
         &mut self,
         event: InputEvent<B>,
     ) {
-        // Power on monitors if they were off. Only then does the event
-        // count as activity.
+        // Power on monitors if they were off. Only then does the event count as activity.
         if !self.ewm.monitors_active && should_activate_monitors(&event) {
             self.ewm.activate_monitors();
+        }
+        if should_notify_activity(&event) {
             self.notify_activity();
+        }
+        if should_show_cursor(&event) {
+            self.ewm.reset_cursor_hide_timer();
         }
 
         match event {
@@ -414,12 +418,6 @@ impl State {
         self.ewm.reset_idle_timer();
     }
 
-    /// Pointer-specific activity: idle notify plus cursor un-hide.
-    fn notify_pointer_activity(&mut self) {
-        self.notify_activity();
-        self.ewm.reset_cursor_hide_timer();
-    }
-
     /// Absolute event position in global space, through the output's transform.
     fn compute_absolute_location<B: InputBackend>(
         &self,
@@ -472,7 +470,6 @@ impl State {
             self.sync_keyboard_focus();
         }
 
-        self.notify_activity();
         Some(match owner {
             HeldKeyOwner::KeyboardRedirect => KeyboardAction::RedirectToEmacs,
             HeldKeyOwner::Command => KeyboardAction::CommandIntercepted,
@@ -637,9 +634,6 @@ impl State {
 
         // Handle locked state: only allow VT switch, forward everything else to lock surface
         if self.ewm.is_locked() {
-            // Notify idle notifier of activity even when locked
-            self.notify_activity();
-
             // Check for VT switch first (Ctrl+Alt+F1-F12)
             let vt_switch = keyboard.input::<Option<i32>, _>(
                 self,
@@ -773,7 +767,6 @@ impl State {
                         time,
                         mods,
                     });
-                    self.notify_activity();
                     return KeyboardAction::Deferred;
                 }
                 self.sync_keyboard_focus();
@@ -808,7 +801,6 @@ impl State {
                 });
                 let repeats = self.key_repeats(keycode);
                 self.intercept(repeat, repeats);
-                self.notify_activity();
                 return KeyboardAction::TextInputIntercepted;
             }
 
@@ -834,7 +826,6 @@ impl State {
 
                     self.send_intercept_key_to_emacs(keycode, key_state, time, mods_changed);
                 }
-                self.notify_activity();
                 return KeyboardAction::RedirectToEmacs;
             }
 
@@ -847,13 +838,11 @@ impl State {
                 );
 
                 self.intercept(InterceptRepeat::Command { keycode, key }, repeat);
-                self.notify_activity();
                 return KeyboardAction::CommandIntercepted;
             }
 
             KeyAction::Action { action, repeat } => {
                 self.intercept(InterceptRepeat::Action { keycode, action }, repeat);
-                self.notify_activity();
                 return KeyboardAction::ActionRun;
             }
         }
@@ -877,9 +866,6 @@ impl State {
                 });
             }
         }
-
-        // Notify idle notifier of user activity
-        self.notify_activity();
 
         KeyboardAction::Forward
     }
@@ -977,7 +963,6 @@ impl State {
                     },
                 );
                 pointer.frame(self);
-                self.notify_pointer_activity();
                 return true;
             }
         }
@@ -1008,9 +993,6 @@ impl State {
         );
 
         pointer.frame(self);
-
-        // Notify idle notifier of user activity
-        self.notify_pointer_activity();
 
         if focus_changed {
             self.maybe_activate_pointer_constraint();
@@ -1055,7 +1037,6 @@ impl State {
             && self.confined_motion_prevented(focus_surface, region.as_ref(), pos)
         {
             pointer.frame(self);
-            self.notify_pointer_activity();
             return true;
         }
 
@@ -1071,9 +1052,6 @@ impl State {
             },
         );
         pointer.frame(self);
-
-        // Notify idle notifier of user activity
-        self.notify_pointer_activity();
 
         if focus_changed {
             self.maybe_activate_pointer_constraint();
@@ -1263,7 +1241,6 @@ impl State {
             && self.try_start_floating_mod_mouse_grab(button_code, serial)
         {
             self.sync_keyboard_focus();
-            self.notify_pointer_activity();
             return;
         }
 
@@ -1295,9 +1272,6 @@ impl State {
         if button_state == ButtonState::Released {
             self.refresh_pointer_after_scene_change(false);
         }
-
-        // Notify idle notifier of user activity
-        self.notify_pointer_activity();
     }
 
     fn working_area_width(&self, output: &Output) -> f64 {
@@ -1321,6 +1295,13 @@ impl State {
             direction,
             mods,
         )
+    }
+
+    /// A swipe of ours that the lock caught in flight drives nothing more.
+    fn drop_swipe_under_lock(&mut self) {
+        if self.ewm.is_locked() && !matches!(self.ewm.swipe, Swipe::Client) {
+            self.ewm.swipe = Swipe::Swallowed;
+        }
     }
 
     /// Swipe begin: take the swipe when a binding or a built-in gesture listens for its fingers.
@@ -1368,6 +1349,7 @@ impl State {
         B::Device: 'static,
     {
         use smithay::backend::input::{Event, GestureSwipeUpdateEvent as _};
+        self.drop_swipe_under_lock();
         let mut dx = event.delta_x();
         let mut dy = event.delta_y();
         // Use libinput's unaccelerated deltas. Invert when natural-scroll is on
@@ -1455,6 +1437,7 @@ impl State {
     /// Swipe end: run the binding, or snap the strip or the overview to its nearest rest.
     pub(crate) fn on_gesture_swipe_end<B: InputBackend>(&mut self, event: B::GestureSwipeEndEvent) {
         use smithay::backend::input::{Event, GestureEndEvent};
+        self.drop_swipe_under_lock();
         match std::mem::take(&mut self.ewm.swipe) {
             Swipe::Client => {
                 let pointer = self.ewm.pointer.clone();
@@ -1627,9 +1610,6 @@ impl State {
 
         pointer.axis(self, frame);
         pointer.frame(self);
-
-        // Notify idle notifier of user activity
-        self.notify_activity();
     }
 
     /// The output a touchscreen maps onto, the first output by default.
@@ -1690,7 +1670,6 @@ impl State {
                 time: event.time(),
             },
         );
-        self.notify_activity();
     }
 
     /// Handle a touch-motion event: a finger moved while in contact.
@@ -1723,7 +1702,6 @@ impl State {
                 time: event.time(),
             },
         );
-        self.notify_activity();
     }
 
     /// Handle a touch-up event: a finger lifted from the screen.
@@ -1743,7 +1721,6 @@ impl State {
             },
         );
         self.focus_pending_drop();
-        self.notify_activity();
     }
 
     /// Handle a touch-cancel event: the touch sequence was interrupted.
@@ -1824,7 +1801,6 @@ impl State {
         event: B::TabletToolAxisEvent,
     ) {
         self.update_tablet_tool::<B>(&event, true);
-        self.notify_pointer_activity();
     }
 
     /// Move the tool to the event position and deliver its axis values.
@@ -1891,7 +1867,6 @@ impl State {
         }
 
         tool.frame(self, time);
-        self.notify_pointer_activity();
     }
 
     pub(crate) fn on_tablet_tool_proximity<B: InputBackend<Device: 'static>>(
@@ -1942,7 +1917,6 @@ impl State {
                 self.ewm.clear_tablet_cursor();
             }
         }
-        self.notify_pointer_activity();
     }
 
     pub(crate) fn on_tablet_tool_button<B: InputBackend>(
@@ -1962,7 +1936,6 @@ impl State {
             );
             tool.frame(self, time);
         }
-        self.notify_pointer_activity();
     }
 
     /// The output a device's :map-to-output names, resolved through the input config cascade.
@@ -1998,6 +1971,29 @@ fn should_activate_monitors<I: InputBackend>(event: &InputEvent<I>) -> bool {
         | InputEvent::TabletToolButton { .. } => true,
         _ => false,
     }
+}
+
+/// Input that counts as activity for the idle timer and idle-notify: everything a person does.
+fn should_notify_activity<I: InputBackend>(event: &InputEvent<I>) -> bool {
+    !matches!(
+        event,
+        InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. }
+    )
+}
+
+/// Input that brings a hidden cursor back: anything the pointer does, not typing.
+fn should_show_cursor<I: InputBackend>(event: &InputEvent<I>) -> bool {
+    matches!(
+        event,
+        InputEvent::PointerMotion { .. }
+            | InputEvent::PointerMotionAbsolute { .. }
+            | InputEvent::PointerButton { .. }
+            | InputEvent::PointerAxis { .. }
+            | InputEvent::TabletToolAxis { .. }
+            | InputEvent::TabletToolProximity { .. }
+            | InputEvent::TabletToolTip { .. }
+            | InputEvent::TabletToolButton { .. }
+    )
 }
 
 /// `Ctrl+Alt+F1..F12` arrives as `XF86Switch_VT_N`. Decode to the 1-based VT.

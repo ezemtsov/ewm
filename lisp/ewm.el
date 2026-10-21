@@ -258,8 +258,8 @@ When nil, EWM picks a loadable theme from the session environment."
 
 (defcustom ewm-cursor-auto-hide 5
   "Hide the mouse cursor after this many seconds of pointer inactivity.
-nil disables auto-hide.  Only pointer motion and button events restore
-the cursor; keyboard input and scrolling do not.
+nil disables auto-hide.  Pointer motion, buttons and scrolling restore
+the cursor, keyboard input does not.
 
 Examples:
   nil   ; disabled

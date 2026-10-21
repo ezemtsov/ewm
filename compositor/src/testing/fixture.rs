@@ -6,7 +6,7 @@
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
-use smithay::backend::input::{ButtonState, InputTime};
+use smithay::backend::input::{ButtonState, InputEvent, InputTime};
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -853,13 +853,18 @@ impl Fixture {
             .pointer_button(state, button, InputTime::from_millis(0));
     }
 
+    /// Feed one input event through the dispatch, policy included.
+    pub fn input(&mut self, event: InputEvent<TestInputBackend>) {
+        self.state.process_input_event::<TestInputBackend>(event);
+    }
+
     /// Put `fingers` down for a swipe.
     pub fn swipe_begin(&mut self, fingers: u32) {
         let event = TestGestureEvent {
             fingers,
             ..TestGestureEvent::default()
         };
-        self.state.on_gesture_swipe_begin::<TestInputBackend>(event);
+        self.input(InputEvent::GestureSwipeBegin { event });
     }
 
     /// Move the swiping fingers by (`dx`, `dy`).
@@ -869,23 +874,24 @@ impl Fixture {
             dy,
             ..TestGestureEvent::default()
         };
-        self.state
-            .on_gesture_swipe_update::<TestInputBackend>(event);
+        self.input(InputEvent::GestureSwipeUpdate { event });
     }
 
     /// Lift the swiping fingers.
     pub fn swipe_end(&mut self) {
-        self.state
-            .on_gesture_swipe_end::<TestInputBackend>(TestGestureEvent::default());
+        self.input(InputEvent::GestureSwipeEnd {
+            event: TestGestureEvent::default(),
+        });
     }
 
     /// End the swipe as libinput does when the fingers change, with nothing to run.
     pub fn swipe_cancel(&mut self) {
-        self.state
-            .on_gesture_swipe_end::<TestInputBackend>(TestGestureEvent {
+        self.input(InputEvent::GestureSwipeEnd {
+            event: TestGestureEvent {
                 cancelled: true,
                 ..TestGestureEvent::default()
-            });
+            },
+        });
     }
 
     /// Put `fingers` down for a pinch.
@@ -894,7 +900,7 @@ impl Fixture {
             fingers,
             ..TestGestureEvent::default()
         };
-        self.state.on_gesture_pinch_begin::<TestInputBackend>(event);
+        self.input(InputEvent::GesturePinchBegin { event });
     }
 
     /// Move the pinching fingers by (`dx`, `dy`), spread by `scale` and turned by `rotation`.
@@ -906,14 +912,14 @@ impl Fixture {
             rotation,
             ..TestGestureEvent::default()
         };
-        self.state
-            .on_gesture_pinch_update::<TestInputBackend>(event);
+        self.input(InputEvent::GesturePinchUpdate { event });
     }
 
     /// Lift the pinching fingers.
     pub fn pinch_end(&mut self) {
-        self.state
-            .on_gesture_pinch_end::<TestInputBackend>(TestGestureEvent::default());
+        self.input(InputEvent::GesturePinchEnd {
+            event: TestGestureEvent::default(),
+        });
     }
 
     /// Rest `fingers` on the touchpad.
@@ -922,13 +928,14 @@ impl Fixture {
             fingers,
             ..TestGestureEvent::default()
         };
-        self.state.on_gesture_hold_begin::<TestInputBackend>(event);
+        self.input(InputEvent::GestureHoldBegin { event });
     }
 
     /// Lift the resting fingers.
     pub fn hold_end(&mut self) {
-        self.state
-            .on_gesture_hold_end::<TestInputBackend>(TestGestureEvent::default());
+        self.input(InputEvent::GestureHoldEnd {
+            event: TestGestureEvent::default(),
+        });
     }
 
     /// Start mirroring `queue_event` into a per-Ewm buffer.
