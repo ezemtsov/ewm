@@ -877,12 +877,12 @@ fn apply_layout_op(
             layout.show_strip_frame(id);
         }
         LayoutOp::Activate(id) => {
-            if let Some((output, _)) = layout.activate_frame(id, None)
+            if let Some(change) = layout.activate_frame(id, None)
                 && layout
-                    .strip(&output)
+                    .strip(&change.output)
                     .is_some_and(|strip| strip.index_of(id).is_some())
             {
-                prop_assert_eq!(layout.active_frame_id(&output), Some(id));
+                prop_assert_eq!(layout.active_frame_id(&change.output), Some(id));
             }
         }
         LayoutOp::DragBegin { id, output, px, py } => {

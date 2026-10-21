@@ -368,6 +368,13 @@ pub(crate) struct Moved {
     pub retired: Vec<u64>,
 }
 
+/// An output whose active frame may have changed, with the frame active before.
+#[derive(Debug)]
+pub(crate) struct ActiveChange {
+    pub output: Output,
+    pub prev_active: Option<u64>,
+}
+
 /// Where every Emacs frame is.
 #[derive(Debug)]
 pub struct Layout {
@@ -703,30 +710,29 @@ impl Layout {
             .find(|monitor| monitor.has_frame(id))
     }
 
-    /// Run `tiled` or `floating` on whichever container holds frame `id`. Returns
-    /// its output and the strip frame that was active before.
+    /// Run `tiled` or `floating` on whichever container holds frame `id`. Returns its output with
+    /// the strip frame active before.
     fn with_frame_container(
         &mut self,
         id: u64,
         tiled: impl FnOnce(&mut Monitor, usize),
         floating: impl FnOnce(&mut Monitor),
-    ) -> Option<(Output, Option<u64>)> {
+    ) -> Option<ActiveChange> {
         let monitor = self.monitor_of_frame_mut(id)?;
         let prev_active = monitor.strip.active_frame_id();
         match monitor.strip.index_of(id) {
             Some(idx) => tiled(monitor, idx),
             None => floating(monitor),
         }
-        Some((monitor.output.clone(), prev_active))
+        Some(ActiveChange {
+            output: monitor.output.clone(),
+            prev_active,
+        })
     }
 
     /// Drop frame `id` from wherever it is. For a placed frame, returns its
     /// output and the frame its strip had active.
-    pub(crate) fn remove_frame(
-        &mut self,
-        id: u64,
-        active_close: bool,
-    ) -> Option<(Output, Option<u64>)> {
+    pub(crate) fn remove_frame(&mut self, id: u64, active_close: bool) -> Option<ActiveChange> {
         self.home_outputs.remove(&id);
         self.interactive_move = self.interactive_move.filter(|move_| move_.frame_id != id);
         self.homeless.tiled.retain(|frame| frame.surface_id != id);
@@ -878,7 +884,7 @@ impl Layout {
         &mut self,
         id: u64,
         entry: Option<LayoutEntryId>,
-    ) -> Option<(Output, Option<u64>)> {
+    ) -> Option<ActiveChange> {
         // The view is the frame's selection until the next layout confirms it.
         if let Some(entry) = entry
             && let Some(frame) = self.frame_mut(id)
@@ -903,13 +909,13 @@ impl Layout {
                 }
             },
         )?;
-        self.active_output = Some(activated.0.clone());
+        self.active_output = Some(activated.output.clone());
         Some(activated)
     }
 
     /// Show strip frame `id` active, the keyboard following only a frame that goes off screen.
     /// Returns the output and its old active frame.
-    pub(crate) fn show_strip_frame(&mut self, id: u64) -> Option<(Output, Option<u64>)> {
+    pub(crate) fn show_strip_frame(&mut self, id: u64) -> Option<ActiveChange> {
         let shown =
             self.with_frame_container(id, |monitor, idx| monitor.strip.set_active(idx), |_| {});
         self.settle_focus();
@@ -922,13 +928,16 @@ impl Layout {
         &mut self,
         output: &Output,
         working_w: f64,
-    ) -> Option<(Output, Option<u64>)> {
+    ) -> Option<ActiveChange> {
         let monitor = self.monitor_of_mut(output)?;
         let prev_active = monitor.strip.active_frame_id();
         monitor.strip.gesture_end(working_w);
         let output = monitor.output.clone();
         self.settle_focus();
-        Some((output, prev_active))
+        Some(ActiveChange {
+            output,
+            prev_active,
+        })
     }
 
     /// A layout has laid every output out anew.

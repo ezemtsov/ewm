@@ -17,7 +17,7 @@ use super::resize_fade::{
     fade_spring, size_change,
 };
 use super::snapshot::Snapshot;
-use super::{FrameLocation, LayoutEntryLocation, Monitor, Moved, floating, strip};
+use super::{ActiveChange, FrameLocation, LayoutEntryLocation, Monitor, Moved, floating, strip};
 use crate::animation::Animation;
 use crate::render::render_view_snapshot;
 use crate::{
@@ -82,11 +82,11 @@ impl Ewm {
             frame.close_snapshot = None;
         }
         let removed = self.layout.remove_frame(id, active_close);
-        if let Some((output, prev_active)) = &removed {
-            self.reconcile_output_entries(output);
-            self.reconcile_active_for_output(output, *prev_active);
+        if let Some(change) = &removed {
+            self.reconcile_output_entries(&change.output);
+            self.reconcile_active_for_output(&change.output, change.prev_active);
         }
-        removed.map(|(output, _)| output)
+        removed.map(|change| change.output)
     }
 
     /// Move `output`'s frames to the next output in order, else park them, and unmap it.
@@ -145,8 +145,12 @@ impl Ewm {
     }
 
     /// Follow a layout change of some output's active frame, `shown` its output and old active.
-    pub(crate) fn settle_shown(&mut self, shown: Option<(Output, Option<u64>)>) {
-        let Some((output, prev_active)) = shown else {
+    pub(crate) fn settle_shown(&mut self, shown: Option<ActiveChange>) {
+        let Some(ActiveChange {
+            output,
+            prev_active,
+        }) = shown
+        else {
             return;
         };
         // An active flip may shift a surface's largest visible entry to or from
