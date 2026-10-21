@@ -36,8 +36,8 @@
 
   src = fetchgit {
     url = "https://codeberg.org/ezemtsov/emacs.git";
-    rev = "22990064efa05b8212b19be0ec9ed4e1c0e79fe4"; # wayland-31.1
-    hash = "sha256-+Dza0ioqXvLRNBjl+XjhXZjr5K4n3FjyNqHYi0GIjkc=";
+    rev = "1ab88f6726eb85c31ad35701c4a4a8584e646f8c"; # wayland-31.1
+    hash = "sha256-nKtACp0qCXb+zAPxvuX3xrtyi6ecVGZqlOy/Zoi3MkE=";
   };
 
   # Emacs 31.1 already carries the CVE-2024-53920 and CVE-2026-108976 fixes,
