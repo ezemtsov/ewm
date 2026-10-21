@@ -39,64 +39,69 @@
 (require 'ewm-text-input)
 (require 'ewm-commands)
 
-(defvar ewm-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "<XF86WakeUp>") #'ignore)
-    (define-key map (kbd "C-M-<XF86WakeUp>") #'ignore)
-    ;; Media/hardware keys
-    (define-key map (kbd "<AudioRaiseVolume>") #'ewm-volume-raise)
-    (define-key map (kbd "<AudioLowerVolume>") #'ewm-volume-lower)
-    (define-key map (kbd "<AudioMute>") #'ewm-volume-mute)
-    (define-key map (kbd "<AudioMicMute>") #'ewm-mic-mute)
-    (define-key map (kbd "<MonBrightnessUp>") #'ewm-brightness-up)
-    (define-key map (kbd "<MonBrightnessDown>") #'ewm-brightness-down)
-    ;; Window navigation; crosses outputs at the frame edge.
-    (define-key map (kbd "s-<left>") #'ewm-focus-left)
-    (define-key map (kbd "s-<right>") #'ewm-focus-right)
-    (define-key map (kbd "s-<up>") #'ewm-focus-up)
-    (define-key map (kbd "s-<down>") #'ewm-focus-down)
-    ;; Workspace switching on the current output's strip.
-    (define-key map (kbd "s-S-<left>") #'ewm-frame-left)
-    (define-key map (kbd "s-S-<right>") #'ewm-frame-right)
-    ;; Overview: zoom the strip out and back in.
-    (define-key map (kbd "s-S-<up>") #'ewm-overview-open)
-    (define-key map (kbd "s-S-<down>") #'ewm-overview-close)
-    ;; Slide every frame off screen and back.
-    (define-key map (kbd "s-m") #'ewm-hide-toggle)
-    ;; Clipboard
-    (define-key map (kbd "s-c") #'kill-ring-save)
-    (define-key map (kbd "s-v") #'yank)
-    ;; Application launcher
-    (define-key map (kbd "s-d") #'ewm-launch-app)
-    ;; Fullscreen toggle
-    (define-key map (kbd "s-f") #'ewm-toggle-fullscreen)
-    ;; Floating detach/attach toggle
-    (define-key map (kbd "s-S-SPC") #'ewm-floating-toggle)
-    ;; Lock session
-    (define-key map (kbd "s-l") #'ewm-lock-session)
-    ;; Edit the focused text field
-    (define-key map (kbd "s-e") #'ewm-edit)
-    ;; Surface buffer cycling
-    (define-key map (kbd "s-<tab>") #'ewm-next-surface-buffer)
-    ;; Emacs sees S-Tab as iso-lefttab; compositor sees Tab+Shift.  Need both.
-    (define-key map (kbd "s-<iso-lefttab>") #'ewm-prev-surface-buffer)
-    (define-key map (kbd "s-S-<tab>") #'ewm-prev-surface-buffer)
-    ;; Frame strip
-    (define-key map (kbd "s-t") #'ewm-frame-new)
-    (define-key map (kbd "s-w") #'ewm-frame-close)
-    ;; Reorder frames horizontally; reorder windows within a frame vertically.
-    (define-key map (kbd "C-s-<left>") #'ewm-frame-move-left)
-    (define-key map (kbd "C-s-<right>") #'ewm-frame-move-right)
-    (define-key map (kbd "C-s-<up>") #'windmove-swap-states-up)
-    (define-key map (kbd "C-s-<down>") #'windmove-swap-states-down)
-    ;; Select Nth frame on current output's strip.
-    (dotimes (i 9)
-      (define-key map (kbd (format "s-%d" (1+ i))) #'ewm-frame-select))
-    map)
-  "Keymap for `ewm-mode'.
+(defvar-keymap ewm-mode-map
+  :doc "Keymap for `ewm-mode'.
 Default super-key bindings for window management.
 Override individual bindings with `use-package':
-  :bind (:map ewm-mode-map (\"s-d\" . my-launcher))")
+  :bind (:map ewm-mode-map (\"s-d\" . my-launcher))"
+  "<XF86WakeUp>" #'ignore
+  "C-M-<XF86WakeUp>" #'ignore
+  ;; Media/hardware keys
+  "<AudioRaiseVolume>" #'ewm-volume-raise
+  "<AudioLowerVolume>" #'ewm-volume-lower
+  "<AudioMute>" #'ewm-volume-mute
+  "<AudioMicMute>" #'ewm-mic-mute
+  "<MonBrightnessUp>" #'ewm-brightness-up
+  "<MonBrightnessDown>" #'ewm-brightness-down
+  ;; Window navigation; crosses outputs at the frame edge.
+  "s-<left>" #'ewm-focus-left
+  "s-<right>" #'ewm-focus-right
+  "s-<up>" #'ewm-focus-up
+  "s-<down>" #'ewm-focus-down
+  ;; Workspace switching on the current output's strip.
+  "S-s-<left>" #'ewm-frame-left
+  "S-s-<right>" #'ewm-frame-right
+  ;; Overview: zoom the strip out and back in.
+  "S-s-<up>" #'ewm-overview-open
+  "S-s-<down>" #'ewm-overview-close
+  ;; Slide every frame off screen and back.
+  "s-m" #'ewm-hide-toggle
+  ;; Clipboard
+  "s-c" #'kill-ring-save
+  "s-v" #'yank
+  ;; Application launcher
+  "s-d" #'ewm-launch-app
+  ;; Fullscreen toggle
+  "s-f" #'ewm-toggle-fullscreen
+  ;; Floating detach/attach toggle
+  "S-s-SPC" #'ewm-floating-toggle
+  ;; Lock session
+  "s-l" #'ewm-lock-session
+  ;; Edit the focused text field
+  "s-e" #'ewm-edit
+  ;; Surface buffer cycling
+  "s-<tab>" #'ewm-next-surface-buffer
+  ;; Emacs sees S-Tab as iso-lefttab; compositor sees Tab+Shift.  Need both.
+  "s-<iso-lefttab>" #'ewm-prev-surface-buffer
+  "S-s-<tab>" #'ewm-prev-surface-buffer
+  ;; Frame strip
+  "s-t" #'ewm-frame-new
+  "s-w" #'ewm-frame-close
+  ;; Reorder frames horizontally; reorder windows within a frame vertically.
+  "C-s-<left>" #'ewm-frame-move-left
+  "C-s-<right>" #'ewm-frame-move-right
+  "C-s-<up>" #'windmove-swap-states-up
+  "C-s-<down>" #'windmove-swap-states-down
+  ;; Select Nth frame on current output's strip.
+  "s-1" #'ewm-frame-select
+  "s-2" #'ewm-frame-select
+  "s-3" #'ewm-frame-select
+  "s-4" #'ewm-frame-select
+  "s-5" #'ewm-frame-select
+  "s-6" #'ewm-frame-select
+  "s-7" #'ewm-frame-select
+  "s-8" #'ewm-frame-select
+  "s-9" #'ewm-frame-select)
 
 ;;; Libinput device configuration
 
