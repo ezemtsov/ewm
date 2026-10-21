@@ -76,6 +76,19 @@ fn render_window_without_popups(
     )
 }
 
+/// Render `window` without its popups into `content` at `loc`.
+fn push_window(
+    content: &mut Vec<ContentRenderElement>,
+    renderer: &mut GlesRenderer,
+    window: &smithay::desktop::Window,
+    loc: Point<i32, Physical>,
+    scale: Scale<f64>,
+    alpha: f32,
+) {
+    let elements = render_window_without_popups(window, renderer, loc, scale, alpha);
+    content.extend(elements.into_iter().map(ContentRenderElement::Surface));
+}
+
 render_elements! {
     pub ViewContentElement<=GlesRenderer>;
     Surface=WaylandSurfaceRenderElement<GlesRenderer>,
@@ -691,6 +704,47 @@ impl<'a> OutputRender<'a> {
         }
     }
 
+    /// What every view on this output shares.
+    fn views(&self) -> ViewCommon<'a> {
+        let ewm = self.ewm;
+        ViewCommon {
+            surfaces: &ewm.surfaces,
+            backdrop: ewm
+                .output_state
+                .get(self.output)
+                .map(|state| &state.fullscreen_backdrop),
+            focused_entry_id: ewm.focused_entry_id(),
+            unfocused_alpha: ewm.unfocused_alpha,
+            output_size: self.rect.size,
+            scale: self.scale,
+            blur: self.blur,
+        }
+    }
+
+    /// A frame's own surface at `loc`, its blur behind it clipped to `clip`.
+    fn push_frame_surface(
+        &mut self,
+        window: &smithay::desktop::Window,
+        loc: Point<i32, Physical>,
+        clip: Rectangle<i32, Physical>,
+        alpha: f32,
+    ) {
+        let scale = self.scale;
+        push_window(&mut self.content, self.renderer, window, loc, scale, alpha);
+        push_view_background_effect(
+            &mut self.content,
+            None,
+            window,
+            ViewBox {
+                loc,
+                element_scale: Scale::from(1.),
+                output_scale: scale,
+                clip,
+            },
+            self.blur,
+        );
+    }
+
     /// The cursor goes on top, kept apart from the content.
     fn cursor(&mut self, cache: &CursorTextureCache) {
         if !self.include_cursor || self.ewm.cursor_hide.is_hidden {
@@ -811,7 +865,7 @@ impl<'a> OutputRender<'a> {
                 self.blur,
             );
         }
-        self.flush_zoomed();
+        self.flush(self.zoom_offset);
     }
 
     /// Window popups above their frames, culled against the content the zoom shows.
@@ -827,7 +881,7 @@ impl<'a> OutputRender<'a> {
                 self.blur,
             );
         }
-        self.flush_slid();
+        self.flush(self.slide_offset);
     }
 
     fn frame_geo(&self) -> FrameGeo {
@@ -863,19 +917,7 @@ impl<'a> OutputRender<'a> {
                     .map(|(frame, slot)| (frame.surface_id, slot, monitor.pin_offset(frame)))
                     .collect()
             });
-        let views = ViewCommon {
-            surfaces: &self.ewm.surfaces,
-            backdrop: self
-                .ewm
-                .output_state
-                .get(self.output)
-                .map(|state| &state.fullscreen_backdrop),
-            focused_entry_id: self.ewm.focused_entry_id(),
-            unfocused_alpha: self.ewm.unfocused_alpha,
-            output_size: self.rect.size,
-            scale,
-            blur: self.blur,
-        };
+        let views = self.views();
         let Some(floating) = self.ewm.layout.floating(self.output) else {
             return;
         };
@@ -924,29 +966,7 @@ impl<'a> OutputRender<'a> {
             if !frame_surface.has_buffer() {
                 continue;
             }
-            let frame_alpha = frame_surface.open_alpha();
-            let frame_offset = frame_box.loc;
-            let view_elements = render_window_without_popups(
-                window,
-                self.renderer,
-                frame_offset,
-                scale,
-                frame_alpha,
-            );
-            self.content
-                .extend(view_elements.into_iter().map(ContentRenderElement::Surface));
-            push_view_background_effect(
-                &mut self.content,
-                None,
-                window,
-                ViewBox {
-                    loc: frame_offset,
-                    element_scale: Scale::from(1.),
-                    output_scale: scale,
-                    clip: frame_box,
-                },
-                self.blur,
-            );
+            self.push_frame_surface(window, frame_box.loc, frame_box, frame_surface.open_alpha());
 
             data.shadow()
                 .render(self.renderer, frame_rect.loc, &mut |shadow| {
@@ -959,19 +979,7 @@ impl<'a> OutputRender<'a> {
     /// view offset, layer surfaces stay put.
     fn strip_views(&mut self, geo: &FrameGeo, above_top_layer: bool) {
         let scale = self.scale;
-        let views = ViewCommon {
-            surfaces: &self.ewm.surfaces,
-            backdrop: self
-                .ewm
-                .output_state
-                .get(self.output)
-                .map(|state| &state.fullscreen_backdrop),
-            focused_entry_id: self.ewm.focused_entry_id(),
-            unfocused_alpha: self.ewm.unfocused_alpha,
-            output_size: self.rect.size,
-            scale,
-            blur: self.blur,
-        };
+        let views = self.views();
         let Some(strip) = self.ewm.layout.strip(self.output) else {
             return;
         };
@@ -1019,24 +1027,13 @@ impl<'a> OutputRender<'a> {
             let window = &frame_surface.window;
             let frame_offset_emacs: Point<i32, Physical> =
                 Point::<f64, Logical>::from((screen_x, 0.0)).to_physical_precise_round(scale);
-            let frame_alpha = frame_surface.open_alpha();
             let frame_loc = geo.working_area_origin + frame_offset_emacs;
-            let view_elements =
-                render_window_without_popups(window, self.renderer, frame_loc, scale, frame_alpha);
-            self.content
-                .extend(view_elements.into_iter().map(ContentRenderElement::Surface));
             let frame_size: Size<i32, Physical> = frame_rect.size.to_physical_precise_round(scale);
-            push_view_background_effect(
-                &mut self.content,
-                None,
+            self.push_frame_surface(
                 window,
-                ViewBox {
-                    loc: frame_loc,
-                    element_scale: Scale::from(1.),
-                    output_scale: scale,
-                    clip: Rectangle::new(frame_loc, frame_size),
-                },
-                self.blur,
+                frame_loc,
+                Rectangle::new(frame_loc, frame_size),
+                frame_surface.open_alpha(),
             );
         }
 
@@ -1081,23 +1078,13 @@ impl<'a> OutputRender<'a> {
                 )));
             }
         }
-        self.flush_zoomed();
+        self.flush(self.zoom_offset);
         self.elements.extend(backdrop);
     }
 
-    /// Move the section into the elements, zoomed about the output.
-    fn flush_zoomed(&mut self) {
-        let (zoom, offset) = (self.geometry.zoom, self.zoom_offset);
-        self.elements.extend(
-            self.content
-                .drain(..)
-                .map(|elem| EwmRenderElement::Zoomed(ZoomRenderElement::new(elem, zoom, offset))),
-        );
-    }
-
-    /// Move the section into the elements, zoomed and slid with the frames.
-    fn flush_slid(&mut self) {
-        let (zoom, offset) = (self.geometry.zoom, self.slide_offset);
+    /// Move the section into the elements, zoomed about the output and shifted by `offset`.
+    fn flush(&mut self, offset: Point<i32, Physical>) {
+        let zoom = self.geometry.zoom;
         self.elements.extend(
             self.content
                 .drain(..)
@@ -1226,12 +1213,12 @@ pub fn collect_render_elements_for_output(
     let geo = pass.frame_geo();
     pass.floats(&geo);
     pass.strip_views(&geo, above_top_layer);
-    pass.flush_slid();
+    pass.flush(pass.slide_offset);
     if above_top_layer {
         pass.elements.append(&mut layers.top);
     }
     pass.strip_frames(&geo);
-    pass.flush_slid();
+    pass.flush(pass.slide_offset);
     pass.background(&geo, layers);
     pass.finish()
 }
@@ -1376,9 +1363,14 @@ pub fn render_frame_snapshot(
     if let Some(surface) = ewm.surfaces.get(&id)
         && surface.has_buffer()
     {
-        let elements =
-            render_window_without_popups(&surface.window, renderer, Point::from((0, 0)), scale, 1.);
-        content.extend(elements.into_iter().map(ContentRenderElement::Surface));
+        push_window(
+            &mut content,
+            renderer,
+            &surface.window,
+            Point::from((0, 0)),
+            scale,
+            1.,
+        );
         let focused = ewm.focused_frame_id() == Some(id);
         if let Some((_, data)) = ewm
             .layout

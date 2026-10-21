@@ -1286,6 +1286,7 @@ impl Ewm {
         tracy_span!("Ewm::refresh_cursor_outputs");
 
         let pointer_pos: Point<f64, Logical> = self.cursor_location().into();
+        let dnd_surface = self.dnd_icon.as_ref().map(|icon| &icon.surface);
 
         match self.cursor_manager.cursor_image() {
             CursorImageStatus::Surface(surface) => {
@@ -1298,116 +1299,62 @@ impl Ewm {
                         .unwrap()
                         .hotspot
                 });
-
                 let surface_pos = pointer_pos.to_i32_round() - hotspot;
-                let bbox = bbox_from_surface_tree(surface, surface_pos);
-
-                let dnd = self
-                    .dnd_icon
-                    .as_ref()
-                    .map(|icon| &icon.surface)
-                    .map(|surface| (surface, bbox_from_surface_tree(surface, surface_pos)));
-
-                let mut cursor_scale = 1.0;
-                let mut cursor_transform = Transform::Normal;
-                let mut dnd_scale = 1.0;
-                let mut dnd_transform = Transform::Normal;
-                for output in &self.sorted_outputs {
-                    let Some(geo) = self.layout.output_rect(output) else {
-                        continue;
-                    };
-
-                    if let Some(mut overlap) = geo.intersection(bbox) {
-                        overlap.loc -= surface_pos;
-                        cursor_scale =
-                            f64::max(cursor_scale, output.current_scale().fractional_scale());
-                        cursor_transform = output.current_transform();
-                        output_update(output, Some(overlap), surface);
-                    } else {
-                        output_update(output, None, surface);
-                    }
-
-                    if let Some((surface, bbox)) = dnd {
-                        if let Some(mut overlap) = geo.intersection(bbox) {
-                            overlap.loc -= surface_pos;
-                            dnd_scale =
-                                f64::max(dnd_scale, output.current_scale().fractional_scale());
-                            dnd_transform = output.current_transform();
-                            output_update(output, Some(overlap), surface);
-                        } else {
-                            output_update(output, None, surface);
-                        }
-                    }
-                }
-
-                smithay::wayland::compositor::with_states(surface, |data| {
-                    crate::utils::send_scale_transform(
-                        surface,
-                        data,
-                        Scale::Fractional(cursor_scale),
-                        cursor_transform,
-                    );
-                });
-                if let Some((surface, _)) = dnd {
-                    smithay::wayland::compositor::with_states(surface, |data| {
-                        crate::utils::send_scale_transform(
-                            surface,
-                            data,
-                            Scale::Fractional(dnd_scale),
-                            dnd_transform,
-                        );
-                    });
+                self.place_pointer_surface(surface, |_| surface_pos);
+                if let Some(dnd) = dnd_surface {
+                    self.place_pointer_surface(dnd, |_| surface_pos);
                 }
             }
             cursor_image => {
-                let Some(surface) = self.dnd_icon.as_ref().map(|icon| &icon.surface) else {
+                let Some(dnd) = dnd_surface else {
                     return;
                 };
-
                 let icon = if let CursorImageStatus::Named(icon) = cursor_image {
                     *icon
                 } else {
                     Default::default()
                 };
-
-                let mut dnd_scale = 1.0;
-                let mut dnd_transform = Transform::Normal;
-                for output in &self.sorted_outputs {
-                    let Some(geo) = self.layout.output_rect(output) else {
-                        continue;
-                    };
-
+                // The named cursor has a hotspot per output scale.
+                self.place_pointer_surface(dnd, |output| {
                     let output_scale = output.current_scale().integer_scale();
                     let cursor = self
                         .cursor_manager
                         .get_cursor_with_name(icon, output_scale)
                         .unwrap_or_else(|| self.cursor_manager.get_default_cursor(output_scale));
-                    let hotspot =
-                        cursor::XCursor::hotspot(&cursor.frames()[0]).to_logical(output_scale);
-
-                    let surface_pos = pointer_pos.to_i32_round() - hotspot;
-                    let bbox = bbox_from_surface_tree(surface, surface_pos);
-
-                    if let Some(mut overlap) = geo.intersection(bbox) {
-                        overlap.loc -= surface_pos;
-                        dnd_scale = f64::max(dnd_scale, output.current_scale().fractional_scale());
-                        dnd_transform = output.current_transform();
-                        output_update(output, Some(overlap), surface);
-                    } else {
-                        output_update(output, None, surface);
-                    }
-                }
-
-                smithay::wayland::compositor::with_states(surface, |data| {
-                    crate::utils::send_scale_transform(
-                        surface,
-                        data,
-                        Scale::Fractional(dnd_scale),
-                        dnd_transform,
-                    );
+                    pointer_pos.to_i32_round()
+                        - cursor::XCursor::hotspot(&cursor.frames()[0]).to_logical(output_scale)
                 });
             }
         }
+    }
+
+    /// Enter `surface` on the outputs it overlaps at `pos_on(output)`, leave the others, and send
+    /// it the largest overlapping scale with the last transform.
+    fn place_pointer_surface(
+        &self,
+        surface: &WlSurface,
+        pos_on: impl Fn(&Output) -> Point<i32, Logical>,
+    ) {
+        let mut scale = 1.0;
+        let mut transform = Transform::Normal;
+        for output in &self.sorted_outputs {
+            let Some(geo) = self.layout.output_rect(output) else {
+                continue;
+            };
+            let surface_pos = pos_on(output);
+            let bbox = bbox_from_surface_tree(surface, surface_pos);
+            if let Some(mut overlap) = geo.intersection(bbox) {
+                overlap.loc -= surface_pos;
+                scale = f64::max(scale, output.current_scale().fractional_scale());
+                transform = output.current_transform();
+                output_update(output, Some(overlap), surface);
+            } else {
+                output_update(output, None, surface);
+            }
+        }
+        smithay::wayland::compositor::with_states(surface, |data| {
+            crate::utils::send_scale_transform(surface, data, Scale::Fractional(scale), transform);
+        });
     }
 
     /// Surfaces some output shows, none while unattended or with the frames hidden.
