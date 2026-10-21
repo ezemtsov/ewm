@@ -200,6 +200,8 @@ pub enum Gesture {
     Strip { forward: Direction },
     /// Drives the overview toward `end`, the fingers moving `direction` heading there.
     Overview { direction: Direction, end: End },
+    /// Drives the hide toward `end`, the fingers moving `direction` heading there.
+    Hide { direction: Direction, end: End },
 }
 
 impl Action {
@@ -208,12 +210,14 @@ impl Action {
         use module::OverviewAction::{Close, Open, Toggle};
         let strip = |forward| Gesture::Strip { forward };
         let overview = |end| Gesture::Overview { direction, end };
+        let hide = |end| Gesture::Hide { direction, end };
         Some(match self {
             Action::FocusFrame { delta: 1 } => strip(direction),
             Action::FocusFrame { delta: -1 } => strip(direction.opposite()),
             Action::Overview(Open) => overview(End::On),
             Action::Overview(Close) => overview(End::Off),
             Action::Overview(Toggle) => overview(End::Other),
+            Action::HideToggle => hide(End::Other),
             _ => return None,
         })
     }

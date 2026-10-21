@@ -29,9 +29,9 @@
 //!
 //! 7. **Swipe bindings**: `<swipe-FINGERS-DIRECTION>` entries match by fingers, direction and
 //!    modifiers under the same first-match rule, the surface under the pointer deciding scope and
-//!    fullscreen since that is where the swipe would go. Bound to the overview or a one-frame
-//!    focus action the swipe drives that gesture as the fingers move, anything else runs when
-//!    they lift, and the unbound directions of a bound finger count do nothing.
+//!    fullscreen since that is where the swipe would go. Bound to the overview, the hide or a
+//!    one-frame focus action the swipe drives that gesture as the fingers move, anything else
+//!    runs when they lift, and the unbound directions of a bound finger count do nothing.
 //!
 //! 8. **Scroll bindings**: `<wheel-DIRECTION>` entries match a wheel notch or ten units of
 //!    two-finger travel under the same rules and run once per tick. The direction is the one the

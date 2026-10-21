@@ -11,116 +11,49 @@ use std::time::Duration;
 
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
-use crate::animation::{Animation, Clock};
-use crate::layout::strip::SwipeTracker;
+use crate::animation::Clock;
+use crate::layout::transition::Transition;
 use crate::render_helpers::shadow_style::{Color, FloatOrInt, Shadow, ShadowOffset};
-use crate::slide_spring;
-
-/// Touchpad travel in unaccelerated units for a full open or close.
-const GESTURE_MOVEMENT: f64 = 300.;
-const GESTURE_RUBBER_BAND: RubberBand = RubberBand {
-    stiffness: 0.5,
-    limit: 0.05,
-};
 
 pub const DEFAULT_ZOOM: f64 = 0.5;
 pub const DEFAULT_BACKDROP_COLOR: [f32; 4] = [0.15, 0.15, 0.15, 1.];
 /// Fill of the output behind its frames, visible where nothing else is.
 pub const DEFAULT_BACKGROUND_COLOR: [f32; 4] = [0.25, 0.25, 0.25, 1.];
 
-/// Soft overshoot past a range edge.
-#[derive(Debug, Clone, Copy)]
-pub struct RubberBand {
-    pub stiffness: f64,
-    pub limit: f64,
-}
-
-impl RubberBand {
-    pub fn band(&self, x: f64) -> f64 {
-        let c = self.stiffness;
-        let d = self.limit;
-        (1. - (1. / (x * c / d + 1.))) * d
-    }
-
-    pub fn derivative(&self, x: f64) -> f64 {
-        let c = self.stiffness;
-        let d = self.limit;
-        c * d * d / (c * x + d).powi(2)
-    }
-
-    pub fn clamp(&self, min: f64, max: f64, x: f64) -> f64 {
-        let clamped = x.clamp(min, max);
-        let sign = if x < clamped { -1. } else { 1. };
-        let diff = (x - clamped).abs();
-        clamped + sign * self.band(diff)
-    }
-
-    pub fn clamp_derivative(&self, min: f64, max: f64, x: f64) -> f64 {
-        if min <= x && x <= max {
-            return 1.;
-        }
-        let clamped = x.clamp(min, max);
-        let diff = (x - clamped).abs();
-        self.derivative(diff)
-    }
-}
-
-#[derive(Debug)]
-enum Progress {
-    Animation(Animation),
-    Gesture(Gesture),
-    Open,
-}
-
-#[derive(Debug)]
-struct Gesture {
-    tracker: SwipeTracker,
-    start: f64,
-    value: f64,
-}
-
 /// Overview state machine. Progress runs 0 (closed) to 1 (fully zoomed out).
 #[derive(Debug)]
 pub struct Overview {
-    open: bool,
-    progress: Option<Progress>,
+    transition: Transition,
     zoom: f64,
     pub backdrop_color: [f32; 4],
     pub background_color: [f32; 4],
-    clock: Clock,
 }
 
 impl Overview {
     pub fn new(clock: Clock) -> Self {
         Self {
-            open: false,
-            progress: None,
+            transition: Transition::new(clock),
             zoom: DEFAULT_ZOOM,
             backdrop_color: DEFAULT_BACKDROP_COLOR,
             background_color: DEFAULT_BACKGROUND_COLOR,
-            clock,
         }
     }
 
     pub fn is_open(&self) -> bool {
-        self.open
+        self.transition.is_on()
     }
 
     /// Zoomed out, mid-gesture or mid-animation: content is not at unit scale.
     pub fn is_active(&self) -> bool {
-        self.progress.is_some()
+        self.transition.is_active()
     }
 
     pub fn is_animating(&self) -> bool {
-        matches!(self.progress, Some(Progress::Animation(_)))
+        self.transition.is_animating()
     }
 
     pub fn progress(&self) -> Option<f64> {
-        self.progress.as_ref().map(|p| match p {
-            Progress::Animation(anim) => anim.value(),
-            Progress::Gesture(gesture) => gesture.value,
-            Progress::Open => 1.,
-        })
+        self.transition.progress()
     }
 
     pub fn zoom(&self) -> f64 {
@@ -132,81 +65,30 @@ impl Overview {
     }
 
     pub fn toggle(&mut self) {
-        self.open = !self.open;
-        let from = self.progress().unwrap_or(0.);
-        let to = if self.open { 1. } else { 0. };
-        self.progress = Some(Progress::Animation(Animation::new(
-            self.clock.clone(),
-            from,
-            to,
-            0.,
-            slide_spring(),
-        )));
+        self.transition.toggle()
     }
 
     pub fn close(&mut self) -> bool {
-        if !self.open {
-            return false;
-        }
-        self.toggle();
-        true
+        self.transition.set(false)
     }
 
     pub fn gesture_begin(&mut self) {
-        self.open = true;
-        let value = self.progress().unwrap_or(0.);
-        self.progress = Some(Progress::Gesture(Gesture {
-            tracker: SwipeTracker::new(),
-            start: value,
-            value,
-        }));
+        self.transition.gesture_begin()
     }
 
     /// Push a swipe delta. Positive opens. `Some(true)` when the view changed.
     pub fn gesture_update(&mut self, delta: f64, timestamp: Duration) -> Option<bool> {
-        let Some(Progress::Gesture(gesture)) = &mut self.progress else {
-            return None;
-        };
-        gesture.tracker.push(delta, timestamp);
-        let pos = gesture.tracker.pos() / GESTURE_MOVEMENT;
-        let value = GESTURE_RUBBER_BAND.clamp(0., 1., gesture.start + pos);
-        if gesture.value == value {
-            return Some(false);
-        }
-        gesture.value = value;
-        Some(true)
+        self.transition.gesture_update(delta, timestamp)
     }
 
     /// Settle to whichever end the projected swipe is closer to, keeping its speed.
     pub fn gesture_end(&mut self) -> bool {
-        let Some(Progress::Gesture(gesture)) = &mut self.progress else {
-            return false;
-        };
-        gesture.tracker.push(0., self.clock.now());
-        let mut velocity = gesture.tracker.velocity() / GESTURE_MOVEMENT;
-        let current_pos = gesture.tracker.pos() / GESTURE_MOVEMENT;
-        let pos = gesture.tracker.projected_end_pos() / GESTURE_MOVEMENT;
-        let target = (gesture.start + pos).clamp(0., 1.).round();
-        // Inside the rubber band only the speed that showed on screen carries over.
-        velocity *= GESTURE_RUBBER_BAND.clamp_derivative(0., 1., gesture.start + current_pos);
-        self.open = target == 1.;
-        self.progress = Some(Progress::Animation(Animation::new(
-            self.clock.clone(),
-            gesture.value,
-            target,
-            velocity,
-            slide_spring(),
-        )));
-        true
+        self.transition.gesture_end()
     }
 
     /// Settle a finished animation. Call once per tick.
     pub fn advance(&mut self) {
-        if let Some(Progress::Animation(anim)) = &self.progress
-            && anim.is_done()
-        {
-            self.progress = self.open.then_some(Progress::Open);
-        }
+        self.transition.advance()
     }
 }
 
@@ -303,18 +185,6 @@ mod tests {
     }
 
     proptest! {
-        #[test]
-        fn rubber_band_clamp_is_monotonic_and_bounded(
-            a in -3f64..=4.,
-            b in -3f64..=4.,
-        ) {
-            let band = GESTURE_RUBBER_BAND;
-            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
-            let (clo, chi) = (band.clamp(0., 1., lo), band.clamp(0., 1., hi));
-            prop_assert!(clo <= chi);
-            prop_assert!(-band.limit < clo && chi < 1. + band.limit);
-        }
-
         // A swipe of at least half the travel settles on the end it points to.
         #[test]
         fn gesture_settles_toward_the_swipe(

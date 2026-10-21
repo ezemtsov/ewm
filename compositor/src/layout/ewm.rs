@@ -18,6 +18,7 @@ use super::resize_fade::{
     fade_spring, size_change,
 };
 use super::snapshot::Snapshot;
+use super::transition::Transition;
 use super::{ActiveChange, FrameLocation, LayoutEntryLocation, Monitor, Moved, floating, strip};
 use crate::animation::Animation;
 use crate::input::{Direction, End, Gesture};
@@ -1224,6 +1225,7 @@ impl Ewm {
             Gesture::Overview { direction, end } => {
                 Some(self.overview_gesture_begin(direction, end))
             }
+            Gesture::Hide { direction, end } => Some(self.hide_gesture_begin(direction, end)),
         }
     }
 
@@ -1243,6 +1245,7 @@ impl Ewm {
                 return;
             }
             Gesture::Overview { .. } => self.overview.gesture_update(travel, timestamp),
+            Gesture::Hide { .. } => self.hide.gesture_update(travel, timestamp),
         };
         if changed == Some(true) {
             self.queue_redraw_all();
@@ -1259,6 +1262,7 @@ impl Ewm {
                 return false;
             }
             Gesture::Overview { .. } => self.overview_gesture_end(),
+            Gesture::Hide { .. } => self.hide_gesture_end(),
         };
         if changed {
             self.queue_redraw_all();
@@ -1350,7 +1354,7 @@ impl Ewm {
         let geometry = self.overview_geometry(&output);
         let in_output = geometry.to_content(pos_within_output);
         // Hidden frames have slid up, so the click maps onto where they were.
-        let slide = self.hide.current() * f64::from(output_geo.size.h);
+        let slide = self.hide.value() * f64::from(output_geo.size.h);
         let in_content = in_output + Point::from((0., slide));
         let floating_frame = self.layout.monitor_of(&output).and_then(|monitor| {
             monitor
@@ -1491,25 +1495,43 @@ impl Ewm {
     }
 
     pub fn frames_hidden(&self) -> bool {
-        self.hide.target() == 1.
+        self.hide.is_on()
     }
 
     /// Neither the overview nor the hide has moved the frames.
     pub fn frames_in_place(&self) -> bool {
-        !self.overview.is_active() && self.hide.is_static() && !self.frames_hidden()
+        !self.overview.is_active() && !self.hide.is_active()
+    }
+
+    /// Run `change` on the hide, telling Emacs when the frames flip between hidden and shown.
+    fn with_hide<R>(&mut self, change: impl FnOnce(&mut Transition) -> R) -> R {
+        let was_hidden = self.hide.is_on();
+        let result = change(&mut self.hide);
+        let hidden = self.hide.is_on();
+        if hidden != was_hidden {
+            self.queue_event(Event::Hide { hidden });
+        }
+        result
     }
 
     /// Slide every frame off its output or bring them back, and tell Emacs.
     pub fn hide_toggle(&mut self) {
-        let hidden = !self.frames_hidden();
-        self.hide.animate_to(
-            self.animations_clock.clone(),
-            if hidden { 1. } else { 0. },
-            0.,
-            f64::EPSILON,
-        );
-        self.queue_event(Event::Hide { hidden });
+        self.with_hide(|hide| hide.toggle());
         self.queue_redraw_all();
+    }
+
+    /// Start a hide swipe toward `end`, the fingers moving `direction` heading there, and return
+    /// the direction whose travel hides.
+    pub fn hide_gesture_begin(&mut self, direction: Direction, end: End) -> Direction {
+        let forward = end.forward(self.hide.is_on(), direction);
+        self.with_hide(|hide| hide.gesture_begin());
+        self.queue_redraw_all();
+        forward
+    }
+
+    /// Settle the frames hidden or shown, whichever the projected swipe is closer to.
+    pub fn hide_gesture_end(&mut self) -> bool {
+        self.with_hide(|hide| hide.gesture_end())
     }
 }
 

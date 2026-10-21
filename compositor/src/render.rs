@@ -684,7 +684,7 @@ impl<'a> OutputRender<'a> {
         // in content space while the frames hide.
         let geometry = ewm.overview_geometry(output);
         let zoom_offset = geometry.offset.to_physical_precise_round(scale);
-        let slide = ewm.hide.current() * f64::from(rect.size.h) * geometry.zoom;
+        let slide = ewm.hide.value() * f64::from(rect.size.h) * geometry.zoom;
         let slide_offset = zoom_offset
             + Point::<f64, Logical>::from((0., -slide)).to_physical_precise_round(scale);
         Self {

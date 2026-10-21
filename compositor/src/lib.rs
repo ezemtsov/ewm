@@ -49,6 +49,7 @@ pub mod output_mode;
 pub mod protocols;
 pub mod render;
 mod render_helpers;
+pub mod rubber_band;
 #[cfg(feature = "screencast")]
 pub mod screencasting;
 pub mod surface;
@@ -113,7 +114,7 @@ use std::time::{Duration, Instant};
 
 pub use backend::{Backend, DrmBackendState, HeadlessBackend};
 pub use event::{Event, OutputInfo, OutputMode};
-use layout::{overview, strip};
+use layout::overview;
 use render_helpers::floating_shadow;
 
 pub use focus::{FocusSource, Notify};
@@ -523,7 +524,7 @@ pub struct Ewm {
     /// Zoomed-out strip view shared by all outputs.
     pub overview: overview::Overview,
     /// Frames' slide off the top of every output: 0 in place, 1 fully off.
-    pub hide: strip::ViewOffset,
+    pub hide: layout::transition::Transition,
     /// Every toplevel's compositor-side state, from creation to destruction.
     pub surfaces: HashMap<u64, surface::SurfaceState>,
 
@@ -928,7 +929,7 @@ impl Ewm {
             last_emacs_keyboard_activity: Instant::now(),
             layout: Layout::new(animations_clock.clone()),
             overview: overview::Overview::new(animations_clock.clone()),
-            hide: strip::ViewOffset::default(),
+            hide: layout::transition::Transition::new(animations_clock.clone()),
             animations_clock,
             surfaces: HashMap::new(),
             output_size: Size::from((0, 0)),
@@ -1504,9 +1505,8 @@ impl Ewm {
             // Compute whether animations need another frame on this output.
             // When true, VBlank handlers queue another redraw to keep animations pumping.
             // Done animations are already cleared by advance_animations() above.
-            state.unfinished_animations_remain = self.overview.is_animating()
-                || self.hide.is_animation_ongoing()
-                || !self.sepia.is_done();
+            state.unfinished_animations_remain =
+                self.overview.is_animating() || self.hide.is_animating() || !self.sepia.is_done();
         }
         let name = output.name();
         let any_fade = self

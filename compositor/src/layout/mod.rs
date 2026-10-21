@@ -8,6 +8,7 @@ pub mod overview;
 pub mod resize_fade;
 pub mod snapshot;
 pub mod strip;
+pub mod transition;
 
 pub(crate) use ewm::enter_output_for_window;
 

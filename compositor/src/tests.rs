@@ -2,6 +2,7 @@ use proptest::prelude::*;
 
 use super::*;
 use crate::idle::SEPIA_FADE_DURATION;
+use crate::layout::strip;
 use crate::testing::{
     HEAD_A, HEAD_B, PROP_HEADS, add_prop_outputs, frame_with_entry, frame_with_width, nz,
     order_from_keys, set_sorted_output_order, strip_with_frame_ids,

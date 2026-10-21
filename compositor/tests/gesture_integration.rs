@@ -185,6 +185,26 @@ fn a_bound_action_runs_when_the_fingers_lift() {
 }
 
 #[test]
+fn a_hide_binding_drags_the_frames_and_settles() {
+    let _serial = SERIAL.lock().unwrap();
+    let mut fix = fixture(r#"(keymap-set ewm-mode-map "<swipe-4-up>" #'ewm-hide-toggle)"#);
+
+    // Half the travel of a full hide, the frames halfway off.
+    swipe(&mut fix, 4, 0.0, -150.0);
+    assert!(!fix.ewm_ref().frames_in_place());
+    let halfway = fix.ewm_ref().hide.value();
+    assert!((0.4..0.6).contains(&halfway), "{halfway}");
+    fix.swipe_update(0.0, -250.0);
+    fix.swipe_end();
+    assert!(fix.ewm_ref().frames_hidden());
+
+    // The same swipe brings them back.
+    swipe(&mut fix, 4, 0.0, -400.0);
+    fix.swipe_end();
+    assert!(!fix.ewm_ref().frames_hidden());
+}
+
+#[test]
 fn a_command_binding_runs_when_the_fingers_lift() {
     let _serial = SERIAL.lock().unwrap();
     let mut fix = fixture(r#"(keymap-set ewm-mode-map "<swipe-3-up>" #'ewm-frame-new)"#);
