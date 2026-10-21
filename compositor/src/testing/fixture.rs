@@ -6,7 +6,7 @@
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
-use smithay::backend::input::{ButtonState, InputEvent, InputTime};
+use smithay::backend::input::{AxisSource, ButtonState, InputEvent, InputTime};
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -16,7 +16,9 @@ use tracing::info;
 use crate::backend::{Backend, HeadlessBackend};
 use crate::config::{Config, Cursor};
 use crate::layout::strip::Frame;
-use crate::testing::input::{TestAbsoluteEvent, TestDevice, TestGestureEvent, TestInputBackend};
+use crate::testing::input::{
+    TestAbsoluteEvent, TestAxisEvent, TestDevice, TestGestureEvent, TestInputBackend,
+};
 use crate::testing::{TestClient, lisp};
 use crate::{ClientState, Ewm, OutputInfo, State, register_display_source};
 
@@ -856,6 +858,26 @@ impl Fixture {
     /// Feed one input event through the dispatch, policy included.
     pub fn input(&mut self, event: InputEvent<TestInputBackend>) {
         self.state.process_input_event::<TestInputBackend>(event);
+    }
+
+    /// Scroll by (`dx`, `dy`) from `source`: notches of 120 for a wheel, pixels for fingers.
+    pub fn scroll(&mut self, source: AxisSource, dx: f64, dy: f64) {
+        self.axis(source, dx, dy, false);
+    }
+
+    /// `scroll` from a device with natural scrolling, which has flipped the signs already.
+    pub fn scroll_natural(&mut self, source: AxisSource, dx: f64, dy: f64) {
+        self.axis(source, dx, dy, true);
+    }
+
+    fn axis(&mut self, source: AxisSource, dx: f64, dy: f64, natural: bool) {
+        let event = TestAxisEvent {
+            source,
+            horizontal: dx,
+            vertical: dy,
+            natural,
+        };
+        self.input(InputEvent::PointerAxis { event });
     }
 
     /// Put `fingers` down for a swipe.

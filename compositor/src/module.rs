@@ -1471,8 +1471,13 @@ fn resolve_keysym_from_name(name: &str) -> xkb::Keysym {
     no_symbol
 }
 
-/// `swipe-FINGERS-DIRECTION` as a trigger.
-fn swipe_trigger(name: &str) -> Option<Trigger> {
+/// `swipe-FINGERS-DIRECTION` or `wheel-DIRECTION` as a trigger.
+fn gesture_trigger(name: &str) -> Option<Trigger> {
+    if let Some(direction) = name.strip_prefix("wheel-") {
+        return Some(Trigger::Scroll {
+            direction: elisp::serde::from_value(&Data::symbol(direction)).ok()?,
+        });
+    }
     let (fingers, direction) = name.strip_prefix("swipe-")?.split_once('-')?;
     Some(Trigger::Swipe {
         fingers: fingers.parse().ok()?,
@@ -1498,12 +1503,12 @@ impl KeyName {
         (keysym != keysyms::KEY_NoSymbol.into()).then_some(keysym)
     }
 
-    /// The trigger this names, a swipe before a keysym.
+    /// The trigger this names, a swipe or a scroll before a keysym.
     fn trigger(&self) -> Option<Trigger> {
         if let KeyName::Name(name) = self
-            && let Some(swipe) = swipe_trigger(name)
+            && let Some(gesture) = gesture_trigger(name)
         {
-            return Some(swipe);
+            return Some(gesture);
         }
         self.keysym().map(|keysym| Trigger::Keysym(keysym.raw()))
     }

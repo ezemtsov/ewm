@@ -1,9 +1,12 @@
-//! Touchpad swipes are bindings in `ewm-mode-map`. The overview and frame-focus actions follow
-//! the fingers and settle when they lift, every other binding runs when they lift.
+//! Touchpad swipes and scrolls are bindings in `ewm-mode-map`. The overview and frame-focus
+//! actions follow the fingers and settle when they lift, every other swipe binding runs when they
+//! lift, and under the bound modifiers a wheel notch or ten units of two-finger travel runs its
+//! command once while the client sees no scroll at all.
 use std::sync::Mutex;
 
 use ewm_core::testing::{Fixture, frame_with_width};
 use ewm_core::{Event, FocusSource, Notify};
+use smithay::backend::input::AxisSource;
 
 // The intercept list is process-wide: tests run one at a time.
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -192,4 +195,80 @@ fn an_unbound_default_swipe_runs_nothing() {
     assert!(fix.ewm_ref().overview.is_active());
     fix.swipe_end();
     assert!(fix.ewm_ref().overview.is_open());
+}
+
+fn active(fix: &Fixture) -> Option<u64> {
+    fix.strip(OUTPUT).active_frame_id()
+}
+
+#[test]
+fn a_wheel_notch_under_the_bound_modifier_runs_the_command_once() {
+    let _serial = SERIAL.lock().unwrap();
+    let mut fix = fixture(
+        r#"(keymap-set ewm-mode-map "s-<wheel-down>" #'ewm-frame-right)
+           (keymap-set ewm-mode-map "s-<wheel-up>" #'ewm-frame-left)
+           (keymap-set ewm-mode-map "s-<wheel-left>" #'ewm-frame-new)"#,
+    );
+    fix.enable_event_capture();
+
+    // Without the modifier the scroll is the client's.
+    fix.scroll(AxisSource::Wheel, 0.0, 120.0);
+    assert_eq!(active(&fix), Some(2));
+
+    fix.keyboard_key(KEY_LEFTMETA, true);
+    fix.scroll(AxisSource::Wheel, 0.0, 120.0);
+    assert_eq!(active(&fix), Some(3));
+    fix.scroll(AxisSource::Wheel, 0.0, -240.0);
+    assert_eq!(active(&fix), Some(1));
+    // A tick bound to an Emacs command sends the key, the unbound direction does nothing.
+    fix.scroll(AxisSource::Wheel, -120.0, 0.0);
+    fix.scroll(AxisSource::Wheel, 120.0, 0.0);
+    let keys: Vec<String> = fix
+        .drain_events()
+        .into_iter()
+        .filter_map(|event| match event {
+            Event::InterceptedCommand { key } => Some(key),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(keys, ["s-<wheel-left>"]);
+    assert_eq!(active(&fix), Some(1));
+    fix.keyboard_key(KEY_LEFTMETA, false);
+}
+
+#[test]
+fn finger_travel_ticks_every_ten_units_and_a_turn_starts_over() {
+    let _serial = SERIAL.lock().unwrap();
+    let mut fix = fixture(r#"(keymap-set ewm-mode-map "s-<wheel-down>" #'ewm-frame-right)"#);
+    fix.keyboard_key(KEY_LEFTMETA, true);
+
+    fix.scroll(AxisSource::Finger, 0.0, 4.0);
+    fix.scroll(AxisSource::Finger, 0.0, 4.0);
+    assert_eq!(active(&fix), Some(2));
+    fix.scroll(AxisSource::Finger, 0.0, 4.0);
+    assert_eq!(active(&fix), Some(3));
+
+    // Six units up then six down leave six, not none, and five more tick.
+    fix.scroll(AxisSource::Finger, 0.0, -6.0);
+    fix.scroll(AxisSource::Finger, 0.0, 6.0);
+    assert_eq!(active(&fix), Some(3));
+    fix.ewm()
+        .set_focus_frame(1, FocusSource::Test, Notify::None);
+    fix.scroll(AxisSource::Finger, 0.0, 5.0);
+    assert_eq!(active(&fix), Some(2));
+    fix.keyboard_key(KEY_LEFTMETA, false);
+}
+
+#[test]
+fn natural_scrolling_keeps_the_direction_the_fingers_moved() {
+    let _serial = SERIAL.lock().unwrap();
+    let mut fix = fixture(r#"(keymap-set ewm-mode-map "s-<wheel-down>" #'ewm-frame-right)"#);
+    fix.keyboard_key(KEY_LEFTMETA, true);
+
+    // Fingers moving down arrive negative from a natural-scrolling touchpad.
+    fix.scroll_natural(AxisSource::Finger, 0.0, -12.0);
+    assert_eq!(active(&fix), Some(3));
+    fix.scroll_natural(AxisSource::Finger, 0.0, 12.0);
+    assert_eq!(active(&fix), Some(3));
+    fix.keyboard_key(KEY_LEFTMETA, false);
 }

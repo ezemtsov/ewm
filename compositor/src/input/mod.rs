@@ -31,6 +31,11 @@
 //!    modifiers under the same first-match and surface-scope rules. Bound to the overview or a
 //!    one-frame focus action the swipe drives that gesture as the fingers move, anything else
 //!    runs when they lift, and the unbound directions of a bound finger count do nothing.
+//!
+//! 8. **Scroll bindings**: `<wheel-DIRECTION>` entries match a wheel notch or ten units of
+//!    two-finger travel under the same rules and run once per tick. The direction is the one the
+//!    fingers or the wheel moved, natural scrolling undone, and while the modifiers of a bound
+//!    entry are held every scroll is the compositor's.
 
 mod backend_ext;
 pub(crate) mod binding;
@@ -38,20 +43,23 @@ mod config;
 pub(crate) mod floating_move_grab;
 pub(crate) mod floating_resize_grab;
 pub(crate) mod frame_click_grab;
+mod scroll_tracker;
 
 use std::any::Any;
 
 pub use backend_ext::*;
-pub use binding::{End, Gesture};
+use binding::find_binding;
+pub use binding::{Bound, End, Gesture};
 pub use config::*;
 use frame_click_grab::FrameClickGrab;
+use scroll_tracker::ScrollTracker;
 use serde::{Deserialize, Serialize};
 use smithay::backend::input::{
-    AbsolutePositionEvent, Axis, AxisSource, ButtonState, Device, DeviceCapability, Event,
-    InputBackend, InputEvent, InputTime, KeyState, KeyboardKeyEvent, PointerAxisEvent,
-    PointerButtonEvent, PointerMotionEvent, ProximityState, Switch, SwitchState, SwitchToggleEvent,
-    TabletToolButtonEvent, TabletToolEvent, TabletToolProximityEvent, TabletToolTipEvent,
-    TabletToolTipState,
+    AbsolutePositionEvent, Axis, AxisRelativeDirection, AxisSource, ButtonState, Device,
+    DeviceCapability, Event, InputBackend, InputEvent, InputTime, KeyState, KeyboardKeyEvent,
+    PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, ProximityState, Switch, SwitchState,
+    SwitchToggleEvent, TabletToolButtonEvent, TabletToolEvent, TabletToolProximityEvent,
+    TabletToolTipEvent, TabletToolTipState,
 };
 use smithay::backend::libinput::LibinputInputBackend;
 use smithay::input::keyboard::{
@@ -80,8 +88,8 @@ use crate::im::TextInputProvider;
 use crate::im::repeat::{HeldKeyOwner, InterceptRepeat};
 use crate::module::ChordSpec;
 use crate::{
-    Action, FocusSource, InterceptDispatch, InterceptedKey, Notify, State, SurfaceHit, module,
-    tracy_span,
+    Action, FocusSource, InterceptDispatch, InterceptedKey, Notify, State, SurfaceHit, Trigger,
+    module, tracy_span,
 };
 
 /// Where a key goes, as `classify_key` decides it. The caller forwards accordingly.
@@ -236,11 +244,34 @@ impl Direction {
     }
 }
 
-/// What a bound trigger runs: a compositor action, or `key` as an Emacs command.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub enum Bound {
-    Command { key: String },
-    Action(Action),
+/// Scroll travel toward the next bound tick per source and axis, a notch or ten finger units.
+pub struct ScrollTrackers {
+    wheel: [ScrollTracker; 2],
+    finger: [ScrollTracker; 2],
+}
+
+impl Default for ScrollTrackers {
+    fn default() -> Self {
+        Self {
+            wheel: [ScrollTracker::new(120), ScrollTracker::new(120)],
+            finger: [ScrollTracker::new(10), ScrollTracker::new(10)],
+        }
+    }
+}
+
+impl ScrollTrackers {
+    fn of(&mut self, source: AxisSource) -> &mut [ScrollTracker; 2] {
+        match source {
+            AxisSource::Wheel => &mut self.wheel,
+            _ => &mut self.finger,
+        }
+    }
+
+    fn reset(&mut self) {
+        for tracker in self.wheel.iter_mut().chain(&mut self.finger) {
+            tracker.reset();
+        }
+    }
 }
 
 /// What a touchpad swipe does, decided by the binding on the direction it sets off in.
@@ -263,23 +294,33 @@ pub fn classify_swipe(
     direction: Direction,
     mods: &ModifiersState,
 ) -> SwipeAction {
-    let binding = bindings
-        .iter()
-        .find(|ik| ik.in_scope(surface_id) && ik.matches_swipe(fingers, direction, mods));
+    let trigger = Trigger::Swipe { fingers, direction };
+    let binding = find_binding(bindings, surface_id, |ik| ik.matches_trigger(trigger, mods));
     let Some(ik) = binding.filter(|ik| ik.runs_under(fullscreen)) else {
         return SwipeAction::Forward;
     };
-    match &ik.dispatch {
-        InterceptDispatch::Action(action) => action.as_gesture(direction).map_or_else(
-            || SwipeAction::Bound(Bound::Action(action.clone())),
-            SwipeAction::Gesture,
-        ),
-        InterceptDispatch::Command => SwipeAction::Bound(Bound::Command {
-            key: ik.key.clone(),
-        }),
-        // A prefix entry with no binding has nothing to run.
-        InterceptDispatch::Keyboard => SwipeAction::Forward,
+    if let InterceptDispatch::Action(action) = &ik.dispatch
+        && let Some(gesture) = action.as_gesture(direction)
+    {
+        return SwipeAction::Gesture(gesture);
     }
+    // A prefix entry with no binding has nothing to run.
+    ik.bound().map_or(SwipeAction::Forward, SwipeAction::Bound)
+}
+
+/// Pure classification of a scroll tick by its binding: what runs, nothing when the scroll is the
+/// client's.
+pub fn classify_scroll(
+    bindings: &[InterceptedKey],
+    fullscreen: bool,
+    surface_id: Option<u64>,
+    direction: Direction,
+    mods: &ModifiersState,
+) -> Option<Bound> {
+    let trigger = Trigger::Scroll { direction };
+    find_binding(bindings, surface_id, |ik| ik.matches_trigger(trigger, mods))
+        .filter(|ik| ik.runs_under(fullscreen))
+        .and_then(InterceptedKey::bound)
 }
 
 const GESTURE_DEADZONE_SQ: f64 = 16.0 * 16.0;
@@ -1304,6 +1345,51 @@ impl State {
         )
     }
 
+    /// Run the scroll bindings once per tick of `amounts`, false when the held modifiers bind none.
+    fn scroll_bindings_tick(&mut self, source: AxisSource, amounts: [Option<f64>; 2]) -> bool {
+        let mods = self.ewm.keyboard.modifier_state();
+        let fullscreen_active = self.ewm.focused_fullscreen_entry().is_some();
+        let focused_surface_id = self.ewm.focused_surface_id();
+        let bindings = module::intercepted_keys().read().unwrap();
+        let bound = |direction| {
+            classify_scroll(
+                &bindings,
+                fullscreen_active,
+                focused_surface_id,
+                direction,
+                &mods,
+            )
+        };
+        // Under the lock every scroll is the lock surface's, as every key is.
+        let taken = !self.ewm.is_locked()
+            && Direction::ALL
+                .into_iter()
+                .any(|direction| bound(direction).is_some());
+        if !taken {
+            self.ewm.scroll_trackers.reset();
+            return false;
+        }
+        let axes = [
+            [Direction::Left, Direction::Right],
+            [Direction::Up, Direction::Down],
+        ];
+        let trackers = self.ewm.scroll_trackers.of(source);
+        let mut runs = Vec::new();
+        for ((tracker, amount), [negative, positive]) in trackers.iter_mut().zip(amounts).zip(axes)
+        {
+            let ticks = tracker.accumulate(amount.unwrap_or(0.));
+            let direction = if ticks < 0 { negative } else { positive };
+            if let Some(bound) = bound(direction) {
+                runs.extend(std::iter::repeat_n(bound, ticks.unsigned_abs().into()));
+            }
+        }
+        drop(bindings);
+        for bound in runs {
+            self.run_bound(bound);
+        }
+        true
+    }
+
     /// A swipe of ours that the lock caught in flight drives nothing more.
     fn drop_swipe_under_lock(&mut self) {
         if self.ewm.is_locked() && !matches!(self.ewm.swipe, Swipe::Client) {
@@ -1527,14 +1613,6 @@ impl State {
     pub(crate) fn on_pointer_axis<B: InputBackend>(&mut self, event: B::PointerAxisEvent) {
         tracy_span!("on_pointer_axis");
         self.ewm.clear_tablet_cursor();
-        let pointer = self.ewm.pointer.clone();
-
-        // Scroll-to-focus: focus the surface under pointer on scroll
-        self.focus_pointer_target(FocusSource::Scroll);
-
-        // Sync keyboard focus before forwarding the scroll event.
-        self.sync_keyboard_focus();
-
         let source = event.source();
 
         // Get scroll amounts (natural scrolling is handled at libinput device level)
@@ -1542,6 +1620,37 @@ impl State {
         let vertical_amount = event.amount(Axis::Vertical);
         let horizontal_v120 = event.amount_v120(Axis::Horizontal);
         let vertical_v120 = event.amount_v120(Axis::Vertical);
+
+        // A scroll binding under the held modifiers takes every tick, the client sees none. A tick
+        // names the way the fingers or the wheel moved, natural scrolling undone.
+        let moved = |axis: Axis, amount: Option<f64>| {
+            let inverted = event.relative_direction(axis) == AxisRelativeDirection::Inverted;
+            amount.map(|amount| if inverted { -amount } else { amount })
+        };
+        let ticking = match source {
+            AxisSource::Wheel => Some([
+                moved(Axis::Horizontal, horizontal_v120),
+                moved(Axis::Vertical, vertical_v120),
+            ]),
+            AxisSource::Finger | AxisSource::Continuous => Some([
+                moved(Axis::Horizontal, horizontal_amount),
+                moved(Axis::Vertical, vertical_amount),
+            ]),
+            AxisSource::WheelTilt => None,
+        };
+        if let Some(amounts) = ticking
+            && self.scroll_bindings_tick(source, amounts)
+        {
+            return;
+        }
+
+        let pointer = self.ewm.pointer.clone();
+
+        // Scroll-to-focus: focus the surface under pointer on scroll
+        self.focus_pointer_target(FocusSource::Scroll);
+
+        // Sync keyboard focus before forwarding the scroll event.
+        self.sync_keyboard_focus();
 
         // Compute continuous values, falling back to v120 if no continuous amount
         let horizontal = horizontal_amount
@@ -2005,10 +2114,9 @@ pub fn classify_key(
         return KeyAction::VtSwitch(vt);
     }
 
-    if let Some(ik) = intercepted_keys
-        .iter()
-        .find(|ik| ik.in_scope(focused_surface_id) && ik.matches(keysym_raw, modified_raw, mods))
-    {
+    if let Some(ik) = find_binding(intercepted_keys, focused_surface_id, |ik| {
+        ik.matches(keysym_raw, modified_raw, mods)
+    }) {
         if !ik.runs_under(fullscreen_active) {
             return KeyAction::Forward;
         }

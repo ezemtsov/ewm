@@ -16,9 +16,13 @@ pub enum Trigger {
         fingers: u32,
         direction: Direction,
     },
+    /// A wheel notch or ten units of two-finger travel in `direction`.
+    Scroll {
+        direction: Direction,
+    },
 }
 
-/// A binding Emacs declared: a key or a swipe under given modifiers.
+/// A binding Emacs declared: a key, swipe or scroll under given modifiers.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct InterceptedKey {
     pub trigger: Trigger,
@@ -90,10 +94,39 @@ impl InterceptedKey {
             && self.logo == mods.logo
     }
 
-    /// Whether a swipe of `fingers` setting off in `direction` under `mods` is this binding's.
-    pub fn matches_swipe(&self, fingers: u32, direction: Direction, mods: &ModifiersState) -> bool {
-        self.trigger == Trigger::Swipe { fingers, direction } && self.mods_match(mods, false)
+    /// Whether `trigger` under exactly `mods` is this binding's.
+    pub fn matches_trigger(&self, trigger: Trigger, mods: &ModifiersState) -> bool {
+        self.trigger == trigger && self.mods_match(mods, false)
     }
+
+    /// What this binding runs when its trigger fires, nothing for a bare prefix entry.
+    pub fn bound(&self) -> Option<Bound> {
+        match &self.dispatch {
+            InterceptDispatch::Action(action) => Some(Bound::Action(action.clone())),
+            InterceptDispatch::Command => Some(Bound::Command {
+                key: self.key.clone(),
+            }),
+            InterceptDispatch::Keyboard => None,
+        }
+    }
+}
+
+/// The first binding in scope while `focused_surface_id` has focus that `matches`.
+pub fn find_binding(
+    bindings: &[InterceptedKey],
+    focused_surface_id: Option<u64>,
+    matches: impl Fn(&InterceptedKey) -> bool,
+) -> Option<&InterceptedKey> {
+    bindings
+        .iter()
+        .find(|ik| ik.in_scope(focused_surface_id) && matches(ik))
+}
+
+/// What a bound trigger runs: a compositor action, or `key` as an Emacs command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum Bound {
+    Command { key: String },
+    Action(Action),
 }
 
 /// How an intercepted key is delivered to Emacs.

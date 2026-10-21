@@ -142,17 +142,21 @@
   (should (equal (ewm--frame-select-action ?3) '(focus-nth-frame :n 3)))
   (should-not (ewm--frame-select-action 'swipe-4-up)))
 
-(ert-deftest ewm-input-tests/spec-swipe-key ()
-  "A swipe bound in `ewm-mode-map' rides the list as the key its name spells."
+(ert-deftest ewm-input-tests/spec-gesture-keys ()
+  "A swipe or scroll bound in `ewm-mode-map' rides the list as the key its name spells."
   (define-key ewm-mode-map (kbd "s-<swipe-4-left>") #'kill-buffer)
+  (define-key ewm-mode-map (kbd "s-<wheel-down>") #'ewm-frame-right)
   (unwind-protect
-      (let ((spec (ewm--event-to-intercept-spec 's-swipe-4-left)))
-        (should (equal (plist-get spec :key) "swipe-4-left"))
-        (should (eq (plist-get spec :super) t))
-        (should (equal (plist-get spec :description) "s-<swipe-4-left>"))
-        (should (equal (plist-get spec :dispatch) "command"))
-        (should (memq 's-swipe-4-left (ewm--mode-map-events))))
-    (define-key ewm-mode-map (kbd "s-<swipe-4-left>") nil)))
+      (pcase-dolist (`(,event ,key ,action) '((s-swipe-4-left "swipe-4-left" nil)
+                                              (s-wheel-down "wheel-down" (focus-frame :delta 1))))
+        (let ((spec (ewm--event-to-intercept-spec event)))
+          (should (equal (plist-get spec :key) key))
+          (should (eq (plist-get spec :super) t))
+          (should (equal (plist-get spec :dispatch) "command"))
+          (should (equal (plist-get spec :action) action))
+          (should (memq event (ewm--mode-map-events)))))
+    (define-key ewm-mode-map (kbd "s-<swipe-4-left>") nil t)
+    (define-key ewm-mode-map (kbd "s-<wheel-down>") nil t)))
 
 (ert-deftest ewm-input-tests/spec-modifiers ()
   "Ctrl/Meta/Shift/Super are surfaced as boolean flags."

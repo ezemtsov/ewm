@@ -540,6 +540,8 @@ pub struct Ewm {
     pub pointer_focus: Option<SurfaceHit>,
     /// The touchpad swipe in flight.
     pub swipe: input::Swipe,
+    /// Scroll travel toward the next bound tick.
+    pub scroll_trackers: input::ScrollTrackers,
     /// Last output the cursor was drawn on, for per-output cursor redraw.
     pointer_output: Option<Output>,
     pub keyboard_focus: Option<WlSurface>,
@@ -950,6 +952,7 @@ impl Ewm {
             libinput_devices: std::collections::HashSet::new(),
             emacs_pid: None,
             swipe: input::Swipe::default(),
+            scroll_trackers: input::ScrollTrackers::default(),
             output_state: HashMap::new(),
             monitors_active: true,
             pending_early_imports: Vec::new(),

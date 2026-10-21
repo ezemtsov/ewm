@@ -13,8 +13,8 @@
 ;; 1. `ewm-mode-map' - All bindings in this keymap are intercepted, those
 ;;    of commands with an `ewm-action' property run in the compositor.
 ;;    Override defaults with use-package :bind (:map ewm-mode-map ...).
-;;    Touchpad swipes bind as `<swipe-FINGERS-DIRECTION>' keys, with the
-;;    usual modifier prefixes.
+;;    Touchpad swipes bind as `<swipe-FINGERS-DIRECTION>' keys and scrolls
+;;    as `<wheel-DIRECTION>' keys, with the usual modifier prefixes.
 ;; 2. `ewm-intercept-prefixes' - Extra keys to intercept, plus keys that
 ;;    should also be intercepted while a client is fullscreen, as the
 ;;    compositor commands of `ewm-mode-map' are.

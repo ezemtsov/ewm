@@ -3,11 +3,11 @@
 use std::path::PathBuf;
 
 use smithay::backend::input::{
-    AbsolutePositionEvent, Device, DeviceCapability, Event, GestureBeginEvent, GestureEndEvent,
-    GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent, GesturePinchEndEvent,
-    GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent,
-    InputBackend, InputTime, PointerMotionAbsoluteEvent, TouchDownEvent, TouchEvent, TouchSlot,
-    TouchUpEvent, UnusedEvent,
+    AbsolutePositionEvent, Axis, AxisRelativeDirection, AxisSource, Device, DeviceCapability,
+    Event, GestureBeginEvent, GestureEndEvent, GestureHoldBeginEvent, GestureHoldEndEvent,
+    GesturePinchBeginEvent, GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent,
+    GestureSwipeEndEvent, GestureSwipeUpdateEvent, InputBackend, InputTime, PointerAxisEvent,
+    PointerMotionAbsoluteEvent, TouchDownEvent, TouchEvent, TouchSlot, TouchUpEvent, UnusedEvent,
 };
 use smithay::output::Output;
 
@@ -157,6 +157,56 @@ impl GestureEndEvent<TestInputBackend> for TestGestureEvent {
     }
 }
 
+/// A scroll from `source`: in v120 steps for a wheel, else in pixels, the signs flipped by
+/// natural scrolling when `natural`.
+pub struct TestAxisEvent {
+    pub source: AxisSource,
+    pub horizontal: f64,
+    pub vertical: f64,
+    pub natural: bool,
+}
+
+impl TestAxisEvent {
+    fn along(&self, axis: Axis) -> f64 {
+        match axis {
+            Axis::Horizontal => self.horizontal,
+            Axis::Vertical => self.vertical,
+        }
+    }
+}
+
+impl Event<TestInputBackend> for TestAxisEvent {
+    fn time(&self) -> InputTime {
+        InputTime::from_millis(0)
+    }
+
+    fn device(&self) -> TestDevice {
+        TestDevice::default()
+    }
+}
+
+impl PointerAxisEvent<TestInputBackend> for TestAxisEvent {
+    fn amount(&self, axis: Axis) -> Option<f64> {
+        (self.source != AxisSource::Wheel).then(|| self.along(axis))
+    }
+
+    fn amount_v120(&self, axis: Axis) -> Option<f64> {
+        (self.source == AxisSource::Wheel).then(|| self.along(axis))
+    }
+
+    fn source(&self) -> AxisSource {
+        self.source
+    }
+
+    fn relative_direction(&self, _axis: Axis) -> AxisRelativeDirection {
+        if self.natural {
+            AxisRelativeDirection::Inverted
+        } else {
+            AxisRelativeDirection::Identical
+        }
+    }
+}
+
 impl GestureSwipeBeginEvent<TestInputBackend> for TestGestureEvent {}
 impl GestureSwipeEndEvent<TestInputBackend> for TestGestureEvent {}
 impl GesturePinchBeginEvent<TestInputBackend> for TestGestureEvent {}
@@ -170,7 +220,7 @@ impl InputBackend for TestInputBackend {
     type Device = TestDevice;
 
     type KeyboardKeyEvent = UnusedEvent;
-    type PointerAxisEvent = UnusedEvent;
+    type PointerAxisEvent = TestAxisEvent;
     type PointerButtonEvent = UnusedEvent;
     type PointerMotionEvent = UnusedEvent;
     type PointerMotionAbsoluteEvent = TestAbsoluteEvent;
