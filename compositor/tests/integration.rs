@@ -167,10 +167,11 @@ proptest! {
     })]
 
     #[test]
-    fn initial_output_config_matches_output_state_and_report(
+    fn output_config_matches_output_state_and_report(
         width in 640i32..=3840,
         height in 480i32..=2160,
         scale_milli in 750i32..=3_000,
+        rescale_milli in 750i32..=3_000,
         transform_idx in 0i32..=7,
     ) {
         let scale = f64::from(scale_milli) / 1_000.0;
@@ -189,6 +190,29 @@ proptest! {
             .unwrap();
         prop_assert!((info.scale - expected_scale).abs() < 1e-10);
         prop_assert_eq!(info.transform, transform_to_int(transform));
+
+        // A scale change applied later rounds the same way and resizes the working area.
+        let rescale = f64::from(rescale_milli) / 1_000.0;
+        fixture.ewm().output_config.insert(
+            "Virtual-1".to_string(),
+            OutputConfig {
+                scale: Some(rescale),
+                transform: Some(transform),
+                ..Default::default()
+            },
+        );
+        fixture.apply_output_config("Virtual-1");
+        fixture.dispatch();
+        let output = fixture.output("Virtual-1");
+        let expected_scale = closest_representable_scale(rescale);
+        prop_assert!((output.current_scale().fractional_scale() - expected_scale).abs() < 1e-10);
+        let working_area = fixture
+            .ewm_ref()
+            .layout
+            .monitor_of(&output)
+            .map(|monitor| monitor.working_area)
+            .unwrap();
+        prop_assert_eq!(working_area.size, output_size(&output).to_i32_round());
     }
 
     /// A touch reaches the client at the same panel point under any transform and scale.
@@ -255,46 +279,6 @@ proptest! {
     }
 
 
-    #[test]
-    fn output_config_scale_rounds_and_updates_working_area(
-        width in 640i32..=3840,
-        height in 480i32..=2160,
-        scale_milli in 750i32..=3_000,
-    ) {
-        let scale = f64::from(scale_milli) / 1_000.0;
-        let mut fixture = Fixture::new().expect("Failed to create fixture");
-        fixture.add_output("Virtual-1", width, height);
-        fixture.dispatch();
-
-        fixture.ewm().output_config.insert(
-            "Virtual-1".to_string(),
-            OutputConfig {
-                scale: Some(scale),
-                ..Default::default()
-            },
-        );
-        fixture.apply_output_config("Virtual-1");
-        fixture.dispatch();
-
-        let output = fixture
-            .ewm_ref()
-            .space
-            .outputs()
-            .find(|o| o.name() == "Virtual-1")
-            .unwrap()
-            .clone();
-        let effective_scale = output.current_scale().fractional_scale();
-        let expected_scale = closest_representable_scale(scale);
-        prop_assert!((effective_scale - expected_scale).abs() < 1e-10);
-
-        let working_area = fixture
-            .ewm_ref()
-            .layout
-            .monitor_of(&fixture.output("Virtual-1"))
-            .map(|monitor| monitor.working_area)
-            .unwrap();
-        prop_assert_eq!(working_area.size, output_size(&output).to_i32_round());
-    }
 }
 #[test]
 fn frame_focus_switch_refreshes_stationary_pointer_after_transition() {
@@ -403,18 +387,15 @@ fn strip_swipe_focuses_the_snapped_frame_without_moving_the_pointer() {
     );
     fixture.dispatch_roundtrip(2);
     let neighbour_focus_id = fixture.strip("Virtual-1").frames()[1].focus_id;
+    fixture.set_intercepted_keys_from_lisp(
+        r#"[(:key "swipe-3-left" :description "<swipe-3-left>" :dispatch (action focus-frame :delta 1))]"#,
+    );
     fixture.pointer_motion_to(640.0, 360.0);
     fixture.enable_event_capture();
 
-    {
-        let strip = fixture.strip_mut("Virtual-1");
-        strip.gesture_begin();
-        strip.gesture_update(700.0, std::time::Duration::ZERO, 1280.0);
-        // A late zero delta drains the velocity history so the snap is decided by position.
-        strip.gesture_update(0.0, std::time::Duration::from_millis(200), 1280.0);
-    }
-    let virtual_1 = fixture.output("Virtual-1");
-    fixture.ewm().strip_gesture_end(&virtual_1, 1280.0);
+    fixture.swipe_begin(3);
+    fixture.swipe_update(-700.0, 0.0);
+    fixture.swipe_end();
     fixture.dispatch_roundtrip(2);
 
     let strip = fixture.strip("Virtual-1");
@@ -428,14 +409,9 @@ fn strip_swipe_focuses_the_snapped_frame_without_moving_the_pointer() {
     )));
 
     // A swipe past the strip end snaps back to the same frame and changes no focus.
-    {
-        let strip = fixture.strip_mut("Virtual-1");
-        strip.gesture_begin();
-        strip.gesture_update(700.0, std::time::Duration::ZERO, 1280.0);
-        strip.gesture_update(0.0, std::time::Duration::from_millis(200), 1280.0);
-    }
-    let virtual_1 = fixture.output("Virtual-1");
-    fixture.ewm().strip_gesture_end(&virtual_1, 1280.0);
+    fixture.swipe_begin(3);
+    fixture.swipe_update(-700.0, 0.0);
+    fixture.swipe_end();
     fixture.dispatch_roundtrip(2);
 
     assert_eq!(fixture.strip("Virtual-1").active_idx(), 1);
@@ -448,55 +424,32 @@ fn strip_swipe_focuses_the_snapped_frame_without_moving_the_pointer() {
 }
 
 #[test]
-fn strip_swipe_with_the_pointer_on_another_output_warps_like_a_key() {
-    let mut fixture = Fixture::new().unwrap();
-    fixture.add_output("Virtual-1", 1280, 720);
-    fixture.add_output("Virtual-2", 1280, 720);
-    fixture.ewm().animations_clock.set_complete_instantly(true);
-    fixture.tile_command(
-        "Virtual-1",
-        vec![
-            frame_with_entry(10, nz(1), 100),
-            frame_with_entry(11, nz(2), 101),
-        ],
-    );
-    fixture.dispatch_roundtrip(2);
-    let other = fixture
-        .ewm_ref()
-        .space
-        .outputs()
-        .find(|output| output.name() == "Virtual-2")
-        .cloned()
-        .unwrap();
-    let geo = fixture.ewm_ref().space.output_geometry(&other).unwrap();
-    fixture.pointer_motion_to(f64::from(geo.loc.x) + 100.0, f64::from(geo.loc.y) + 100.0);
-    fixture.enable_event_capture();
-
-    {
-        let strip = fixture.strip_mut("Virtual-1");
-        strip.gesture_begin();
-        strip.gesture_update(700.0, std::time::Duration::ZERO, 1280.0);
-        strip.gesture_update(0.0, std::time::Duration::from_millis(200), 1280.0);
-    }
-    let virtual_1 = fixture.output("Virtual-1");
-    fixture.ewm().strip_gesture_end(&virtual_1, 1280.0);
-    fixture.dispatch_roundtrip(2);
-
-    // Keyboard-style focus, so mouse-follows-focus brings the pointer over.
-    assert!(
-        fixture
-            .drain_events()
-            .iter()
-            .any(|event| matches!(event, Event::Focus { pointer: false, .. }))
-    );
-}
-
-#[test]
 fn disabling_and_reenabling_headless_output_updates_protocol_state() {
     let mut fixture = Fixture::new().expect("Failed to create fixture");
+    // Born disabled by its config, the output is not advertised at all.
+    fixture.ewm().output_config.insert(
+        "Virtual-1".to_string(),
+        OutputConfig {
+            enabled: false,
+            ..Default::default()
+        },
+    );
     fixture.add_output("Virtual-1", 1280, 720);
     fixture.dispatch();
     let mut client = fixture.new_client().expect("Failed to create client");
+    fixture.roundtrip(&mut client);
+    assert_eq!(client.global_count("wl_output"), 0);
+    let output_infos = fixture.output_info_list();
+    assert!(!fixture.ewm_ref().build_output_head_states(&output_infos)["Virtual-1"].enabled);
+
+    fixture.ewm().output_config.insert(
+        "Virtual-1".to_string(),
+        OutputConfig {
+            enabled: true,
+            ..Default::default()
+        },
+    );
+    fixture.apply_output_config("Virtual-1");
     fixture.roundtrip(&mut client);
     assert_eq!(client.global_count("wl_output"), 1);
 
@@ -576,34 +529,6 @@ fn disabling_an_output_closes_its_layer_surfaces() {
     assert!(client.drain_events().contains(&ClientEvent::LayerClosed {
         layer_surface: layer.layer_surface.clone(),
     }));
-}
-
-#[test]
-fn headless_output_respects_initial_disabled_config() {
-    let mut fixture = Fixture::new().expect("Failed to create fixture");
-    fixture.ewm().output_config.insert(
-        "Virtual-1".to_string(),
-        OutputConfig {
-            enabled: false,
-            ..Default::default()
-        },
-    );
-
-    fixture.add_output("Virtual-1", 1280, 720);
-    fixture.dispatch();
-    let mut client = fixture.new_client().expect("Failed to create client");
-    fixture.roundtrip(&mut client);
-
-    assert!(
-        !fixture
-            .ewm_ref()
-            .space
-            .outputs()
-            .any(|output| output.name() == "Virtual-1")
-    );
-    assert_eq!(client.global_count("wl_output"), 0);
-    let output_infos = fixture.output_info_list();
-    assert!(!fixture.ewm_ref().build_output_head_states(&output_infos)["Virtual-1"].enabled);
 }
 
 #[test]

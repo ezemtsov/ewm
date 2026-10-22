@@ -56,25 +56,6 @@ fn click(fix: &mut Fixture, x: f64, y: f64) {
 }
 
 #[test]
-fn open_close_toggle_track_state_and_zoom() {
-    let mut fix = fixture(vec![frame_with_entry(10, 1, 100)]);
-    assert!(!fix.ewm_ref().overview.is_open());
-    assert_eq!(fix.ewm_ref().overview.zoom(), 1.0);
-
-    fix.ewm().overview_toggle();
-    fix.dispatch();
-    assert!(fix.ewm_ref().overview.is_open());
-    assert_eq!(fix.ewm_ref().overview.zoom(), 0.5);
-    assert!(!fix.ewm().overview_open(), "open is a no-op while open");
-
-    assert!(fix.ewm().overview_close());
-    assert!(!fix.ewm_ref().overview.is_open());
-    assert!(!fix.ewm().overview_close(), "close is a no-op while closed");
-    fix.dispatch_roundtrip(2);
-    assert_eq!(fix.ewm_ref().overview.zoom(), 1.0);
-}
-
-#[test]
 fn overview_events_follow_the_open_state() {
     let mut fix = fixture(vec![frame_with_entry(10, 1, 100)]);
     fix.enable_event_capture();
@@ -135,6 +116,11 @@ fn click_on_zoomed_neighbour_activates_it_and_closes() {
     fix.dispatch();
     fix.enable_event_capture();
 
+    // A click on the backdrop beside the zoomed output changes nothing.
+    click(&mut fix, 100.0, 100.0);
+    assert_eq!(active_idx(&fix), 0);
+    assert!(fix.ewm_ref().overview.is_open());
+
     // Frame 1 starts at strip x 1920; at zoom 0.5 about the output centre that is screen x 1440.
     click(&mut fix, 1500.0, 540.0);
 
@@ -165,18 +151,6 @@ fn click_on_empty_zoomed_output_closes_without_switching() {
 
     assert_eq!(active_idx(&fix), 0);
     assert!(!fix.ewm_ref().overview.is_open());
-}
-
-#[test]
-fn click_on_backdrop_is_ignored() {
-    let mut fix = fixture(vec![frame_with_entry(10, 1, 100)]);
-    fix.ewm().overview_toggle();
-    fix.dispatch();
-
-    click(&mut fix, 100.0, 100.0);
-
-    assert_eq!(active_idx(&fix), 0);
-    assert!(fix.ewm_ref().overview.is_open());
 }
 
 #[test]

@@ -88,12 +88,6 @@ fn classify(
 }
 
 proptest! {
-
-
-
-
-
-
     /// Releases always forward; the K-series is press-driven.
     #[test]
     fn release_always_forwards(
@@ -131,16 +125,25 @@ proptest! {
         );
         prop_assert_eq!(action, KeyAction::VtSwitch(vt as i32));
     }
+
     /// The intercept decision ignores held modifiers: only whether the key is
-    /// itself a modifier matters. A letter under Ctrl/Alt/Logo still intercepts.
+    /// itself a modifier matters. A letter under Ctrl/Alt/Logo still intercepts,
+    /// and a key with no text, Return, intercepts with none.
     #[test]
-    fn text_input_intercepts_printable_keys_regardless_of_held_modifiers(
-        letter in 0u32..26,
+    fn text_input_intercepts_keys_regardless_of_held_modifiers(
+        key in prop_oneof![
+            (0u32..26).prop_map(|letter| {
+                let text = char::from_u32(u32::from(b'a') + letter).unwrap().to_string();
+                (keysyms::KEY_a + letter, Some(text))
+            }),
+            Just((keysyms::KEY_Return, None)),
+        ],
         ctrl in any::<bool>(),
         alt in any::<bool>(),
         shift in any::<bool>(),
         logo in any::<bool>(),
     ) {
+        let (keysym, text) = key;
         let mods = ModifiersState {
             ctrl,
             alt,
@@ -148,16 +151,15 @@ proptest! {
             logo,
             ..Default::default()
         };
-        let keysym = keysyms::KEY_a + letter;
         let routing = KeyRouting {
             text_input_surface: Some(SURFACE),
             ..Default::default()
         };
         let action = classify_key(&[], routing, key_input(true, keysym, &mods));
-        let expected = char::from_u32(u32::from(b'a') + letter).unwrap().to_string();
 
-        prop_assert_eq!(action, text_input_action(keysym, Some(expected), &mods));
+        prop_assert_eq!(action, text_input_action(keysym, text, &mods));
     }
+
     #[test]
     fn text_input_defers_to_emacs_focus_or_modifier_keys(
         keysym in keysym_strategy(),
@@ -183,14 +185,4 @@ proptest! {
 
         prop_assert_eq!(action, KeyAction::Forward);
     }
-}
-
-#[test]
-fn text_input_intercepts_non_printable_keys_without_utf8() {
-    let keysym = keysyms::KEY_Return;
-    let action = classify(&[], true, false, false, true, keysym);
-    assert_eq!(
-        action,
-        text_input_action(keysym, None, &ModifiersState::default())
-    );
 }

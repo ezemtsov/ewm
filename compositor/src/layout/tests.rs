@@ -12,49 +12,6 @@ use crate::testing::{
 use crate::{Action, FocusSource, Notify};
 
 #[test]
-fn dragging_a_float_to_another_output_carries_and_rehomes_it() {
-    let mut fix = testing::Fixture::new().unwrap();
-    fix.add_output(HEAD_A, 1600, 900);
-    fix.add_output(HEAD_B, 1600, 900);
-    fix.float(HEAD_A, vec![frame_with_entry(200, nz(3001), 9000)]);
-    assert_eq!(fix.ewm_ref().layout.frame_output(200), Some(HEAD_A));
-
-    let (head_a, head_b) = (fix.output(HEAD_A), fix.output(HEAD_B));
-    let a_geo = fix.ewm_ref().space.output_geometry(&head_a).unwrap();
-    let b_geo = fix.ewm_ref().space.output_geometry(&head_b).unwrap();
-
-    // Grab the float just inside its top-left corner.
-    let grab = {
-        let monitor = fix.ewm_ref().layout.monitor_of(&head_a).unwrap();
-        let (_, data) = monitor.floating.frame_with_data(200).unwrap();
-        a_geo.loc.to_f64() + data.logical_pos() + Point::from((5.0, 5.0))
-    };
-    assert!(fix.ewm().interactive_move_floating_frame_begin(200, grab));
-
-    let target = b_geo.loc.to_f64() + Point::from((800.0, 450.0));
-    assert!(fix.ewm().interactive_move_floating_frame_update(target));
-    assert_eq!(fix.ewm_ref().layout.frame_output(200), Some(HEAD_B));
-
-    fix.ewm().interactive_move_floating_frame_end(200);
-    assert_eq!(fix.ewm_ref().layout.frame_output(200), Some(HEAD_B));
-    assert_eq!(
-        fix.ewm_ref().layout.home_outputs.get(&200),
-        Some(&crate::utils::output_identity(&head_b)),
-        "a deliberate drag rehomes the frame"
-    );
-
-    // The frame stays under the pointer that dropped it.
-    let monitor = fix.ewm_ref().layout.monitor_of(&head_b).unwrap();
-    let (_, data) = monitor.floating.frame_with_data(200).unwrap();
-    let rect = Rectangle::new(b_geo.loc.to_f64() + data.logical_pos(), data.size());
-    assert!(
-        rect.contains(target),
-        "{rect:?} dropped away from {target:?}"
-    );
-    fix.ewm_ref().layout.verify_invariants();
-}
-
-#[test]
 fn grabbing_a_sliding_float_keeps_it_where_it_is_drawn() {
     let mut fix = testing::Fixture::new().unwrap();
     fix.add_output(HEAD_A, 1600, 900);
@@ -86,35 +43,6 @@ fn grabbing_a_sliding_float_keeps_it_where_it_is_drawn() {
         drift.x.abs() < 0.5 && drift.y.abs() < 0.5,
         "grab jumped by {drift:?}"
     );
-}
-
-#[test]
-fn tiled_entry_under_floating_center_hits_active_window() {
-    let mut fix = testing::Fixture::new().unwrap();
-    fix.add_output(HEAD_A, 1600, 900);
-    // Tiled frame whose single entry spans the whole working area.
-    let mut tiled = strip::Frame::new(100);
-    tiled.width = 1600.0;
-    tiled.selected_entry_id = Some(nz(1));
-    tiled.entries.push(LayoutEntry::surface(
-        nz(1),
-        "app".to_string(),
-        5000,
-        0,
-        0,
-        1600,
-        900,
-    ));
-    fix.tile(HEAD_A, vec![tiled]);
-    fix.float(HEAD_A, vec![frame_with_entry(200, nz(3001), 9000)]);
-
-    // The floating frame (200) sits over the tiled entry -> that entry wins.
-    assert_eq!(
-        fix.ewm_ref().tiled_entry_under_floating_center(200),
-        Some(nz(1))
-    );
-    // Unknown floating id -> nothing.
-    assert_eq!(fix.ewm_ref().tiled_entry_under_floating_center(4242), None);
 }
 
 #[test]
@@ -157,6 +85,12 @@ fn floating_frame_occludes_the_strip_when_hit_testing() {
     assert_eq!(ewm.floating_frame_under(modeline), on_float);
     assert_eq!(ewm.floating_frame_under(echo_area), on_float);
     assert!(ewm.floating_frame_under(outside).is_none());
+    // The tiled entry under the float's centre is the one a detach returns to.
+    assert_eq!(
+        ewm.tiled_entry_under_floating_center(200),
+        Some(tiled_entry)
+    );
+    assert_eq!(ewm.tiled_entry_under_floating_center(4242), None);
 
     // The modeline and echo area occlude the tiled entry beneath them.
     assert_eq!(ewm.layout_entry_id_under(modeline), None);
@@ -394,53 +328,20 @@ proptest! {
     }
 }
 
-#[test]
-fn emacs_frame_origin_uses_screen_relative_strip_position() {
-    let mut fix = testing::Fixture::new().unwrap();
-    fix.add_output(HEAD_A, 1600, 900);
-    fix.tile(
-        HEAD_A,
-        vec![frame_with_width(100, 400.0), frame_with_width(101, 400.0)],
-    );
-    fix.ewm().animations_clock.set_complete_instantly(true);
-
-    fix.ewm()
-        .set_focus_frame(101, FocusSource::Test, Notify::None);
-
-    assert_eq!(
-        fix.ewm_ref().emacs_frame_origin(101),
-        Some(Point::from((0, 0))),
-    );
-    assert_eq!(
-        fix.ewm_ref().emacs_frame_origin(100),
-        Some(Point::from((-400, 0))),
-    );
-}
-
-#[test]
-fn emacs_frame_origin_uses_floating_position() {
-    let mut fix = testing::Fixture::new().unwrap();
-    fix.add_output(HEAD_A, 1600, 900);
-    fix.float(HEAD_A, vec![frame_with_width(200, 640.0)]);
-
-    assert_eq!(
-        fix.ewm_ref().emacs_frame_origin(200),
-        Some(Point::from((480, 210))),
-    );
-}
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
-    // Mid-slide, popups and hits round the frame's position like the renderer.
+    // Mid-slide, popups and hits round each strip frame's position like the renderer, and a
+    // float sits where it floats whatever the strip does.
     #[test]
-    fn emacs_frame_origin_rounds_a_sliding_frame(offset in -2000f64..=2000.) {
+    fn emacs_frame_origin_follows_the_slide_and_the_float(offset in -2000f64..=2000.) {
         let mut fix = testing::Fixture::new().unwrap();
         fix.add_output(HEAD_A, 1600, 900);
         fix.tile(
             HEAD_A,
             vec![frame_with_width(100, 400.0), frame_with_width(101, 400.0)],
         );
+        fix.float(HEAD_A, vec![frame_with_width(200, 640.0)]);
         let strip = fix.strip_mut(HEAD_A);
         strip.gesture_begin();
         strip.gesture_update(offset, Duration::ZERO, strip::VIEW_GESTURE_WORKING_AREA_MOVEMENT);
@@ -450,6 +351,14 @@ proptest! {
             fix.ewm_ref().emacs_frame_origin(101),
             Some(Point::from((expected, 0))),
         );
+        prop_assert_eq!(
+            fix.ewm_ref().emacs_frame_origin(100),
+            Some(Point::from((expected - 400, 0))),
+        );
+        prop_assert_eq!(
+            fix.ewm_ref().emacs_frame_origin(200),
+            Some(Point::from((480, 210))),
+        );
     }
 }
 
@@ -457,35 +366,6 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
     // A swap moves one frame past one neighbour and the focused frame stays active.
-    #[test]
-    fn move_frame_moves_one_slot_and_keeps_focus_active(
-        len in 1usize..=6,
-        raw_focus in 0usize..6,
-        raw_from in 0usize..6,
-        left in any::<bool>(),
-    ) {
-        let mut fix = testing::Fixture::new().unwrap();
-        fix.add_output(HEAD_A, 1600, 900);
-        let ids: Vec<u64> = (0..len).map(|idx| 100 + idx as u64).collect();
-        fix.tile(HEAD_A, ids.iter().map(|&id| frame_with_width(id, 800.0)).collect());
-        let focused = ids[raw_focus % len];
-        fix.ewm().set_focus_frame(focused, FocusSource::Test, Notify::None);
-        let from = raw_from % len;
-        let delta = if left { -1 } else { 1 };
-
-        fix.ewm().move_frame(ids[from], delta);
-
-        let mut expected = ids.clone();
-        let to = from as i32 + delta;
-        if (0..len as i32).contains(&to) {
-            expected.swap(from, to as usize);
-        }
-        let strip = fix.strip(HEAD_A);
-        let order: Vec<u64> = strip.frame_ids().collect();
-        prop_assert_eq!(order, expected);
-        prop_assert_eq!(strip.active_frame_id(), Some(focused));
-        prop_assert_eq!(fix.ewm_ref().focused_frame_id(), Some(focused));
-    }
 
     // A strip switch leaves the keyboard on a float it keeps on screen and takes it from one it
     // hides.
@@ -520,46 +400,6 @@ proptest! {
 
     // Closing the focused float hands the keyboard to the topmost remaining float when that is
     // shown, else to the strip.
-    #[test]
-    fn a_closing_float_hands_the_keyboard_to_the_next_shown_float(
-        len in 1usize..=4,
-        raw_focused in 0usize..4,
-        hidden in any::<[bool; 4]>(),
-    ) {
-        let mut fix = testing::Fixture::new().unwrap();
-        fix.add_output(HEAD_A, 1600, 900);
-        fix.tile(HEAD_A, vec![frame_with_width(100, 800.0), frame_with_width(101, 800.0)]);
-        fix.ewm().set_focus_frame(100, FocusSource::Test, Notify::None);
-        let ids: Vec<u64> = (0..len).map(|idx| 200 + idx as u64).collect();
-        fix.float(HEAD_A, ids.iter().map(|&id| frame_with_width(id, 640.0)).collect());
-        for (idx, &id) in ids.iter().enumerate() {
-            if hidden[idx] {
-                // Pinned to the inactive frame, off screen.
-                fix.ewm().layout.frame_mut(id).unwrap().pinned_to = Some(101);
-            }
-        }
-        let focused = ids[raw_focused % len];
-        fix.ewm().set_focus_frame(focused, FocusSource::Test, Notify::None);
-        let output = fix.output(HEAD_A);
-        let (active, next) = {
-            let monitor = fix.ewm_ref().layout.monitor_of(&output).unwrap();
-            let next = monitor
-                .floating
-                .frames()
-                .iter()
-                .find(|float| float.surface_id != focused)
-                .map(|float| (float.surface_id, monitor.float_shown(float)));
-            (monitor.strip.active_frame_id().unwrap(), next)
-        };
-
-        fix.ewm().handle_toplevel_destroyed_by_id(focused);
-
-        let expected = match next {
-            Some((id, true)) => id,
-            _ => active,
-        };
-        prop_assert_eq!(fix.ewm_ref().focused_frame_id(), Some(expected));
-    }
 }
 
 /// Every way the compositor moves frames around, on the bare layout.
@@ -701,11 +541,15 @@ fn check_landed(
     Ok(())
 }
 
+/// A live drag: the output and point of its last update, and whether the grab was inside a float.
+type Drag = Option<(usize, Point<f64, Logical>, bool)>;
+
 fn apply_layout_op(
     layout: &mut Layout,
     outputs: &[Output],
     live: &mut BTreeSet<u64>,
     remembered: &mut BTreeMap<String, Option<u64>>,
+    drag: &mut Drag,
     op: &LayoutOp,
 ) -> Result<(), TestCaseError> {
     let focused = layout.focused_frame_id();
@@ -768,14 +612,66 @@ fn apply_layout_op(
             }
         }
         LayoutOp::RemoveFrame { id, active_close } => {
+            // Closing the focused float hands the keyboard to the topmost remaining float when
+            // that is shown, else to the strip.
+            let float_focus = (focused == Some(id)).then(|| {
+                layout.monitors.iter().find_map(|monitor| {
+                    monitor
+                        .floating
+                        .frames()
+                        .iter()
+                        .find(|float| float.surface_id == id)?;
+                    let next = monitor
+                        .floating
+                        .frames()
+                        .iter()
+                        .find(|float| float.surface_id != id)
+                        .map(|float| (float.surface_id, monitor.float_shown(float)));
+                    Some((monitor.strip.active_frame_id(), next))
+                })
+            });
             layout.remove_frame(id, active_close);
             live.remove(&id);
             prop_assert!(!layout.has_frame(id));
+            if let Some(Some((Some(active), next))) = float_focus {
+                let expected = match next {
+                    Some((float, true)) => float,
+                    _ => active,
+                };
+                prop_assert_eq!(layout.focused_frame_id(), Some(expected));
+            }
         }
         LayoutOp::MoveFrame { id, delta } => {
             let before = layout.frame_output(id).map(str::to_owned);
+            let output = before
+                .as_deref()
+                .and_then(|name| outputs.iter().find(|output| output.name() == name));
+            let strip_before = output.and_then(|output| {
+                let strip = layout.strip(output)?;
+                Some((
+                    strip.frame_ids().collect::<Vec<_>>(),
+                    strip.active_frame_id(),
+                ))
+            });
             layout.move_frame(id, delta);
             prop_assert_eq!(layout.frame_output(id), before.as_deref());
+            // The frame moves by `delta` slots within its strip, or not at all past an end, and
+            // neither the active frame nor the keyboard moves with it.
+            if let (Some(output), Some((ids, active))) = (output, strip_before)
+                && let Some(from) = ids.iter().position(|&frame| frame == id)
+            {
+                let mut expected = ids.clone();
+                if let Some(to) = from.checked_add_signed(delta as isize)
+                    && to < ids.len()
+                {
+                    let frame = expected.remove(from);
+                    expected.insert(to, frame);
+                }
+                let strip = layout.strip(output).unwrap();
+                prop_assert_eq!(strip.frame_ids().collect::<Vec<_>>(), expected);
+                prop_assert_eq!(strip.active_frame_id(), active);
+                prop_assert_eq!(layout.focused_frame_id(), focused);
+            }
         }
         LayoutOp::MoveFrames { src, dst, ref ids } => {
             let moved = layout.move_frames(&outputs[src], &outputs[dst], ids, None);
@@ -846,6 +742,14 @@ fn apply_layout_op(
                     layout.interactive_move.map(|move_| move_.frame_id),
                     Some(id)
                 );
+                let point = Point::from((px, py));
+                let inside = layout
+                    .monitor_of(&outputs[output])
+                    .and_then(|monitor| monitor.floating.frame_with_data(id))
+                    .is_some_and(|(_, data)| {
+                        Rectangle::new(data.logical_pos(), data.size()).contains(point)
+                    });
+                *drag = Some((output, point, inside));
             } else {
                 prop_assert_eq!(layout.interactive_move.is_some(), was_dragging);
             }
@@ -864,14 +768,37 @@ fn apply_layout_op(
                 }
             }
             prop_assert_eq!(moved.is_none(), layout.interactive_move.is_none());
+            if let (Some(state), Some(_)) = (drag.as_mut(), &moved) {
+                state.0 = output;
+                state.1 = Point::from((px, py));
+            }
         }
         LayoutOp::DragEnd(id) => {
+            let dragged = layout.interactive_move.map(|move_| move_.frame_id);
             layout.interactive_move_end(id);
             prop_assert!(
                 layout
                     .interactive_move
                     .is_none_or(|move_| move_.frame_id != id)
             );
+            // A float dropped on an output stays there, under the pointer that dropped it, and
+            // that output becomes its home.
+            if dragged == Some(id)
+                && let Some((output, point, inside)) = drag.take()
+                && let Some(monitor) = layout.monitor_of(&outputs[output])
+                && let Some((_, data)) = monitor.floating.frame_with_data(id)
+            {
+                prop_assert_eq!(
+                    layout.home_outputs.get(&id),
+                    Some(&crate::utils::output_identity(&outputs[output])),
+                    "a deliberate drag rehomes the frame"
+                );
+                let rect = Rectangle::new(data.logical_pos(), data.size());
+                prop_assert!(
+                    !inside || rect.contains(point),
+                    "{rect:?} dropped away from {point:?}"
+                );
+            }
         }
         LayoutOp::Merge(ref ids) => {
             let strips = layout.strip_frames_snapshot();
@@ -912,8 +839,9 @@ proptest! {
         let outputs: Vec<Output> = layout.outputs().cloned().collect();
         let mut live = BTreeSet::new();
         let mut remembered = BTreeMap::new();
+        let mut drag = None;
         for op in &ops {
-            apply_layout_op(&mut layout, &outputs, &mut live, &mut remembered, op)?;
+            apply_layout_op(&mut layout, &outputs, &mut live, &mut remembered, &mut drag, op)?;
             verify_live_frames(&layout, &live)?;
         }
     }

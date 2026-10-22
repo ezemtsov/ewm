@@ -9,6 +9,7 @@
 //! Op semantics intentionally mirror the user-facing lisp commands:
 //! - `InsertAfterActive` ↔ `ewm-frame-new` (I8)
 //! - `CloseAt` ↔ `ewm-frame-close` + `strip.remove_frame_at` (I9 / I10)
+//! - `CloseActiveAt` ↔ the close Emacs reports for its active frame (I9 by slot)
 //! - `MoveSelected(±1)` ↔ `ewm-frame-move-right` / `ewm-frame-move-left` (I11)
 //! - `Focus` ↔ `ewm-activate-frame`
 
@@ -28,6 +29,9 @@ enum Op {
     InsertAfterActive(u64),
     /// Close the frame at `slot`. No-op if `slot >= strip.len()`.
     CloseAt(usize),
+    /// Close the frame at `slot` that Emacs reports as its active one, whatever the strip
+    /// thinks is active. No-op if `slot >= strip.len()`.
+    CloseActiveAt(usize),
     /// Move the currently active frame by `delta` slots (±1). No-op if
     /// the target slot is out of range or the strip is empty.
     MoveSelected(i32),
@@ -39,6 +43,7 @@ fn op_strategy() -> impl Strategy<Value = Op> {
     prop_oneof![
         4 => SID_RANGE.prop_map(Op::InsertAfterActive),
         2 => (0..8usize).prop_map(Op::CloseAt),
+        1 => (0..8usize).prop_map(Op::CloseActiveAt),
         1 => prop_oneof![Just(-1), Just(1)].prop_map(Op::MoveSelected),
         2 => (0..8usize).prop_map(Op::Focus),
     ]
@@ -100,6 +105,27 @@ fn apply_op(strip: &mut Strip, op: &Op) {
                 slot,
                 was_active,
                 prev_active_idx,
+            );
+        }
+
+        Op::CloseActiveAt(slot) => {
+            if *slot >= strip.frames().len() {
+                return;
+            }
+            let ids: Vec<u64> = strip.frame_ids().collect();
+            let expected_active = ids
+                .get(*slot + 1)
+                .or_else(|| slot.checked_sub(1).and_then(|left| ids.get(left)))
+                .copied();
+
+            strip.close_active_frame_at(*slot);
+
+            let remaining: Vec<u64> = ids.iter().copied().filter(|&id| id != ids[*slot]).collect();
+            assert_eq!(strip.frame_ids().collect::<Vec<_>>(), remaining);
+            assert_eq!(
+                strip.active_frame_id(),
+                expected_active,
+                "I9: the destroyed slot hands the active to its right neighbour, else the left",
             );
         }
 
@@ -178,44 +204,4 @@ proptest! {
         }
     }
 
-    #[test]
-    fn active_close_uses_destroyed_slot_not_current_active_idx(
-        len in 1usize..=8,
-        raw_destroy_idx in 0usize..8,
-        raw_active_idx in 0usize..8,
-    ) {
-        let destroy_idx = raw_destroy_idx % len;
-        let active_idx = raw_active_idx % len;
-        let ids = (0..len).map(|i| 10 + i as u64).collect::<Vec<_>>();
-        let mut strip = Strip::new(Clock::default());
-        strip.append_frames(ids.iter().copied().map(Frame::new));
-        strip.set_active(active_idx);
-
-        let expected_ids = ids
-            .iter()
-            .copied()
-            .filter(|&id| id != ids[destroy_idx])
-            .collect::<Vec<_>>();
-        let expected_active = if len == 1 {
-            None
-        } else if destroy_idx + 1 < len {
-            Some(ids[destroy_idx + 1])
-        } else {
-            Some(ids[destroy_idx - 1])
-        };
-
-        strip.close_active_frame_at(destroy_idx);
-
-        prop_assert_eq!(
-            strip.frame_ids().collect::<Vec<_>>(),
-            expected_ids,
-        );
-        prop_assert_eq!(strip.active_frame_id(), expected_active);
-        if destroy_idx < strip.frames().len() {
-            prop_assert!(
-                strip.frames()[destroy_idx].move_anim.is_some(),
-                "right neighbor should slide into destroyed active slot",
-            );
-        }
-    }
 }

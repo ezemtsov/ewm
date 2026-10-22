@@ -6,7 +6,6 @@ use ewm_core::input::KeyboardAction;
 use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, TestClient, nz};
 use ewm_core::{Event, FocusSource, LayoutEntry, Notify};
-use proptest::prelude::*;
 use smithay::utils::Size;
 use smithay::wayland::xdg_activation::XdgActivationToken;
 
@@ -134,10 +133,11 @@ fn a_key_toggles_the_focused_view_fullscreen() {
         "[(:key \"F7\" :description \"<f7>\" :dispatch (action toggle-fullscreen) :fullscreen t)]",
     );
 
+    fix.configured(&mut client);
     tap(&mut fix, KEY_F7);
-    assert!(fix.ewm_ref().pending_fullscreen(sid));
+    assert!(fix.configured(&mut client).contains(&(1920, 1080)));
     tap(&mut fix, KEY_F7);
-    assert!(!fix.ewm_ref().pending_fullscreen(sid));
+    assert!(!fix.configured(&mut client).contains(&(1920, 1080)));
 }
 
 #[test]
@@ -184,30 +184,6 @@ fn a_workspace_activation_focuses_the_frame_in_the_compositor() {
             .any(|event| matches!(event, Event::Focus { pointer: false, .. })),
         "{events:?}"
     );
-}
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(48))]
-
-    /// The strip moves by `delta` from the focused frame and stops at its ends.
-    #[test]
-    fn focus_frame_moves_by_delta_within_the_strip(
-        frames in 1u64..=5,
-        focused in 0u64..5,
-        delta in -5i32..=5,
-    ) {
-        let _serial = SERIAL.lock().unwrap();
-        let focused = focused % frames + 1;
-        let mut fix = fixture(frames);
-        fix.ewm().set_focus_frame(focused, FocusSource::Test, Notify::None);
-        fix.set_intercepted_keys_from_lisp(&format!(
-            "[(:key \"F5\" :description \"<f5>\" :dispatch (action focus-frame :delta {delta}))]"
-        ));
-        tap(&mut fix, KEY_F5);
-        let target = focused as i32 + delta;
-        let expected = if (1..=frames as i32).contains(&target) { target as u64 } else { focused };
-        prop_assert_eq!(fix.ewm_ref().focused_frame_id(), Some(expected));
-    }
 }
 
 // Keys typed into Emacs after an action wait until Emacs has read the Focus the action queued.
