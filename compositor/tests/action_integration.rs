@@ -37,9 +37,9 @@ fn tile(surface_id: u64, entries: Vec<LayoutEntry>) -> Frame {
 fn strip(fix: &mut Fixture, ids: &[u64]) {
     fix.tile_command(OUTPUT, ids.iter().map(|&id| tile(id, Vec::new())).collect());
     fix.set_intercepted_keys_from_lisp(
-        "[(:key \"F5\" :description \"<f5>\" :action (focus-frame :delta 1) :repeat t)
-          (:key \"F6\" :description \"<f6>\" :action (focus-nth-frame :n 1))
-          (:key \"F8\" :description \"<f8>\" :action (overview toggle))]",
+        "[(:key \"F5\" :description \"<f5>\" :dispatch (action focus-frame :delta 1) :repeat t)
+          (:key \"F6\" :description \"<f6>\" :dispatch (action focus-nth-frame :n 1))
+          (:key \"F8\" :description \"<f8>\" :dispatch (action overview toggle))]",
     );
 }
 
@@ -98,7 +98,7 @@ fn a_key_moves_the_focused_frame_round_the_outputs() {
     fix.ewm()
         .set_focus_frame(1, FocusSource::Test, Notify::None);
     fix.set_intercepted_keys_from_lisp(
-        "[(:key \"F5\" :description \"<f5>\" :action move-frame-to-next-output)]",
+        "[(:key \"F5\" :description \"<f5>\" :dispatch (action move-frame-to-next-output))]",
     );
     fix.enable_event_capture();
 
@@ -136,7 +136,7 @@ fn a_key_toggles_the_focused_view_fullscreen() {
     fix.ewm()
         .set_focus_entry(nz(7), FocusSource::Test, Notify::None);
     fix.set_intercepted_keys_from_lisp(
-        "[(:key \"F7\" :description \"<f7>\" :action toggle-fullscreen :fullscreen t)]",
+        "[(:key \"F7\" :description \"<f7>\" :dispatch (action toggle-fullscreen) :fullscreen t)]",
     );
 
     tap(&mut fix, KEY_F7);
@@ -153,7 +153,7 @@ fn a_key_spawns_a_command_with_an_activation_token() {
     let _ = std::fs::remove_file(&marker);
     let path = marker.to_str().unwrap();
     fix.set_intercepted_keys_from_lisp(&format!(
-        "[(:key \"F9\" :description \"<f9>\" :action (spawn :command \
+        "[(:key \"F9\" :description \"<f9>\" :dispatch (action spawn :command \
          (\"sh\" \"-c\" \"printf %s $XDG_ACTIVATION_TOKEN > {path}.tmp && mv {path}.tmp {path}\")))]"
     ));
 
@@ -206,7 +206,7 @@ proptest! {
         let mut fix = fixture(frames);
         fix.ewm().set_focus_frame(focused, FocusSource::Test, Notify::None);
         fix.set_intercepted_keys_from_lisp(&format!(
-            "[(:key \"F5\" :description \"<f5>\" :action (focus-frame :delta {delta}))]"
+            "[(:key \"F5\" :description \"<f5>\" :dispatch (action focus-frame :delta {delta}))]"
         ));
         tap(&mut fix, KEY_F5);
         let target = focused as i32 + delta;

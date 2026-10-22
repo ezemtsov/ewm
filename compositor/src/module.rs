@@ -1539,18 +1539,10 @@ pub(crate) struct KeySpec {
     logo: bool,
     #[serde(default)]
     fullscreen: bool,
-    dispatch: Option<Dispatch>,
+    dispatch: InterceptDispatch,
     #[serde(default)]
     repeat: bool,
     surface: Option<u64>,
-    action: Option<crate::Action>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum Dispatch {
-    Keyboard,
-    Command,
 }
 
 /// A key with the modifiers a client should see it under, as Lisp names it.
@@ -1576,11 +1568,6 @@ impl KeySpec {
             tracing::warn!("Could not resolve key {key}, skipping");
             return None;
         };
-        let dispatch = match (self.action, self.dispatch) {
-            (Some(action), _) => InterceptDispatch::Action(action),
-            (None, Some(Dispatch::Command)) => InterceptDispatch::Command,
-            (None, _) => InterceptDispatch::Keyboard,
-        };
         Some(InterceptedKey {
             trigger,
             key: self.description.unwrap_or_else(|| self.key.description()),
@@ -1589,7 +1576,7 @@ impl KeySpec {
             shift: self.shift,
             logo: self.logo,
             allow_fullscreen: self.fullscreen,
-            dispatch,
+            dispatch: self.dispatch,
             repeat: self.repeat,
             surface: self.surface,
         })

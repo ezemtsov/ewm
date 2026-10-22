@@ -404,7 +404,7 @@ fn strip_swipe_drives_the_output_under_the_pointer() {
     );
 
     fixture.set_intercepted_keys_from_lisp(
-        r#"[(:key "swipe-3-right" :description "<swipe-3-right>" :action (focus-frame :delta -1))]"#,
+        r#"[(:key "swipe-3-right" :description "<swipe-3-right>" :dispatch (action focus-frame :delta -1))]"#,
     );
     fixture.swipe_begin(3);
     fixture.swipe_update(700.0, 0.0);

@@ -79,7 +79,7 @@
     (should-not (plist-get spec :super))
     (should-not (plist-get spec :fullscreen))
     (should (equal (plist-get spec :description) "a"))
-    (should (equal (plist-get spec :dispatch) "command"))
+    (should (equal (plist-get spec :dispatch) 'command))
     (should-not (plist-get spec :repeat))))
 
 ;;;; ewm-key
@@ -107,7 +107,7 @@
           (should (equal (ewm--event-entry 'f9) '(find-file :repeat)))
           (should (equal (ewm--event-entry ?\C-x) '(nil :intercept :fullscreen)))
           (let ((spec (ewm--event-to-intercept-spec ?\C-x)))
-            (should (equal (plist-get spec :dispatch) "keyboard"))
+            (should (equal (plist-get spec :dispatch) 'keyboard))
             (should (eq (plist-get spec :fullscreen) t)))
           (should (eq (plist-get (ewm--event-to-intercept-spec 'f9) :repeat) t)))
       (ewm-input-tests--mode -1))))
@@ -123,11 +123,11 @@
   (define-key ewm-mode-map (kbd "s-C-7") #'ewm-input-tests--nth)
   (unwind-protect
       (progn
-        (should (equal (plist-get (ewm--event-to-intercept-spec 's-f9) :action)
-                       '(focus-frame :delta 1)))
-        (should (equal (plist-get (ewm--event-to-intercept-spec ?\C-\s-7) :action)
-                       '(focus-nth-frame :n 7)))
-        (should-not (plist-get (ewm--event-to-intercept-spec ?a) :action)))
+        (should (equal (plist-get (ewm--event-to-intercept-spec 's-f9) :dispatch)
+                       '(action focus-frame :delta 1)))
+        (should (equal (plist-get (ewm--event-to-intercept-spec ?\C-\s-7) :dispatch)
+                       '(action focus-nth-frame :n 7)))
+        (should (eq (plist-get (ewm--event-to-intercept-spec ?a) :dispatch) 'command)))
     (define-key ewm-mode-map (kbd "s-<f9>") nil)
     (define-key ewm-mode-map (kbd "s-C-7") nil)))
 
@@ -143,7 +143,7 @@
                                        ("<swipe-3-right>" . (focus-frame :delta -1))))
       (let ((spec (seq-find (lambda (spec) (equal (plist-get spec :description) key))
                             captured)))
-        (should (equal (plist-get spec :action) action))))))
+        (should (equal (plist-get spec :dispatch) (cons 'action action)))))))
 
 (ert-deftest ewm-input-tests/frame-select-ignores-non-digit-keys ()
   "`ewm-frame-select' bound to a swipe yields no action instead of an error."
@@ -160,8 +160,7 @@
         (let ((spec (ewm--event-to-intercept-spec event)))
           (should (equal (plist-get spec :key) key))
           (should (eq (plist-get spec :super) t))
-          (should (equal (plist-get spec :dispatch) "command"))
-          (should (equal (plist-get spec :action) action))
+          (should (equal (plist-get spec :dispatch) (if action (cons 'action action) 'command)))
           (should (assq event (ewm--mode-map-entries)))))
     (define-key ewm-mode-map (kbd "s-<swipe-4-left>") nil t)
     (define-key ewm-mode-map (kbd "s-<wheel-down>") nil t)))
@@ -183,17 +182,17 @@
 (ert-deftest ewm-input-tests/spec-keymap-prefix-dispatch ()
   "Keymap prefixes request keyboard dispatch."
   (let ((spec (ewm--event-to-intercept-spec ?\C-x)))
-    (should (equal (plist-get spec :dispatch) "keyboard"))))
+    (should (equal (plist-get spec :dispatch) 'keyboard))))
 
 (ert-deftest ewm-input-tests/intercepted-emacs-keys-use-keyboard-dispatch ()
   "Intercepted Emacs keys like M-x enter the Emacs keyboard path."
-  (should (equal (ewm--event-dispatch ?\M-x nil t) "keyboard"))
-  (should (equal (ewm--event-dispatch ?\C-u nil t) "keyboard")))
+  (should (eq (ewm--event-dispatch ?\M-x nil t) 'keyboard))
+  (should (eq (ewm--event-dispatch ?\C-u nil t) 'keyboard)))
 
 (ert-deftest ewm-input-tests/mode-map-command-uses-command-dispatch ()
   "`ewm-mode-map' commands stay on command dispatch, even if fullscreen-lifted."
   (let ((event (aref (key-parse "<AudioLowerVolume>") 0)))
-    (should (equal (ewm--event-dispatch event #'ewm-volume-lower t) "command"))))
+    (should (eq (ewm--event-dispatch event #'ewm-volume-lower t) 'command))))
 
 (ert-deftest ewm-input-tests/repeatable-mode-command-sets-repeat ()
   "Only explicitly repeatable commands request compositor command repeat."
@@ -224,7 +223,7 @@
                    [custom-audio-up]))))
 
 (ert-deftest ewm-input-tests/send-intercept-keys-has-runtime-dispatch-contract ()
-  "The actual module payload keeps M-x keyboard-routed and media command-routed."
+  "The actual module payload keeps M-x keyboard-routed and media keys on their action."
   (let ((ewm--module-mode t)
         (ewm-mode-map (make-sparse-keymap))
         captured)
@@ -246,15 +245,15 @@
            (audio (funcall by-desc "<AudioLowerVolume>"))
            (print (car (funcall by-desc "<Print>"))))
       (should mx)
-      (should (equal (plist-get mx :dispatch) "keyboard"))
+      (should (equal (plist-get mx :dispatch) 'keyboard))
       (should cu)
-      (should (equal (plist-get cu :dispatch) "keyboard"))
+      (should (equal (plist-get cu :dispatch) 'keyboard))
       (should print)
       (should (eq (plist-get print :fullscreen) t))
       (should audio)
       (should (= (length audio) 1))
       (dolist (spec audio)
-        (should (equal (plist-get spec :dispatch) "command"))
+        (should (eq (car (plist-get spec :dispatch)) 'action))
         (should (eq (plist-get spec :fullscreen) t))
         (should (eq (plist-get spec :repeat) t))))))
 

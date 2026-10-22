@@ -12,7 +12,7 @@ fn fixture() -> (Fixture, TestClient) {
     fix.roundtrip(&mut client);
     fix.add_output(HEAD, 1600, 900);
     fix.set_intercepted_keys_from_lisp(
-        r#"[(:key "swipe-3-left" :description "<swipe-3-left>" :action (focus-frame :delta 1))]"#,
+        r#"[(:key "swipe-3-left" :description "<swipe-3-left>" :dispatch (action focus-frame :delta 1))]"#,
     );
     let (_app, sid) = fix.open_toplevel_with_id(&mut client, "app", Size::from((400, 400)));
     fix.tile(HEAD, vec![frame_with_entry(100, nz(1), sid)]);
