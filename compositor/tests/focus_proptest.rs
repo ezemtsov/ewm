@@ -767,6 +767,7 @@ proptest! {
 
         for op in ops {
             apply_op(&mut fix, &mut frames, op);
+            assert_invariants(&fix);
             // The overview refreezes the inactive frames on the redraw that ends it.
             fix.dispatch();
 
@@ -883,6 +884,7 @@ proptest! {
                 }
                 SuspendOp::Op(op) => apply_op(&mut fix, &mut frames, op),
             }
+            assert_invariants(&fix);
             fix.dispatch();
             fix.roundtrip(&mut frames.client);
             fix.roundtrip(&mut apps);
