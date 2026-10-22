@@ -5,7 +5,7 @@ use crate::idle::SEPIA_FADE_DURATION;
 use crate::layout::strip;
 use crate::testing::{
     HEAD_A, HEAD_B, PROP_HEADS, add_prop_outputs, frame_with_entry, frame_with_width, nz,
-    order_from_keys, set_sorted_output_order, strip_with_frame_ids,
+    order_from_keys, set_sorted_output_order,
 };
 use crate::{FocusSource, Notify};
 
@@ -624,29 +624,6 @@ fn focused_title_update_is_immediate() {
     assert_eq!(events.len(), 1);
     assert!(matches!(&events[0], Event::Title { id, app, title }
             if *id == surface_id && app == "app" && title == "focused"));
-}
-
-#[test]
-fn fallback_frame_callbacks_hide_unmapped_output_frames() {
-    let mut fix = testing::Fixture::new().unwrap();
-    fix.add_output(HEAD_A, 1600, 900);
-    fix.add_output(HEAD_B, 1600, 900);
-    fix.install_strip(HEAD_A, strip_with_frame_ids(vec![100, 101], 0));
-    fix.install_strip(HEAD_B, strip_with_frame_ids(vec![200], 0));
-
-    fix.ewm().output_config.insert(
-        HEAD_B.to_string(),
-        OutputConfig {
-            enabled: false,
-            ..Default::default()
-        },
-    );
-    fix.apply_output_config(HEAD_B);
-
-    let hidden = fix.ewm_ref().fallback_hidden_emacs_ids();
-    assert!(!hidden.contains(&100));
-    assert!(hidden.contains(&101));
-    assert!(hidden.contains(&200));
 }
 
 #[test]

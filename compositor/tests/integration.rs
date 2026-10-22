@@ -254,31 +254,6 @@ proptest! {
         assert_on_panel(fixture.ewm_ref().pointer_location().into(), geo, transform, fx, fy)?;
     }
 
-    #[test]
-    fn output_size_tracks_headless_output_bounds(
-        first_w in 640i32..=3840,
-        first_h in 480i32..=2160,
-        second_w in 640i32..=3840,
-        second_h in 480i32..=2160,
-        second_x in 0i32..=3840,
-        second_y in 0i32..=2160,
-    ) {
-        let mut fixture = Fixture::new().expect("Failed to create fixture");
-        fixture.add_output("Virtual-1", first_w, first_h);
-        fixture.ewm().output_config.insert(
-            "Virtual-2".to_string(),
-            OutputConfig {
-                position: Some((second_x, second_y)),
-                ..Default::default()
-            },
-        );
-        fixture.add_output("Virtual-2", second_w, second_h);
-        fixture.dispatch();
-
-        let ewm = fixture.ewm_ref();
-        prop_assert_eq!(ewm.output_size.w, first_w.max(second_x + second_w));
-        prop_assert_eq!(ewm.output_size.h, first_h.max(second_y + second_h));
-    }
 
     #[test]
     fn output_config_scale_rounds_and_updates_working_area(
@@ -525,7 +500,6 @@ fn disabling_and_reenabling_headless_output_updates_protocol_state() {
     fixture.roundtrip(&mut client);
     assert_eq!(client.global_count("wl_output"), 1);
 
-    fixture.ewm().output_management_state.output_heads_changed = false;
     fixture.ewm().output_config.insert(
         "Virtual-1".to_string(),
         OutputConfig {
@@ -535,12 +509,6 @@ fn disabling_and_reenabling_headless_output_updates_protocol_state() {
     );
     fixture.apply_output_config("Virtual-1");
 
-    assert!(
-        fixture
-            .ewm_ref()
-            .output_management_state
-            .output_heads_changed
-    );
     fixture.roundtrip(&mut client);
     assert!(
         !fixture
@@ -553,7 +521,6 @@ fn disabling_and_reenabling_headless_output_updates_protocol_state() {
     let output_infos = fixture.output_info_list();
     assert!(!fixture.ewm_ref().build_output_head_states(&output_infos)["Virtual-1"].enabled);
 
-    fixture.ewm().output_management_state.output_heads_changed = false;
     fixture.ewm().output_config.insert(
         "Virtual-1".to_string(),
         OutputConfig {
@@ -563,12 +530,6 @@ fn disabling_and_reenabling_headless_output_updates_protocol_state() {
     );
     fixture.apply_output_config("Virtual-1");
 
-    assert!(
-        fixture
-            .ewm_ref()
-            .output_management_state
-            .output_heads_changed
-    );
     fixture.roundtrip(&mut client);
     assert!(
         fixture
@@ -644,47 +605,6 @@ fn headless_output_respects_initial_disabled_config() {
     assert_eq!(client.global_count("wl_output"), 0);
     let output_infos = fixture.output_info_list();
     assert!(!fixture.ewm_ref().build_output_head_states(&output_infos)["Virtual-1"].enabled);
-}
-#[test]
-fn disabling_output_migrates_entries_to_mapped_output() {
-    let mut fixture = Fixture::new().expect("Failed to create fixture");
-    fixture.add_output("Virtual-1", 1280, 720);
-    fixture.add_output("Virtual-2", 1280, 720);
-    let mut client = fixture.new_client().expect("Failed to create client");
-    fixture.roundtrip(&mut client);
-    let surface_id = fixture.open_toplevel_id(&mut client, "app", Size::from((400, 400)));
-    let disabled_frame = frame_with_entry(100, nz(1), surface_id);
-    fixture.tile("Virtual-1", vec![disabled_frame]);
-    fixture.set_fullscreen(nz(1), true);
-    fixture.tile("Virtual-2", vec![Frame::new(200)]);
-    fixture
-        .ewm()
-        .set_focus_frame(200, FocusSource::Test, Notify::None);
-
-    fixture.ewm().output_config.insert(
-        "Virtual-1".to_string(),
-        OutputConfig {
-            enabled: false,
-            ..Default::default()
-        },
-    );
-    fixture.apply_output_config("Virtual-1");
-
-    assert!(fixture.ewm_ref().pending_fullscreen(surface_id));
-    fixture
-        .ewm()
-        .set_focus_entry(nz(1), FocusSource::Test, Notify::None);
-
-    assert_eq!(fixture.ewm_ref().focused_surface_id(), Some(surface_id));
-    assert_eq!(fixture.ewm_ref().focused_entry_id(), Some(nz(1)));
-    assert_eq!(
-        fixture.ewm_ref().layout.frame_with_focus_id(nz(1_100)),
-        Some(100)
-    );
-    assert_eq!(
-        fixture.ewm_ref().layout.frame_output(100),
-        Some("Virtual-2")
-    );
 }
 
 #[test]

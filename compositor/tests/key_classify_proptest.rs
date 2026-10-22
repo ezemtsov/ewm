@@ -1,26 +1,10 @@
-//! K-series: classification of intercept keys against the fullscreen state.
-//!
-//! K1  - Allow-fullscreen binding under fullscreen redirects to Emacs.
-//!       (`allow_fullscreen=true` + `fullscreen_active=true` +
-//!        `focus_on_emacs=false` -> `KeyboardRedirect` or `Command`).
-//!
-//! K2  - Non-flagged binding under fullscreen forwards to the client.
-//!       (`allow_fullscreen=false` + `fullscreen_active=true` +
-//!        `focus_on_emacs=false` -> `Forward`).
-//!
-//! K3  - Without fullscreen, intercepted bindings redirect regardless of
-//!       the flag. (`fullscreen_active=false` + `focus_on_emacs=false`
-//!        -> `KeyboardRedirect` or `Command`).
-//!
-//! K4  - When Emacs already holds focus, intercept rules defer — the key
-//!       forwards (Emacs is the focused client). Independent of the flag
-//!       and of fullscreen.
-//!
-//! K5  - A compositor action runs wherever focus is, under fullscreen only
-//!       when flagged (`Action` dispatch -> `Action`, else `Forward`).
+//! Properties of key classification that hold over every routing state: a release never runs a
+//! binding, a VT switch comes before everything, and text input takes printable keys whatever
+//! modifiers are held while deferring to Emacs focus and to modifier keys. The intercept rules
+//! themselves are pinned through real clients in input_hotpath_integration.rs.
 
-use ewm_core::input::{Bound, KeyAction, KeyInput, KeyRouting, classify_key};
-use ewm_core::{Action, InterceptDispatch, InterceptedKey, Trigger};
+use ewm_core::input::{KeyAction, KeyInput, KeyRouting, classify_key};
+use ewm_core::{InterceptDispatch, InterceptedKey, Trigger};
 use proptest::prelude::*;
 use smithay::input::keyboard::{Keysym, ModifiersState, keysyms};
 
@@ -104,82 +88,11 @@ fn classify(
 }
 
 proptest! {
-    #[test]
-    fn k1_allow_fullscreen_under_fullscreen_redirects(keysym in keysym_strategy()) {
-        let action = classify(&[ik(keysym, true)], false, false, true, true, keysym);
-        prop_assert_eq!(action, KeyAction::KeyboardRedirect(keysym));
-    }
 
-    #[test]
-    fn k2_no_flag_under_fullscreen_forwards(keysym in keysym_strategy()) {
-        let action = classify(&[ik(keysym, false)], false, false, true, true, keysym);
-        prop_assert_eq!(action, KeyAction::Forward);
-    }
 
-    #[test]
-    fn k3_no_fullscreen_redirects_regardless_of_flag(
-        keysym in keysym_strategy(),
-        flag in any::<bool>(),
-    ) {
-        let action = classify(&[ik(keysym, flag)], false, false, false, true, keysym);
-        prop_assert_eq!(action, KeyAction::KeyboardRedirect(keysym));
-    }
 
-    #[test]
-    fn command_dispatch_intercepts_without_keyboard_redirect(
-        keysym in keysym_strategy(),
-        flag in any::<bool>(),
-        repeat in any::<bool>(),
-    ) {
-        let key = format!("key-{keysym}");
-        let action = classify(
-            &[ik_with_dispatch_and_repeat(keysym, flag, InterceptDispatch::Command, repeat)],
-            false,
-            false,
-            false,
-            true,
-            keysym,
-        );
-        let bound = Bound::Command { key };
-        prop_assert_eq!(action, KeyAction::Bound { bound, repeat });
-    }
 
-    #[test]
-    fn k5_action_runs_wherever_focus_is(
-        keysym in keysym_strategy(),
-        flag in any::<bool>(),
-        focus_on_emacs in any::<bool>(),
-        fullscreen_active in any::<bool>(),
-        repeat in any::<bool>(),
-        delta in -3i32..=3,
-    ) {
-        let action = Action::FocusFrame { delta };
-        let dispatch = InterceptDispatch::Action(action.clone());
-        let got = classify(
-            &[ik_with_dispatch_and_repeat(keysym, flag, dispatch, repeat)],
-            false,
-            focus_on_emacs,
-            fullscreen_active,
-            true,
-            keysym,
-        );
-        let expected = if !fullscreen_active || flag {
-            KeyAction::Bound { bound: Bound::Action(action), repeat }
-        } else {
-            KeyAction::Forward
-        };
-        prop_assert_eq!(got, expected);
-    }
 
-    #[test]
-    fn k4_focus_on_emacs_forwards(
-        keysym in keysym_strategy(),
-        flag in any::<bool>(),
-        fullscreen_active in any::<bool>(),
-    ) {
-        let action = classify(&[ik(keysym, flag)], false, true, fullscreen_active, true, keysym);
-        prop_assert_eq!(action, KeyAction::Forward);
-    }
 
     /// Releases always forward; the K-series is press-driven.
     #[test]

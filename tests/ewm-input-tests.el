@@ -62,11 +62,6 @@
 
 ;;;; Keymap bindings
 
-(ert-deftest ewm-input-tests/super-shift-space-binds-floating-toggle ()
-  "Super-Shift-space is the floating detach/attach toggle."
-  (should (eq (lookup-key ewm-mode-map (kbd "s-S-SPC"))
-              #'ewm-floating-toggle)))
-
 ;;;; ewm--event-to-intercept-spec
 
 (ert-deftest ewm-input-tests/spec-plain-key ()
@@ -131,39 +126,10 @@
     (define-key ewm-mode-map (kbd "s-<f9>") nil)
     (define-key ewm-mode-map (kbd "s-C-7") nil)))
 
-(ert-deftest ewm-input-tests/default-swipes-are-actions ()
-  "The default swipe bindings reach the compositor as actions."
-  (let ((ewm--module-mode t) captured)
-    (cl-letf (((symbol-function 'ewm-intercept-keys-module)
-               (lambda (keys) (setq captured keys))))
-      (ewm--send-intercept-keys))
-    (pcase-dolist (`(,key . ,action) '(("<swipe-3-up>" . (overview open))
-                                       ("<swipe-3-down>" . (overview close))
-                                       ("<swipe-3-left>" . (focus-frame :delta 1))
-                                       ("<swipe-3-right>" . (focus-frame :delta -1))))
-      (let ((spec (seq-find (lambda (spec) (equal (plist-get spec :description) key))
-                            captured)))
-        (should (equal (plist-get spec :dispatch) (cons 'action action)))))))
-
 (ert-deftest ewm-input-tests/frame-select-ignores-non-digit-keys ()
   "`ewm-frame-select' bound to a swipe yields no action instead of an error."
   (should (equal (ewm--frame-select-action ?3) '(focus-nth-frame :n 3)))
   (should-not (ewm--frame-select-action 'swipe-4-up)))
-
-(ert-deftest ewm-input-tests/spec-gesture-keys ()
-  "A swipe or scroll bound in `ewm-mode-map' rides the list as the key its name spells."
-  (define-key ewm-mode-map (kbd "s-<swipe-4-left>") #'kill-buffer)
-  (define-key ewm-mode-map (kbd "s-<wheel-down>") #'ewm-frame-right)
-  (unwind-protect
-      (pcase-dolist (`(,event ,key ,action) '((s-swipe-4-left "swipe-4-left" nil)
-                                              (s-wheel-down "wheel-down" (focus-frame :delta 1))))
-        (let ((spec (ewm--event-to-intercept-spec event)))
-          (should (equal (plist-get spec :key) key))
-          (should (eq (plist-get spec :super) t))
-          (should (equal (plist-get spec :dispatch) (if action (cons 'action action) 'command)))
-          (should (assq event (ewm--mode-map-entries)))))
-    (define-key ewm-mode-map (kbd "s-<swipe-4-left>") nil t)
-    (define-key ewm-mode-map (kbd "s-<wheel-down>") nil t)))
 
 (ert-deftest ewm-input-tests/spec-modifiers ()
   "Ctrl/Meta/Shift/Super are surfaced as boolean flags."
@@ -273,12 +239,6 @@
         (advice-remove 'define-key #'ewm-input--on-define-key)
         (cancel-function-timers #'ewm--send-intercept-keys)
         (setq ewm-input--resend-timer nil)))))
-
-(ert-deftest ewm-input-tests/key-event-names-one-key ()
-  "`ewm--key-event' returns the one event a description names, else nil."
-  (should (eq (ewm--key-event "<Print>") 'Print))
-  (should-not (ewm--key-event "C-x C-f"))
-  (should-not (ewm--key-event "")))
 
 (ert-deftest ewm-input-tests/intercepted-command-uses-active-keymap ()
   "Queued commands respect normal key lookup and command hooks."

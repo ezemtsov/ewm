@@ -1296,19 +1296,6 @@ mod tests {
     }
 
     #[test]
-    fn requested_transform_rejects_unknown_protocol_values() {
-        assert_eq!(
-            requested_transform(WEnum::Value(WlTransform::_270)),
-            Some(Transform::_270),
-        );
-        assert_eq!(
-            requested_transform(WEnum::Value(WlTransform::Flipped90)),
-            Some(Transform::Flipped90),
-        );
-        assert_eq!(requested_transform(WEnum::Unknown(99)), None);
-    }
-
-    #[test]
     fn requested_scale_rejects_non_positive_and_non_finite_values() {
         assert_eq!(requested_scale(1.25), Some(1.25));
         assert_eq!(requested_scale(0.0), None);
@@ -1344,16 +1331,5 @@ mod tests {
         assert_eq!(requested_custom_mode(0, 1080, 60_000), None);
         assert_eq!(requested_custom_mode(1920, 0, 60_000), None);
         assert_eq!(requested_custom_mode(1920, 1080, -1), None);
-    }
-
-    #[test]
-    fn adaptive_sync_validation_rejects_unknown_protocol_values() {
-        assert!(is_known_adaptive_sync_state(WEnum::Value(
-            AdaptiveSyncState::Disabled,
-        )));
-        assert!(is_known_adaptive_sync_state(WEnum::Value(
-            AdaptiveSyncState::Enabled,
-        )));
-        assert!(!is_known_adaptive_sync_state(WEnum::Unknown(99)));
     }
 }

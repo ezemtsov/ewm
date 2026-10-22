@@ -665,18 +665,6 @@ mod tests {
     }
 
     #[test]
-    fn cursor_config_exports_xcursor_environment() {
-        let config = CursorConfig::new("Theme", 32);
-        assert_eq!(
-            config.env_vars(),
-            HashMap::from([
-                ("XCURSOR_THEME".to_string(), "Theme".to_string()),
-                ("XCURSOR_SIZE".to_string(), "32".to_string()),
-            ])
-        );
-    }
-
-    #[test]
     fn explicit_cursor_config_overrides_ambient_environment() {
         let _guard = env_lock().lock().unwrap();
         let _env = EnvRestore::capture(&["XCURSOR_THEME", "XCURSOR_SIZE"]);

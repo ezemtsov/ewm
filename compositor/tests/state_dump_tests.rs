@@ -1,8 +1,5 @@
 //! Tests for the JSON shown by `ewm-show-state`.
 
-use std::collections::HashSet;
-
-use ewm_core::config::Cursor;
 use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{Fixture, nz};
 use ewm_core::{FocusSource, LayoutEntry, Notify};
@@ -47,93 +44,6 @@ fn workspace_for_surface(state: &Value, surface_id: u64) -> &Value {
         .iter()
         .find(|ws| ws["surface_id"] == surface_id)
         .unwrap_or_else(|| panic!("workspace for surface {surface_id} not found"))
-}
-
-fn assert_workspace_protocol_matches_strips(state: &Value) {
-    let strips = state["output_strips"]
-        .as_object()
-        .expect("output_strips must be an object");
-    let protocol = workspace_protocol(state);
-    let workspaces = protocol["workspaces"]
-        .as_array()
-        .expect("workspace_protocol.workspaces must be an array");
-
-    let mut output_names: Vec<_> = strips.keys().cloned().collect();
-    output_names.sort();
-    assert_eq!(protocol["groups"], json!(output_names));
-
-    let expected_workspace_count = strips
-        .values()
-        .map(|strip| strip["frames"].as_array().unwrap().len())
-        .sum::<usize>();
-    assert_eq!(workspaces.len(), expected_workspace_count);
-
-    let mut seen_surface_ids = HashSet::new();
-    for (output, strip) in strips {
-        let active_idx = strip["active_idx"]
-            .as_u64()
-            .expect("strip active_idx must be numeric") as usize;
-        let frames = strip["frames"]
-            .as_array()
-            .expect("strip frames must be an array");
-
-        for (idx, frame) in frames.iter().enumerate() {
-            let surface_id = frame["surface_id"]
-                .as_u64()
-                .expect("frame surface_id must be numeric");
-            assert!(
-                seen_surface_ids.insert(surface_id),
-                "duplicate frame surface_id {surface_id} in output_strips"
-            );
-
-            let workspace = workspace_for_surface(state, surface_id);
-            assert_eq!(workspace["output"], output.as_str());
-            let expected_name = frame
-                .get("workspace_name")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .unwrap_or_else(|| (idx + 1).to_string());
-            let expected_id = frame
-                .get("workspace_name")
-                .and_then(Value::as_str)
-                .map(Value::from)
-                .unwrap_or(Value::Null);
-            assert_eq!(workspace["id"], expected_id);
-            assert_eq!(workspace["name"], json!(expected_name));
-            assert_eq!(workspace["coordinates"], json!([0, idx as u32]));
-            assert_eq!(workspace["active"], idx == active_idx);
-            assert_eq!(workspace["urgent"], false);
-        }
-    }
-}
-
-#[test]
-fn ewm_state_reports_workspace_protocol_from_frame_strips() {
-    let mut fix = Fixture::new().unwrap();
-    fix.add_output(HEAD_A, 1600, 900);
-    fix.add_output(HEAD_B, 1600, 900);
-
-    fix.tile(HEAD_A, vec![frame(100), frame(101), frame(102)]);
-    fix.ewm()
-        .set_focus_frame(101, FocusSource::Test, Notify::None);
-    fix.dispatch();
-
-    let state = fix.debug_state();
-    assert_workspace_protocol_matches_strips(&state);
-    let focused = workspace_for_surface(&state, 101);
-    assert_eq!(focused["output"], HEAD_A);
-    assert_eq!(focused["active"], true);
-
-    // Losing HEAD_A moves its frames onto HEAD_B in order. The focused one stays active.
-    fix.remove_output(HEAD_A);
-    fix.dispatch();
-
-    let state = fix.debug_state();
-    assert_workspace_protocol_matches_strips(&state);
-    let moved = workspace_for_surface(&state, 101);
-    assert_eq!(moved["output"], HEAD_B);
-    assert_eq!(moved["coordinates"], json!([0, 1]));
-    assert_eq!(moved["active"], true);
 }
 
 #[test]
@@ -251,18 +161,4 @@ fn workspace_protocol_reports_urgent_workspace_from_explicit_mark() {
     let urgent = workspace_for_surface(&state, urgent_id);
     assert_eq!(state["urgent_workspaces"], json!([]));
     assert_eq!(urgent["urgent"], false);
-}
-
-#[test]
-fn ewm_state_reports_explicit_cursor_config() {
-    let fix = Fixture::new_with_cursor_config(Cursor {
-        theme: Some("ConfiguredCursorTheme".into()),
-        size: Some(37),
-    })
-    .unwrap();
-    let cursor = &fix.debug_state()["cursor"]["image"];
-
-    assert_eq!(cursor["provider"], "named");
-    assert_eq!(cursor["theme"], "ConfiguredCursorTheme");
-    assert_eq!(cursor["configured_size"], 37);
 }

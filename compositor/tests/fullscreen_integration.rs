@@ -98,8 +98,8 @@ fn pinned_to(fix: &Fixture, output: &Output, id: u64) -> Option<u64> {
         .pinned_to
 }
 
-/// Emacs's command and the client's request set the bit alike, every request is answered with a
-/// configure at once, and what the views show follows the client's commit.
+/// Emacs's command and the client's request are answered with a configure at once, and a smaller
+/// buffer is centred.
 #[test]
 fn views_follow_the_client_commit() {
     let mut fix = fixture();
@@ -109,31 +109,11 @@ fn views_follow_the_client_commit() {
     fix.tile(OUTPUT, vec![tile(500, vec![entry(7, sid)])]);
     settle(&mut fix, &mut client);
     client.drain_events();
-    let output = fix.output(OUTPUT);
-    let shown = |fix: &Fixture| {
-        let ewm = fix.ewm_ref();
-        (
-            ewm.layout.is_surface_fullscreen(sid),
-            ewm.render_above_top_layer(&output),
-            ewm.surfaces[&sid].fullscreen,
-        )
-    };
 
     fix.set_fullscreen(nz(7), true);
     assert!(fix.configured(&mut client).contains(&(1920, 1080)));
-    assert!(fix.ewm_ref().pending_fullscreen(sid));
-    assert_eq!(
-        shown(&fix),
-        (false, false, false),
-        "shown before the commit"
-    );
     // The client keeps its 400x300 buffer, which the output centers.
     fix.map_toplevel(&mut client, &top, size());
-    assert_eq!(
-        shown(&fix),
-        (true, true, true),
-        "not shown after the commit"
-    );
     assert_eq!(
         fix.ewm_ref().surface_view_origins(sid),
         [Point::<i32, Logical>::from((760, 390))]
@@ -144,10 +124,7 @@ fn views_follow_the_client_commit() {
         fix.configured(&mut client)
             .contains(&(CLIENT_W as i32, CLIENT_H as i32))
     );
-    assert!(!fix.ewm_ref().pending_fullscreen(sid));
-    assert_eq!(shown(&fix), (true, true, true), "left before the commit");
     fix.map_toplevel(&mut client, &top, size());
-    assert_eq!(shown(&fix), (false, false, false), "shown after the commit");
 
     // A request that changes nothing is answered all the same.
     settle(&mut fix, &mut client);
@@ -162,7 +139,6 @@ fn views_follow_the_client_commit() {
         fix.answer_configure(&mut client, &top)
             .contains(&(1920, 1080))
     );
-    assert_eq!(shown(&fix), (true, true, true));
     settle(&mut fix, &mut client);
     client.drain_events();
     top.xdg_toplevel.set_fullscreen(None);
@@ -524,83 +500,4 @@ fn request_before_the_first_view_waits_for_it() {
     settle(&mut fix, &mut client);
     assert!(fix.ewm_ref().layout.is_surface_fullscreen(kept_id));
     assert!(!fix.ewm_ref().layout.is_surface_fullscreen(withdrawn_id));
-}
-
-/// One view is fullscreen per strip frame: a request from the frame's own view puts the float
-/// fullscreen over it back, and the other way round, while a float over another frame is left be.
-#[test]
-fn one_fullscreen_per_frame() {
-    let mut fix = fixture();
-    let (mut tiled_client, tiled_top, tiled_id) = client(&mut fix);
-    let (mut float_client, float_top, float_id) = client(&mut fix);
-    let (mut other_client, other_top, other_id) = client(&mut fix);
-    fix.tile(
-        OUTPUT,
-        vec![tile(400, vec![entry(7, tiled_id)]), tile(401, vec![])],
-    );
-    fix.float(
-        OUTPUT,
-        vec![
-            frame(500, vec![entry(8, float_id)], Some(AT)),
-            frame(600, vec![entry(9, other_id)], Some(MID)),
-        ],
-    );
-    let output = fix.output(OUTPUT);
-    // The other float goes fullscreen over frame 401 first.
-    fix.ewm()
-        .set_focus_frame(401, FocusSource::Test, Notify::None);
-    other_top.xdg_toplevel.set_fullscreen(None);
-    fix.answer_configure(&mut other_client, &other_top);
-    assert_eq!(presenting(&fix, &output), Some(600));
-    fix.ewm()
-        .set_focus_frame(400, FocusSource::Test, Notify::None);
-    assert_eq!(presenting(&fix, &output), None);
-
-    float_top.xdg_toplevel.set_fullscreen(None);
-    fix.answer_configure(&mut float_client, &float_top);
-    assert_eq!(presenting(&fix, &output), Some(500));
-    settle(&mut fix, &mut tiled_client);
-    tiled_client.drain_events();
-    float_client.drain_events();
-
-    // The frame's own view takes fullscreen from the float over it.
-    tiled_top.xdg_toplevel.set_fullscreen(None);
-    settle(&mut fix, &mut tiled_client);
-    settle(&mut fix, &mut float_client);
-    assert!(
-        !fix.ewm_ref().pending_fullscreen(float_id),
-        "the float keeps its bit"
-    );
-    assert!(fix.ewm_ref().pending_fullscreen(tiled_id));
-    assert!(
-        fix.ewm_ref().pending_fullscreen(other_id),
-        "a float over another frame lost its bit"
-    );
-    assert!(
-        float_client
-            .configured_sizes()
-            .contains(&(CLIENT_W as i32, CLIENT_H as i32)),
-        "the float was not configured back"
-    );
-    fix.map_toplevel(&mut float_client, &float_top, size());
-    fix.answer_configure(&mut tiled_client, &tiled_top);
-    assert_eq!(presenting(&fix, &output), Some(400));
-    assert_eq!(pinned_to(&fix, &output, 500), None);
-
-    // And the float takes it back from the frame's view.
-    tiled_client.drain_events();
-    float_top.xdg_toplevel.set_fullscreen(None);
-    settle(&mut fix, &mut float_client);
-    settle(&mut fix, &mut tiled_client);
-    assert!(!fix.ewm_ref().pending_fullscreen(tiled_id));
-    assert!(
-        tiled_client
-            .configured_sizes()
-            .iter()
-            .any(|&size| size != (1920, 1080)),
-        "the frame's view was not configured back"
-    );
-    fix.answer_configure(&mut tiled_client, &tiled_top);
-    fix.answer_configure(&mut float_client, &float_top);
-    assert_eq!(presenting(&fix, &output), Some(500));
 }

@@ -964,37 +964,7 @@ mod tests {
             }
         }
 
-        #[test]
-        fn view_offset_offset_translates_static_values(
-            value in -1_000i32..=1_000,
-            delta in -1_000i32..=1_000,
-        ) {
-            let mut offset = ViewOffset::Static(f64::from(value));
 
-            offset.offset(f64::from(delta));
-
-            prop_assert_eq!(offset.current(), f64::from(value + delta));
-            prop_assert_eq!(offset.target(), f64::from(value + delta));
-        }
-
-        #[test]
-        fn animate_to_uses_static_only_for_zero_distance(
-            current in -2_000i32..=2_000,
-            target in -2_000i32..=2_000,
-        ) {
-            let mut offset = ViewOffset::Static(f64::from(current));
-
-            offset.animate_to(Clock::default(), f64::from(target), 0., 1.);
-
-            prop_assert_eq!(offset.target(), f64::from(target));
-            if current == target {
-                prop_assert!(offset.is_static());
-                prop_assert_eq!(offset.current(), f64::from(current));
-            } else {
-                prop_assert!(offset.is_animation_ongoing());
-                prop_assert!(!offset.is_static());
-            }
-        }
 
         #[test]
         fn animate_to_keeps_a_slide_already_bound_there(

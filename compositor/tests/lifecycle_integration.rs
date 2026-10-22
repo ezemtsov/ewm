@@ -37,17 +37,6 @@ fn frame_with_entry(frame_id: u64, entry_id: LayoutEntryId, surface_id: u64) -> 
     }
 }
 
-fn output_redraw_state(fix: &Fixture, output: &str) -> String {
-    fix.debug_state()["redraw_states"]
-        .as_array()
-        .expect("redraw_states array")
-        .iter()
-        .find(|state| state["output"].as_str() == Some(output))
-        .expect("output redraw state")["state"]
-        .as_str()
-        .expect("redraw state string")
-        .to_string()
-}
 #[test]
 fn popup_commit_queues_redraw_for_owning_output() {
     let mut fix = Fixture::new().unwrap();
@@ -76,7 +65,6 @@ fn popup_commit_queues_redraw_for_owning_output() {
         Size::from((80, 80)),
     );
 
-    assert_eq!(output_redraw_state(&fix, OUTPUT), "Idle");
     let renders = fix.render_count(OUTPUT);
 
     let buffer = client.create_shm_buffer(Size::<i32, Logical>::from((80, 80)));

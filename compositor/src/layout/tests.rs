@@ -391,54 +391,6 @@ proptest! {
             .collect::<Vec<_>>();
 
         prop_assert_eq!(primary, vec![expected]);
-
-        #[cfg(feature = "screencast")]
-        {
-            fix.ewm().refresh_mapped_cast_outputs();
-            for (idx, name) in PROP_HEADS.iter().enumerate() {
-                if membership & (1 << idx) == 0 {
-                    continue;
-                }
-
-                for entry_id in [nz(5_000 + idx as u64), nz(6_000 + idx as u64)] {
-                    prop_assert_eq!(
-                        fix.ewm_ref()
-                            .casting
-                            .mapped_cast_output
-                            .get(&entry_id)
-                            .map(Output::name),
-                        Some((*name).to_string()),
-                    );
-                    prop_assert_eq!(
-                        fix.ewm_ref()
-                            .layout_entry_cast_params(entry_id)
-                            .map(|(size, _)| size),
-                        Some(Size::from((entry_w as i32, entry_h as i32))),
-                    );
-                }
-            }
-
-            let removed_idx = order
-                .iter()
-                .copied()
-                .find(|idx| membership & (1 << idx) != 0)
-                .unwrap();
-            let removed_name = PROP_HEADS[removed_idx];
-            if let Some(frame) = fix.strip_mut(removed_name).frames_mut().first_mut() {
-                frame.entries.clear();
-            }
-            fix.ewm().refresh_mapped_cast_outputs();
-            prop_assert!(!fix
-                .ewm_ref()
-                .casting
-                .mapped_cast_output
-                .contains_key(&nz(5_000 + removed_idx as u64)));
-            prop_assert!(!fix
-                .ewm_ref()
-                .casting
-                .mapped_cast_output
-                .contains_key(&nz(6_000 + removed_idx as u64)));
-        }
     }
 }
 

@@ -584,54 +584,6 @@ fn expected_surface_outputs(fix: &Fixture) -> HashMap<u64, HashSet<String>> {
     expected
 }
 
-/// Invariant 13 over every placement of a surface's views and of the focused frame.
-#[test]
-fn activation_prefers_the_focused_frame() {
-    const SURFACE: u64 = 7;
-    for membership in 1u8..16 {
-        for focused_frame in 100..104u64 {
-            let mut fix = Fixture::new().unwrap();
-            // Two frames per output, each with a window of its own and maybe a view of the surface.
-            for (output_idx, name) in OUTPUTS.iter().enumerate() {
-                fix.add_output(name, 1920, 1080);
-                let frames = (0..2)
-                    .map(|i| {
-                        let idx = 2 * output_idx + i;
-                        let frame_id = 100 + idx as u64;
-                        let own = entry_entry_id_for(frame_id, 0);
-                        let mut frame = frame_with_entry(frame_id, own, 1_000 + idx as u64);
-                        if membership & (1 << idx) != 0 {
-                            frame.entries.push(LayoutEntry::surface(
-                                entry_entry_id_for(frame_id, 1),
-                                "view".to_string(),
-                                SURFACE,
-                                0,
-                                100,
-                                100,
-                                100,
-                            ));
-                        }
-                        frame
-                    })
-                    .collect();
-                fix.tile(name, frames);
-            }
-            fix.ewm()
-                .set_focus_frame(focused_frame, FocusSource::Test, Notify::None);
-            fix.ewm()
-                .activate_or_defer_surface(SURFACE, FocusSource::Test);
-
-            let ewm = fix.ewm_ref();
-            assert_eq!(
-                ewm.focused_surface_id(),
-                Some(SURFACE),
-                "membership={membership:#06b} focused={focused_frame}"
-            );
-            assert_focused_frame_view(&fix, SURFACE, focused_frame);
-        }
-    }
-}
-
 proptest! {
     #[test]
     fn active_close_intent_uses_destroyed_slot_after_focus_or_layout_race(

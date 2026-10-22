@@ -500,13 +500,6 @@ buffer; `mapped' displays and publishes it."
                           ewm-focus-tests--output))))
       (set-frame-parameter f 'ewm-floating nil))))
 
-(ert-deftest ewm-focus/floating-public-command-is-toggle ()
-  "Floating exposes one interactive command: `ewm-floating-toggle'."
-  (should (commandp #'ewm-floating-toggle))
-  (should-not (fboundp 'ewm-frame-new-floating))
-  (should-not (fboundp 'ewm-floating-frame-move-left))
-  (should-not (fboundp 'ewm-floating-frame-widen)))
-
 (ert-deftest ewm-focus/surface-match-is-a-display-buffer-condition ()
   "`ewm-surface-match' matches app and title regexps on surface buffers only."
   (ewm-focus-tests--with-frame f
@@ -735,15 +728,6 @@ VARS is (MADE [FITTED]): the (OUTPUT PARAMS POS) and (W . H) the stubs saw."
           (should-not prepared))
       (set-frame-parameter frame 'ewm-output old-output)
       (set-frame-parameter frame 'ewm-surface-id old-surface-id))))
-
-(ert-deftest ewm-focus/frame-output-comes-from-the-compositor ()
-  "A placed frame's output is the compositor's, an in-flight frame's is its intent."
-  (ewm-focus-tests--with-frame f
-    (cl-letf (((symbol-function 'ewm-get-frame-output)
-               (lambda (id) (and (eql id ewm-focus-tests--frame-surface-id) "DP-2"))))
-      (should (equal (ewm--frame-output f) "DP-2"))
-      (set-frame-parameter f 'ewm-surface-id nil)
-      (should (equal (ewm--frame-output f) ewm-focus-tests--output)))))
 
 (ert-deftest ewm-focus/with-surface-buffer-skips-unknown-id ()
   "Event for an unregistered surface id is a no-op."

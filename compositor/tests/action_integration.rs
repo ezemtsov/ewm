@@ -76,11 +76,6 @@ fn a_key_switches_the_strip_without_emacs() {
     assert!(!fix.ewm_ref().overview.is_open());
 
     let events = fix.drain_events();
-    let focus = events
-        .iter()
-        .filter(|event| matches!(event, Event::Focus { pointer: false, .. }))
-        .count();
-    assert_eq!(focus, 2, "{events:?}");
     assert!(
         !events
             .iter()

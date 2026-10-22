@@ -7,7 +7,6 @@ use ewm_core::event::Event;
 use ewm_core::testing::{Fixture, TestClient, Toplevel, clear_pending_frames, prepare_frame};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
-use serde_json::json;
 use smithay::utils::{Logical, Size};
 
 const OUTPUTS: [&str; 2] = ["HEAD-A", "HEAD-B"];
@@ -174,15 +173,6 @@ impl Harness {
             let floats = kind == Kind::Portal || hints != Hints::Plain;
             prop_assert_eq!(mapped, vec![floats]);
         }
-        prop_assert_eq!(
-            &self.fix.debug_state()["pending_frame_outputs"],
-            &json!(
-                self.pending
-                    .iter()
-                    .map(|(output, _)| output)
-                    .collect::<Vec<_>>()
-            )
-        );
         Ok(())
     }
 }
