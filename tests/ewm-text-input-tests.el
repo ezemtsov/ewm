@@ -275,34 +275,19 @@ drained abort leaves the raw queue intact so later keys still replay by keycode.
       (should (equal ewm-text-input-tests--commits '((10 . "+"))))
       (should-not ewm-text-input-tests--preedits))))
 
-(ert-deftest ewm-text-input-tests/handle-key-without-surface-buffer-forwards ()
-  "A key for a surface with no buffer is handed back to the compositor."
-  (ewm-text-input-tests--with-state
-    (ewm--handle-key (ewm-text-input-tests--key "a" 38))
-    (should-not unread-command-events)
-    (should (equal ewm-text-input-tests--forwards
-                   '((10 38 nil nil nil nil))))))
-
-(ert-deftest ewm-text-input-tests/handle-key-forwards-non-text-key ()
-  "A key with no utf8 (Return, arrows) is forwarded, not committed."
+(ert-deftest ewm-text-input-tests/keys-that-are-not-text-are-forwarded ()
+  "A key for a surface without a buffer, a key without utf8 (Return, arrows) and
+Ctrl-modified text are handed back to the compositor, never committed."
   (ewm-text-input-tests--with-state
     (ewm-text-input-tests--with-buffers (surface)
+      (ewm--handle-key (ewm-text-input-tests--key "a" 38))
       (puthash 10 surface ewm--surfaces)
       (ewm--handle-key (ewm-text-input-tests--key #xff0d 36))
+      (ewm--handle-key '((surface_id . 10) (keycode . 54) (utf8 . "c") (ctrl . t)))
       (should-not unread-command-events)
-      (should (equal ewm-text-input-tests--forwards
-                     '((10 36 nil nil nil nil)))))))
-
-(ert-deftest ewm-text-input-tests/handle-key-forwards-control-text ()
-  "Ctrl-modified text is a shortcut, not text to commit."
-  (ewm-text-input-tests--with-state
-    (ewm-text-input-tests--with-buffers (surface)
-      (puthash 10 surface ewm--surfaces)
-      (ewm--handle-key '((surface_id . 10) (keycode . 54)
-                         (utf8 . "c") (ctrl . t)))
-      (should-not unread-command-events)
-      (should (equal ewm-text-input-tests--forwards
-                     '((10 54 t nil nil nil)))))))
+      (should-not ewm-text-input-tests--commits)
+      (should (equal (reverse ewm-text-input-tests--forwards)
+                     '((10 38 nil nil nil nil) (10 36 nil nil nil nil) (10 54 t nil nil nil)))))))
 
 (ert-deftest ewm-text-input-tests/auto-mode-intercepts-only-with-input-method ()
   "Interception follows both client activation and an active input method."

@@ -134,114 +134,74 @@ The batch frame is shared; we save and restore the parameters we touch."
 
 ;;;; Tests
 
-(ert-deftest ewm-focus/baseline-no-menu ()
-  "No menu active: `:selected-entry-id' names the embedded surface."
+(ert-deftest ewm-focus/a-modal-read-hides-the-selected-entry ()
+  "Any read that keeps keys for Emacs ships a nil `:selected-entry-id'."
   (should (eql ewm-focus-tests--surface-entry-id
-               (ewm-focus-tests--capture-selected-entry-id))))
-
-(ert-deftest ewm-focus/minibuffer-suppresses ()
-  "A completion minibuffer suppresses embedded entry focus."
+               (ewm-focus-tests--capture-selected-entry-id)))
   ;; `-batch' can't drive a real read, so stub the window and the table.
   (cl-letf (((symbol-function 'active-minibuffer-window)
              (lambda () (selected-window))))
     (let ((minibuffer-completion-table '("a" "b")))
-      (should (null (ewm-focus-tests--capture-selected-entry-id))))))
-
-(ert-deftest ewm-focus/minibuffer-plain-prompt-does-not-suppress ()
-  "A plain prompt keeps embedded entry focus."
-  (cl-letf (((symbol-function 'active-minibuffer-window)
-             (lambda () (selected-window))))
+      (should-not (ewm-focus-tests--capture-selected-entry-id)))
     (let ((minibuffer-completion-table nil))
       (should (eql ewm-focus-tests--surface-entry-id
-                   (ewm-focus-tests--capture-selected-entry-id))))))
-
-(ert-deftest ewm-focus/overriding-keymap-suppresses ()
-  "Any `overriding-terminal-local-map' suppresses embedded entry focus."
+                   (ewm-focus-tests--capture-selected-entry-id)))))
   (let ((overriding-terminal-local-map (make-sparse-keymap)))
-    (should (null (ewm-focus-tests--capture-selected-entry-id)))))
-
-(ert-deftest ewm-focus/popup-suppresses-within-command-only ()
-  "A popup menu suppresses only while a command shows it."
+    (should-not (ewm-focus-tests--capture-selected-entry-id)))
+  ;; A popup menu suppresses only while a command shows it.
   (cl-letf (((symbol-function 'menu-or-popup-active-p) (lambda () t)))
     (let ((this-command 'menu-bar-open))
-      (should (null (ewm-focus-tests--capture-selected-entry-id))))
+      (should-not (ewm-focus-tests--capture-selected-entry-id)))
     (let ((this-command nil))
       (should (eql ewm-focus-tests--surface-entry-id
-                   (ewm-focus-tests--capture-selected-entry-id))))))
-
-(ert-deftest ewm-focus/custom-predicate-suppresses ()
-  "A user predicate added to `ewm-layout-menu-predicates' suppresses."
+                   (ewm-focus-tests--capture-selected-entry-id)))))
   (let ((ewm-layout-menu-predicates (list (lambda () t))))
-    (should (null (ewm-focus-tests--capture-selected-entry-id)))))
+    (should-not (ewm-focus-tests--capture-selected-entry-id))))
 
-(ert-deftest ewm-focus/menu-active-preserves-entries ()
-  "Suppression touches `:selected-entry-id' only; `:entries' is unchanged."
-  (ewm-focus-tests--with-frame f
-    (ewm-focus-tests--install-surface-window
-     (frame-selected-window f) ewm-focus-tests--surface-id)
-    (let* ((ewm--module-mode t)
-           (ewm-layout-menu-predicates (list (lambda () t)))
-           (captures (ewm-focus-tests--with-captured-layouts
-                       (ewm-layout--send-layouts)))
-           (entries (plist-get (aref (car captures) 0) :entries)))
-      (should (= 1 (length entries)))
-      (should (eql ewm-focus-tests--surface-id
-                   (plist-get (aref entries 0) :surface-id))))))
-
-(ert-deftest ewm-focus/build-frame-plist-honors-menu-flag ()
-  "`build-frame-plist' zeros `:selected-entry-id' when MENU-ACTIVE is non-nil."
-  (ewm-focus-tests--with-frame f
-    (ewm-focus-tests--install-surface-window
-     (frame-selected-window f) ewm-focus-tests--surface-id)
-    (should (eql ewm-focus-tests--surface-entry-id
-                 (plist-get (ewm-layout--build-frame-plist f nil)
-                            :selected-entry-id)))
-    (should (null (plist-get (ewm-layout--build-frame-plist f t)
-                             :selected-entry-id)))))
-
-(ert-deftest ewm-focus/post-command-refreshes-on-transition ()
-  "Modal-state transitions trigger exactly one refresh; staying does not."
-  (let ((refresh-count 0)
-        (ewm-layout--last-menu-active nil)
-        (ewm-layout-menu-predicates (list #'ignore)))
-    (cl-letf (((symbol-function 'ewm-layout--refresh)
-               (lambda () (cl-incf refresh-count))))
-      (ewm-layout--on-post-command)
-      (should (= 0 refresh-count))
-      (let ((ewm-layout-menu-predicates (list (lambda () t))))
-        (ewm-layout--on-post-command)
-        (should (= 1 refresh-count))
-        (ewm-layout--on-post-command)
-        (should (= 1 refresh-count)))
-      (ewm-layout--on-post-command)
-      (should (= 2 refresh-count)))))
-
-(ert-deftest ewm-focus/command-popup-ends-in-deactivation ()
-  "A popup that opens and closes within a command still fires the deactivation hook."
-  (let* ((ewm-layout--last-menu-active nil)
-         (deactivations 0)
-         (ewm-layout-menu-deactivated-hook (list (lambda () (cl-incf deactivations)))))
-    (cl-letf (((symbol-function 'ewm-layout--refresh) #'ignore))
-      (cl-letf (((symbol-function 'menu-or-popup-active-p) (lambda () t)))
-        (let ((this-command 'menu-bar-open))
-          (should (ewm-layout--menu-active-p))))
-      (ewm-layout--on-post-command)
-      (should (= 1 deactivations)))))
-
-(ert-deftest ewm-focus/selected-entry-id-always-in-entries ()
-  "Lisp-side invariant 6: a non-nil `:selected-entry-id' is in `:entries'."
+(ert-deftest ewm-focus/suppression-touches-only-the-selected-entry ()
+  "A selected entry is one of `:entries', and a menu zeroes it without touching them."
   (ewm-focus-tests--with-frame f
     (ewm-focus-tests--install-surface-window
      (frame-selected-window f) ewm-focus-tests--surface-id)
     (let* ((plist (ewm-layout--build-frame-plist f nil))
-           (sel (plist-get plist :selected-entry-id))
-           (entry-ids (cl-loop for entry across (plist-get plist :entries)
-                              collect (plist-get entry :entry-id))))
-      (should sel)
-      (should (member sel entry-ids)))))
+           (entries (plist-get plist :entries)))
+      (should (= 1 (length entries)))
+      (should (eql ewm-focus-tests--surface-id (plist-get (aref entries 0) :surface-id)))
+      (should (eql (plist-get plist :selected-entry-id)
+                   (plist-get (aref entries 0) :entry-id))))
+    (let ((plist (ewm-layout--build-frame-plist f t)))
+      (should-not (plist-get plist :selected-entry-id))
+      (should (= 1 (length (plist-get plist :entries)))))))
 
-(ert-deftest ewm-focus/frame-scale-is-emacs-pixels-per-logical-pixel ()
-  "`ewm--frame-scale' divides the monitor's scale by the frame's."
+(ert-deftest ewm-focus/menu-transitions-refresh-once-and-run-the-hook ()
+  "Entering or leaving a menu refreshes once, leaving runs the deactivation hook."
+  (let* ((refreshes 0)
+         (deactivations 0)
+         (predicates ewm-layout-menu-predicates)
+         (ewm-layout--last-menu-active nil)
+         (ewm-layout-menu-predicates (list #'ignore))
+         (ewm-layout-menu-deactivated-hook (list (lambda () (cl-incf deactivations)))))
+    (cl-letf (((symbol-function 'ewm-layout--refresh)
+               (lambda () (cl-incf refreshes))))
+      (ewm-layout--on-post-command)
+      (should (= 0 refreshes))
+      (let ((ewm-layout-menu-predicates (list (lambda () t))))
+        (ewm-layout--on-post-command)
+        (ewm-layout--on-post-command)
+        (should (= 1 refreshes)))
+      (ewm-layout--on-post-command)
+      (should (= 2 refreshes))
+      (should (= 1 deactivations))
+      ;; A popup that opens and closes within a command still deactivates.
+      (cl-letf (((symbol-function 'menu-or-popup-active-p) (lambda () t)))
+        (let ((this-command 'menu-bar-open)
+              (ewm-layout-menu-predicates predicates))
+          (should (ewm-layout--menu-active-p))))
+      (ewm-layout--on-post-command)
+      (should (= 2 deactivations)))))
+
+(ert-deftest ewm-focus/frame-plists-speak-logical-pixels ()
+  "The frame scale is the monitor's over the frame's, and rectangles are divided by it."
   (cl-flet ((scale (monitor frame)
               (cl-letf (((symbol-function 'frame-monitor-attributes)
                          (lambda (&optional _frame)
@@ -249,15 +209,10 @@ The batch frame is shared; we save and restore the parameters we touch."
                         ((symbol-function 'frame-scale-factor)
                          (lambda (&optional _frame) frame)))
                 (ewm--frame-scale nil))))
-    ;; Frames measured in device pixels on a 1.5 monitor.
+    ;; Device pixels on a 1.5 monitor, logical pixels on a GDK-scaled one, no monitor.
     (should (= (scale 1.5 1.0) 1.5))
-    ;; Frames measured in logical pixels on a GDK-scaled monitor.
     (should (= (scale 2.0 2.0) 1.0))
-    ;; No monitor scale reported.
-    (should (= (scale nil 1.0) 1.0))))
-
-(ert-deftest ewm-focus/build-frame-plist-speaks-logical-pixels ()
-  "Entry rectangles and the frame size reach the compositor in logical pixels."
+    (should (= (scale nil 1.0) 1.0)))
   (ewm-focus-tests--with-frame f
     (cl-letf (((symbol-function 'ewm--frame-scale) (lambda (&rest _) 1.5))
               ((symbol-function 'ewm--window-body-pixel-rect)
@@ -351,27 +306,8 @@ buffer; `mapped' displays and publishes it."
                          #'ewm--kill-buffer-query-function t))
           (kill-buffer created))))))
 
-(ert-deftest ewm-focus/mapped-surface-places-synchronously-without-menu ()
-  "With no menu active a mapped surface is placed immediately, not queued."
-  (let ((ewm--surfaces (make-hash-table :test 'eql))
-        (ewm--pending-placements nil)
-        (placed nil)
-        (buf (generate-new-buffer " *ewm-test-map*")))
-    (unwind-protect
-        (cl-letf (((symbol-function 'ewm--place-surface-buffer)
-                   (lambda (&rest args) (push args placed)))
-                  ((symbol-function 'ewm-layout--menu-active-p) #'ignore))
-          (puthash 42 buf ewm--surfaces)
-          (ewm--handle-mapped-surface
-           '((id . 42) (open_floating . t) (output . "HEAD-A") (frame_surface_id . 7)
-             (width . 480.0) (height . 160.0)))
-          (should (null ewm--pending-placements))
-          (should (equal (list buf t "HEAD-A" 7 nil) (car placed)))
-          (should (equal '(480.0 . 160.0) (buffer-local-value 'ewm-surface-size buf))))
-      (kill-buffer buf))))
-
-(ert-deftest ewm-focus/mapped-surface-defers-while-menu-active ()
-  "A surface mapping while a menu is active is queued, then placed once on close."
+(ert-deftest ewm-focus/mapped-surface-waits-only-for-a-menu ()
+  "A mapped surface is placed at once, or once the menu it arrived under closes."
   (let ((ewm--surfaces (make-hash-table :test 'eql))
         (ewm--pending-placements nil)
         (placed nil)
@@ -380,14 +316,21 @@ buffer; `mapped' displays and publishes it."
         (cl-letf (((symbol-function 'ewm--place-surface-buffer)
                    (lambda (&rest args) (push args placed))))
           (puthash 42 buf ewm--surfaces)
+          (cl-letf (((symbol-function 'ewm-layout--menu-active-p) #'ignore))
+            (ewm--handle-mapped-surface
+             '((id . 42) (open_floating . t) (output . "HEAD-A") (frame_surface_id . 7)
+               (width . 480.0) (height . 160.0))))
+          (should (null ewm--pending-placements))
+          (should (equal (list buf t "HEAD-A" 7 nil) (car placed)))
+          (should (equal '(480.0 . 160.0) (buffer-local-value 'ewm-surface-size buf)))
           (cl-letf (((symbol-function 'ewm-layout--menu-active-p) (lambda () t)))
             (ewm--handle-mapped-surface
              '((id . 42) (open_floating . nil) (output . "HEAD-A") (frame_surface_id . 7))))
-          (should (null placed))
+          (should (= 1 (length placed)))
           (should (= 1 (length ewm--pending-placements)))
           (ewm--flush-pending-placements)
           (should (equal (list buf nil "HEAD-A" 7 nil) (car placed)))
-          (should (= 1 (length placed)))
+          (should (= 2 (length placed)))
           (should (null ewm--pending-placements)))
       (kill-buffer buf))))
 
@@ -536,31 +479,26 @@ buffer; `mapped' displays and publishes it."
       (should-not (ewm-output-active-frame "C"))
       (should-not (ewm-output-active-frame nil)))))
 
-(ert-deftest ewm-focus/floating-placement-goes-through-pop-to-buffer ()
-  "A compositor float is placed from its host frame with the floating action."
+(ert-deftest ewm-focus/a-float-is-popped-to-only-when-activated ()
+  "A compositor float is placed from its host frame with the floating action,
+popped to when the compositor activates it and merely displayed otherwise."
   (ewm-focus-tests--with-frame f
     (let ((buf (ewm-focus-tests--make-surface-buffer 42))
-          popped)
+          (action '(ewm-display-buffer-floating (ewm-output . "HEAD-A")))
+          popped displayed)
       (cl-letf (((symbol-function 'pop-to-buffer)
                  (lambda (buffer action &optional _norecord)
-                   (setq popped (cons buffer action)))))
-        (ewm--place-surface-buffer buf t "HEAD-A" ewm-focus-tests--frame-surface-id t)
-        (should (equal (cons buf '(ewm-display-buffer-floating (ewm-output . "HEAD-A")))
-                       popped))))))
-
-(ert-deftest ewm-focus/unactivated-float-is-displayed-without-selection ()
-  "A float the compositor does not activate is displayed, never popped to."
-  (ewm-focus-tests--with-frame f
-    (let ((buf (ewm-focus-tests--make-surface-buffer 42))
-          displayed)
-      (cl-letf (((symbol-function 'pop-to-buffer)
-                 (lambda (&rest _) (error "pop-to-buffer selects the float")))
+                   (setq popped (cons buffer action))))
                 ((symbol-function 'display-buffer)
                  (lambda (buffer action &optional _frame)
                    (setq displayed (cons buffer action)))))
+        (ewm--place-surface-buffer buf t "HEAD-A" ewm-focus-tests--frame-surface-id t)
+        (should (equal (cons buf action) popped))
+        (should-not displayed)
+        (setq popped nil)
         (ewm--place-surface-buffer buf t "HEAD-A" ewm-focus-tests--frame-surface-id nil)
-        (should (equal (cons buf '(ewm-display-buffer-floating (ewm-output . "HEAD-A")))
-                       displayed))))))
+        (should (equal (cons buf action) displayed))
+        (should-not popped)))))
 
 (defmacro ewm-focus-tests--with-stubbed-float (vars &rest body)
   "Run BODY with float creation stubbed onto the batch frame.
@@ -605,44 +543,33 @@ VARS is (MADE [FITTED]): the (OUTPUT PARAMS POS) and (W . H) the stubs saw."
         (should (equal "HEAD-A" (car made)))
         (should (equal '(300 . 200) fitted))))))
 
-(ert-deftest ewm-focus/floating-action-declines-off-output ()
-  "Off any output the action returns nil and `display-buffer' falls through."
+(ert-deftest ewm-focus/floating-action-declines-off-output-or-inhibited ()
+  "Off any output, or while attach inhibits floating, the action returns nil."
   (ewm-focus-tests--with-frame f
     (set-frame-parameter f 'ewm-output nil)
     (let ((buf (ewm-focus-tests--make-surface-buffer 42)))
       (ewm-focus-tests--with-stubbed-float (made)
         (should (display-buffer buf '(ewm-display-buffer-floating)))
-        (should-not made)))))
-
-(ert-deftest ewm-focus/floating-action-honors-inhibit ()
-  "`ewm--inhibit-floating' makes the action decline, so attach cannot re-float."
+        (should-not made))))
   (let ((ewm--inhibit-floating t))
     (ewm-focus-tests--with-stubbed-float (made)
       (should-not (ewm-display-buffer-floating (current-buffer) nil))
       (should-not made))))
 
-(ert-deftest ewm-focus/detach-ignores-same-window-rules ()
-  "A catch-all same-window rule cannot keep the buffer in its tile."
+(ert-deftest ewm-focus/detach-floats-the-tile-over-itself ()
+  "The float lands where the tile was, frame origin minus output origin,
+whatever same-window rule would keep the buffer in its tile."
   (ewm-focus-tests--with-frame f
     (let ((buf (ewm-focus-tests--make-surface-buffer 42))
           (display-buffer-alist
            '((".*" (display-buffer-reuse-window display-buffer-same-window)))))
       (set-window-buffer (frame-selected-window f) buf)
-      (ewm-focus-tests--with-stubbed-float (made fitted)
-        (ewm--floating-detach-selected-buffer f)
-        (should (equal '(5 . 5) (nth 2 made)))
-        (should (equal '(90 . 90) fitted))))))
-
-(ert-deftest ewm-focus/detach-positions-relative-to-output ()
-  "The float lands over its tile: the rect shifts by frame minus output origin."
-  (ewm-focus-tests--with-frame f
-    (let ((buf (ewm-focus-tests--make-surface-buffer 42)))
-      (set-window-buffer (frame-selected-window f) buf)
       (cl-letf (((symbol-function 'ewm--get-frame-origin) (lambda (_) '(200 . 300)))
                 ((symbol-function 'ewm--get-output-origin) (lambda (_) '(100 . 100))))
-        (ewm-focus-tests--with-stubbed-float (made)
+        (ewm-focus-tests--with-stubbed-float (made fitted)
           (ewm--floating-detach-selected-buffer f)
-          (should (equal '(105 . 205) (nth 2 made))))))))
+          (should (equal '(105 . 205) (nth 2 made)))
+          (should (equal '(90 . 90) fitted)))))))
 
 (ert-deftest ewm-focus/detach-keeps-tile-when-rule-shows-elsewhere ()
   "A rule that shows the buffer in a sibling window leaves the tile alone."
@@ -677,218 +604,115 @@ VARS is (MADE [FITTED]): the (OUTPUT PARAMS POS) and (W . H) the stubs saw."
         (should (equal (list (ewm-layout--ensure-frame-focus-id f)) sent))
         (should-not (frame-parameter f 'ewm-focus-on-create))))))
 
-(ert-deftest ewm-focus/delete-frame-advice-passes-captured-frame ()
-  "Interactive nil FRAME must resolve once, before close handling can alter selection."
+(ert-deftest ewm-focus/delete-frame-advice-resolves-the-frame-and-keeps-the-last ()
+  "A nil FRAME resolves once before close handling, and the only frame on an
+output is deleted only with FORCE."
   (let* ((frame (selected-frame))
-         (output "TEST-OUT")
-         (prepared nil)
-         (called-frame nil)
-         (called-force nil)
-         (old-output (frame-parameter frame 'ewm-output))
-         (old-surface-id (frame-parameter frame 'ewm-surface-id)))
-    (unwind-protect
-        (progn
-          (set-frame-parameter frame 'ewm-output output)
-          (set-frame-parameter frame 'ewm-surface-id 42)
-          (cl-letf (((symbol-function 'ewm-get-strip-frame-ids)
-                     (lambda (_output) '(42)))
-                    ((symbol-function 'ewm-prepare-frame-close-module)
-                     (lambda (id) (setq prepared id))))
-            (ewm--prevent-frame-deletion
-             (lambda (arg force)
-               (setq called-frame arg)
-               (setq called-force force))
-             nil t))
-          (should (eq called-frame frame))
-          (should (eq called-force t))
-          (should (eql prepared 42)))
-      (set-frame-parameter frame 'ewm-output old-output)
-      (set-frame-parameter frame 'ewm-surface-id old-surface-id))))
-
-(ert-deftest ewm-focus/delete-frame-advice-rejects-last-frame-on-output ()
-  "The only frame on an output is not deleted unless FORCE is non-nil."
-  (let* ((frame (selected-frame))
-         (output "TEST-OUT")
          (prepared nil)
          (called nil)
          (old-output (frame-parameter frame 'ewm-output))
          (old-surface-id (frame-parameter frame 'ewm-surface-id)))
     (unwind-protect
-        (progn
-          (set-frame-parameter frame 'ewm-output output)
+        (cl-letf (((symbol-function 'ewm-get-strip-frame-ids)
+                   (lambda (_output) '(42)))
+                  ((symbol-function 'ewm-prepare-frame-close-module)
+                   (lambda (id) (setq prepared id))))
+          (set-frame-parameter frame 'ewm-output "TEST-OUT")
           (set-frame-parameter frame 'ewm-surface-id 42)
-          (cl-letf (((symbol-function 'ewm-get-strip-frame-ids)
-                     (lambda (_output) '(42)))
-                    ((symbol-function 'ewm-prepare-frame-close-module)
-                     (lambda (id) (setq prepared id))))
-            (ewm--prevent-frame-deletion
-             (lambda (&rest _) (setq called t))
-             frame nil))
+          (ewm--prevent-frame-deletion
+           (lambda (arg force) (setq called (list arg force))) nil t)
+          (should (equal called (list frame t)))
+          (should (eql prepared 42))
+          (setq called nil prepared nil)
+          (ewm--prevent-frame-deletion
+           (lambda (arg force) (setq called (list arg force))) frame nil)
           (should-not called)
           (should-not prepared))
       (set-frame-parameter frame 'ewm-output old-output)
       (set-frame-parameter frame 'ewm-surface-id old-surface-id))))
 
-(ert-deftest ewm-focus/with-surface-buffer-skips-unknown-id ()
-  "Event for an unregistered surface id is a no-op."
+(ert-deftest ewm-focus/with-surface-buffer-runs-only-in-a-live-buffer ()
+  "An unknown id or a killed buffer is a no-op, a live buffer is current for the body."
   (let ((ewm--surfaces (make-hash-table :test 'eql))
-        (ran nil))
-    (ewm--with-surface-buffer-from-event '((id . 42)) (setq ran t))
-    (should-not ran)))
-
-(ert-deftest ewm-focus/with-surface-buffer-skips-dead-buffer ()
-  "Event whose surface buffer has been killed is a no-op."
-  (let ((ewm--surfaces (make-hash-table :test 'eql))
-        (buf (generate-new-buffer " *ewm-test-dead*"))
-        (ran nil))
-    (puthash 42 buf ewm--surfaces)
-    (kill-buffer buf)
-    (ewm--with-surface-buffer-from-event '((id . 42)) (setq ran t))
-    (should-not ran)))
-
-(ert-deftest ewm-focus/with-surface-buffer-runs-in-live-buffer ()
-  "Body runs with the live surface buffer as `current-buffer'."
-  (let ((ewm--surfaces (make-hash-table :test 'eql))
-        (buf (generate-new-buffer " *ewm-test-live*")))
+        (dead (generate-new-buffer " *ewm-test-dead*"))
+        (live (generate-new-buffer " *ewm-test-live*"))
+        ran)
     (unwind-protect
         (progn
-          (puthash 42 buf ewm--surfaces)
-          (let (captured)
-            (ewm--with-surface-buffer-from-event '((id . 42))
-              (setq captured (current-buffer)))
-            (should (eq captured buf))))
-      (kill-buffer buf))))
+          (ewm--with-surface-buffer-from-event '((id . 42)) (push (current-buffer) ran))
+          (puthash 42 dead ewm--surfaces)
+          (kill-buffer dead)
+          (ewm--with-surface-buffer-from-event '((id . 42)) (push (current-buffer) ran))
+          (should-not ran)
+          (puthash 42 live ewm--surfaces)
+          (ewm--with-surface-buffer-from-event '((id . 42)) (push (current-buffer) ran))
+          (should (equal ran (list live))))
+      (kill-buffer live))))
 
-(ert-deftest ewm-focus/mff-off-skips-warp ()
-  "With MFF off, the selection-change hook is a no-op."
+(ert-deftest ewm-focus/mff-warps-once-per-real-selection-change ()
+  "The hook warps when the selection left its anchor, never when it only re-fires.
+Process filters (telega, magit) jostle `selected-window' between commands."
   (let ((warps 0)
-        (ewm-mouse-follows-focus nil))
-    (cl-letf (((symbol-function 'ewm-input--warp-pointer-to-window)
-               (lambda (_) (cl-incf warps))))
-      (ewm-input--on-window-selection-change (selected-frame))
-      (should (= 0 warps)))))
-
-(ert-deftest ewm-focus/mff-warps-on-selection-change ()
-  "MFF on + selection differs from anchor: warp fires and anchor updates."
-  (let ((warps 0)
-        (ewm-mouse-follows-focus t)
+        (ewm-mouse-follows-focus nil)
         (ewm--mff-last-window nil))
     (cl-letf (((symbol-function 'ewm-input--warp-pointer-to-window)
                (lambda (_) (cl-incf warps))))
       (ewm-input--on-window-selection-change (selected-frame))
-      (should (= 1 warps))
-      (should (eq ewm--mff-last-window (selected-window))))))
-
-(ert-deftest ewm-focus/mff-idempotent-on-unchanged-selection ()
-  "Repeated hook fires without a real selection change must not warp.
-Process filters (telega, magit) jostle `selected-window' between
-commands; if this guard breaks, every background event warps the
-pointer."
-  (let ((warps 0)
-        (ewm-mouse-follows-focus t)
-        (ewm--mff-last-window (selected-window)))
-    (cl-letf (((symbol-function 'ewm-input--warp-pointer-to-window)
-               (lambda (_) (cl-incf warps))))
-      (ewm-input--on-window-selection-change (selected-frame))
-      (ewm-input--on-window-selection-change (selected-frame))
-      (should (= 0 warps)))))
-
-(ert-deftest ewm-focus/mff-skips-minibuffer ()
-  "Selecting the minibuffer never warps the pointer."
-  (ewm-focus-tests--with-frame f
-    (let ((warps 0))
-      (cl-letf (((symbol-function 'ewm-warp-pointer)
-                 (lambda (_ _) (cl-incf warps)))
-                ((symbol-function 'ewm--get-output-origin)
-                 (lambda (_) (cons 0 0)))
-                ;; Force the pointer-inside guard to fall through.
-                ((symbol-function 'ewm-input--pointer-in-window-p)
-                 (lambda (&rest _) nil)))
-        (ewm-input--warp-pointer-to-window (minibuffer-window f))
-        (should (= 0 warps))))))
-
-(ert-deftest ewm-focus/mff-skips-when-pointer-already-inside ()
-  "If the pointer is already in the target window, no warp."
-  (ewm-focus-tests--with-frame f
-    (let ((warps 0))
-      (cl-letf (((symbol-function 'ewm-warp-pointer)
-                 (lambda (_ _) (cl-incf warps)))
-                ((symbol-function 'ewm--get-output-origin)
-                 (lambda (_) (cons 0 0)))
-                ((symbol-function 'ewm-input--pointer-in-window-p)
-                 (lambda (&rest _) t)))
-        (ewm-input--warp-pointer-to-window (frame-selected-window f))
-        (should (= 0 warps))))))
-
-(ert-deftest ewm-focus/ffm-on-frame-edge-does-not-warp ()
-  "FFM hover on a frame edge keeps `ewm--mff-last-window' in sync, suppressing MFF warp."
-  (ewm-focus-tests--with-frame f
-    (let ((warps 0)
-          (ewm-focus-follows-mouse t)
-          (ewm-mouse-follows-focus t)
-          (ewm--mff-last-window nil)
-          (frame-focus-id (ewm-layout--ensure-frame-focus-id f)))
-      (cl-letf (((symbol-function 'ewm-input--warp-pointer-to-window)
-                 (lambda (_) (cl-incf warps)))
-                ;; Frame-edge: no Emacs window at this point.
-                ((symbol-function 'window-at-x-y) (lambda (&rest _) nil)))
-        (ewm--handle-focus `((focus_id . ,frame-focus-id)
-                              (x . 0)
-                              (y . 0)
-                              (pointer . t)))
-        (ewm-input--on-window-selection-change f)
-        (should (= 0 warps))))))
-
-(ert-deftest ewm-focus/pointer-frame-focus-anchors-mff-with-ffm-off ()
-  "Pointer focus on frame chrome suppresses MFF warp even when hover FFM is off."
-  (ewm-focus-tests--with-frame f
-    (let ((warps 0)
-          (ewm-focus-follows-mouse nil)
-          (ewm-mouse-follows-focus t)
-          (ewm--mff-last-window nil)
-          (frame-focus-id (ewm-layout--ensure-frame-focus-id f)))
-      (cl-letf (((symbol-function 'ewm-input--warp-pointer-to-window)
-                 (lambda (_) (cl-incf warps)))
-                ((symbol-function 'window-at-x-y)
-                 (lambda (&rest _)
-                   (error "FFM window selection should be disabled"))))
-        (ewm--handle-focus `((focus_id . ,frame-focus-id)
-                              (x . 0)
-                              (y . 0)
-                              (pointer . t)))
-        (ewm-input--on-window-selection-change f)
-        (should (= 0 warps))))))
-
-(ert-deftest ewm-focus/keyboard-cross-output-warps ()
-  "Keyboard focus event (no x/y) leaves MFF anchor stale so the hook warps."
-  (ewm-focus-tests--with-frame f
-    (let ((warps 0)
-          (ewm-focus-follows-mouse t)
-          (ewm-mouse-follows-focus t)
-          (ewm--mff-last-window nil)
-          (frame-focus-id (ewm-layout--ensure-frame-focus-id f)))
-      (cl-letf (((symbol-function 'ewm-input--warp-pointer-to-window)
-                 (lambda (_) (cl-incf warps))))
-        (ewm--handle-focus `((focus_id . ,frame-focus-id)))
-        (ewm-input--on-window-selection-change f)
+      (should (= 0 warps))
+      (let ((ewm-mouse-follows-focus t))
+        (ewm-input--on-window-selection-change (selected-frame))
+        (should (= 1 warps))
+        (should (eq ewm--mff-last-window (selected-window)))
+        (ewm-input--on-window-selection-change (selected-frame))
+        (ewm-input--on-window-selection-change (selected-frame))
         (should (= 1 warps))))))
 
-(ert-deftest ewm-focus/mff-warp-uses-frame-origin ()
-  "MFF window warps use compositor frame origin, not output origin."
+(ert-deftest ewm-focus/mff-warp-lands-in-the-window-from-the-frame-origin ()
+  "The warp goes to the window body offset by the compositor frame origin,
+and is skipped for the minibuffer or a pointer already inside."
   (ewm-focus-tests--with-frame f
     (let (warped)
-      (cl-letf (((symbol-function 'ewm--get-frame-origin)
-                 (lambda (_) '(200 . 300)))
-                ((symbol-function 'ewm-get-pointer-location)
-                 (lambda () '(0.0 . 0.0)))
-                ((symbol-function 'window-pixel-edges)
-                 (lambda (&optional _) '(0 0 100 100)))
-                ((symbol-function 'ewm--window-body-pixel-rect)
-                 (lambda (_) '(10 20 100 100)))
-                ((symbol-function 'ewm-warp-pointer)
-                 (lambda (x y) (setq warped (cons x y)))))
+      (cl-letf (((symbol-function 'ewm--get-frame-origin) (lambda (_) '(200 . 300)))
+                ((symbol-function 'ewm--get-output-origin) (lambda (_) '(0 . 0)))
+                ((symbol-function 'ewm-get-pointer-location) (lambda () '(0.0 . 0.0)))
+                ((symbol-function 'window-pixel-edges) (lambda (&optional _) '(0 0 100 100)))
+                ((symbol-function 'ewm--window-body-pixel-rect) (lambda (_) '(10 20 100 100)))
+                ((symbol-function 'ewm-warp-pointer) (lambda (x y) (push (cons x y) warped))))
+        (cl-letf (((symbol-function 'ewm-input--pointer-in-window-p) (lambda (&rest _) nil)))
+          (ewm-input--warp-pointer-to-window (minibuffer-window f)))
+        (cl-letf (((symbol-function 'ewm-input--pointer-in-window-p) (lambda (&rest _) t)))
+          (ewm-input--warp-pointer-to-window (frame-selected-window f)))
+        (should-not warped)
         (ewm-input--warp-pointer-to-window (frame-selected-window f))
-        (should (equal warped '(260.0 . 370.0)))))))
+        (should (equal warped '((260.0 . 370.0))))))))
+
+(ert-deftest ewm-focus/pointer-focus-anchors-mff-and-keyboard-focus-does-not ()
+  "A pointer focus on the frame's own surface anchors MFF with hover FFM on or off,
+a keyboard focus leaves the anchor stale so the hook warps."
+  (ewm-focus-tests--with-frame f
+    (let ((warps 0)
+          (ewm-focus-follows-mouse t)
+          (ewm-mouse-follows-focus t)
+          (ewm--mff-last-window nil)
+          (pointer-focus `((focus_id . ,(ewm-layout--ensure-frame-focus-id f))
+                           (x . 0) (y . 0) (pointer . t))))
+      (cl-letf (((symbol-function 'ewm-input--warp-pointer-to-window)
+                 (lambda (_) (cl-incf warps))))
+        ;; Frame edge: no Emacs window at this point.
+        (cl-letf (((symbol-function 'window-at-x-y) (lambda (&rest _) nil)))
+          (ewm--handle-focus pointer-focus)
+          (ewm-input--on-window-selection-change f))
+        (let ((ewm-focus-follows-mouse nil)
+              (ewm--mff-last-window nil))
+          (cl-letf (((symbol-function 'window-at-x-y)
+                     (lambda (&rest _) (error "FFM window selection should be disabled"))))
+            (ewm--handle-focus pointer-focus)
+            (ewm-input--on-window-selection-change f)))
+        (should (= 0 warps))
+        (setq ewm--mff-last-window nil)
+        (ewm--handle-focus `((focus_id . ,(ewm-layout--ensure-frame-focus-id f))))
+        (ewm-input--on-window-selection-change f)
+        (should (= 1 warps))))))
 
 (provide 'ewm-focus-tests)
 ;;; ewm-focus-tests.el ends here

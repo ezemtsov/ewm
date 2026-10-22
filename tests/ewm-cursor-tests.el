@@ -20,29 +20,21 @@
                                (file-name-directory (or load-file-name buffer-file-name))))
 (require 'ewm)
 
-(ert-deftest ewm-cursor-tests/auto-restores-session-theme ()
-  (let ((process-environment '("XCURSOR_THEME=AmbientTheme"
-                               "XCURSOR_SIZE=16"))
+(ert-deftest ewm-cursor-tests/auto-restores-the-session-theme-or-clears-it ()
+  "Auto puts the ambient theme back after an explicit one, or unsets it when there was none."
+  (let ((process-environment '("XCURSOR_THEME=AmbientTheme" "XCURSOR_SIZE=16"))
         (ewm--session-cursor-theme "AmbientTheme")
         (ewm-cursor-theme "ExplicitTheme")
         (ewm-cursor-size 24))
     (ewm--apply-cursor-env)
     (should (equal (getenv "XCURSOR_THEME") "ExplicitTheme"))
-
     (setq ewm-cursor-theme nil)
     (ewm--apply-cursor-env)
     (should (equal (getenv "XCURSOR_THEME") "AmbientTheme"))
-    (should (equal (getenv "XCURSOR_SIZE") "24"))))
-
-(ert-deftest ewm-cursor-tests/auto-clears-theme-without-session-theme ()
-  (let ((process-environment '("XCURSOR_THEME=ExplicitTheme"
-                               "XCURSOR_SIZE=16"))
-        (ewm--session-cursor-theme nil)
-        (ewm-cursor-theme nil)
-        (ewm-cursor-size 24))
+    (should (equal (getenv "XCURSOR_SIZE") "24"))
+    (setq ewm--session-cursor-theme nil)
     (ewm--apply-cursor-env)
-    (should-not (getenv "XCURSOR_THEME"))
-    (should (equal (getenv "XCURSOR_SIZE") "24"))))
+    (should-not (getenv "XCURSOR_THEME"))))
 
 (provide 'ewm-cursor-tests)
 ;;; ewm-cursor-tests.el ends here
