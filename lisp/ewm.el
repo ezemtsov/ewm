@@ -34,6 +34,7 @@
 (require 'ewm-text-input)
 (require 'ewm-commands)
 (require 'ewm-input)
+(require 'ewm-compat)
 
 (unless (featurep 'ewm-core)
   (let ((path (getenv "EWM_MODULE_PATH")))
@@ -759,6 +760,11 @@ The compositor runs as a thread within the Emacs process."
 
 ;;; Global minor mode
 
+(defun ewm--send-bindings ()
+  "Apply the obsolete binding options, then send the bindings."
+  (ewm-compat--apply)
+  (ewm--send-intercept-keys))
+
 (defun ewm--setup ()
   "Install Emacs-side state before compositor startup events run."
   (ewm--disable-csd)
@@ -768,8 +774,8 @@ The compositor runs as a thread within the Emacs process."
               #'ewm--select-frame-set-input-focus)
   (ewm-input--enable)
   (if after-init-time
-      (ewm--send-intercept-keys)
-    (add-hook 'after-init-hook #'ewm--send-intercept-keys))
+      (ewm--send-bindings)
+    (add-hook 'after-init-hook #'ewm--send-bindings))
   (setq ewm-focus-follows-mouse (or ewm-focus-follows-mouse (and mouse-autoselect-window t)))
   (ewm--send-config)
   (ewm-text-input--send-provider)
@@ -796,7 +802,7 @@ The compositor runs as a thread within the Emacs process."
   (remove-function interprogram-cut-function #'ewm--interprogram-cut-function)
   (remove-function interprogram-paste-function #'ignore)
   (remove-hook 'after-make-frame-functions #'ewm--on-make-frame)
-  (remove-hook 'after-init-hook #'ewm--send-intercept-keys)
+  (remove-hook 'after-init-hook #'ewm--send-bindings)
   (remove-hook 'emacs-startup-hook #'ewm-notify-initialized-module)
   (remove-hook 'enable-theme-functions #'ewm--apply-background)
   (advice-remove 'delete-frame #'ewm--prevent-frame-deletion)

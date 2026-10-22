@@ -106,11 +106,10 @@ if the physical prefix key is released before Lisp's post-command hook runs.
 The next inactive command-loop sync clears that redirect capture.
 
 `ewm-mode-map` command bindings do not move Wayland keyboard focus. They are
-delivered to Lisp over the event pipe. Only commands listed in
-`ewm-repeatable-commands` and the built-in media/brightness keys repeat from
-the compositor timer. Plain `ewm-intercept-prefixes` entries that are not also
-bound in `ewm-mode-map` use keyboard delivery, so keys such as `M-x` and `C-u`
-enter Emacs's normal command loop.
+delivered to Lisp over the event pipe. Bindings flagged `:repeat` with
+`ewm-key`, as the default navigation and media keys are, repeat from the
+compositor timer. Keys flagged `:intercept`, such as
+`M-x` and `C-u`, use keyboard delivery and enter Emacs's normal command loop.
 
 The repeat configuration has one effective source: the `(keyboard
 :repeat-rate ... :repeat-delay ...)` entry in `ewm-input-config`, falling back

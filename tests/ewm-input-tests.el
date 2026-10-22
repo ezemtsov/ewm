@@ -4,9 +4,9 @@
 
 ;;; Commentary:
 
-;; Pins the Lisp-side half of the K-series contract: parsing
-;; `ewm-intercept-prefixes' entries and building the InterceptedKey
-;; plists the compositor consumes via the module bridge.  The Rust-side
+;; Pins the Lisp-side half of the K-series contract: reading the flags of
+;; `ewm-mode-map' bindings and building the InterceptedKey plists the
+;; compositor consumes via the module bridge.  The Rust-side
 ;; classification of the same plists is pinned by the K1-K4 proptest in
 ;; `compositor/tests/key_classify_proptest.rs'.
 ;;
@@ -20,26 +20,9 @@
 (require 'ert-x)
 (require 'cl-lib)
 
-;; A stale .elc next to a newer .el would otherwise mask the source we're
-;; meant to be testing.
-(setq load-prefer-newer t)
-
-;; The compositor dynamic module isn't loaded in the test harness; stub
-;; the module entry points the libs would otherwise pull in.
-(defmacro ewm-test--stub (name args &rest body)
-  `(unless (fboundp ',name) (defun ,name ,args ,@body)))
-
-(ewm-test--stub ewm-intercept-keys-module (_keys) nil)
-(ewm-test--stub ewm-keyboard-capture-begin-module (_reason) 1)
-(ewm-test--stub ewm-keyboard-capture-end-module (_token) t)
-(ewm-test--stub ewm-keyboard-redirect-capture-clear-module () nil)
-(ewm-test--stub ewm-get-focused-id () 2)
-(ewm-test--stub ewm-get-focused-frame-id () 2)
-(provide 'ewm-core)
-
-(add-to-list 'load-path
-             (expand-file-name "../lisp"
-                               (file-name-directory (or load-file-name buffer-file-name))))
+(load (expand-file-name "ewm-test-stubs"
+                        (file-name-directory (or load-file-name buffer-file-name)))
+      nil t)
 (require 'ewm-input)
 
 (defvar ewm-input-tests--focused-id 2)
@@ -99,10 +82,35 @@
     (should (equal (plist-get spec :dispatch) "command"))
     (should-not (plist-get spec :repeat))))
 
-(ert-deftest ewm-input-tests/spec-fullscreen-flag ()
-  "`fullscreen=t' lifts :fullscreen in the plist."
-  (let ((spec (ewm--event-to-intercept-spec ?a t)))
-    (should (eq (plist-get spec :fullscreen) t))))
+;;;; ewm-key
+
+(ert-deftest ewm-input-tests/ewm-key-rejects-bad-shapes ()
+  "A command with :intercept, flags without a command and an unknown flag are errors."
+  (should-error (ewm-key #'find-file :intercept))
+  (should-error (ewm-key :fullscreen))
+  (should-error (ewm-key #'find-file :bogus)))
+
+(ert-deftest ewm-input-tests/flagged-bindings-keep-their-meaning ()
+  "A flagged command runs as itself, an intercepted key keeps what Emacs gives it."
+  (let ((ewm-mode-map (make-sparse-keymap)))
+    (keymap-set ewm-mode-map "<f9>" (ewm-key #'find-file :repeat))
+    (keymap-set ewm-mode-map "C-x" (ewm-key :intercept :fullscreen))
+    (define-minor-mode ewm-input-tests--mode "" :global t :keymap ewm-mode-map)
+    (unwind-protect
+        (progn
+          (ewm-input-tests--mode 1)
+          (with-temp-buffer
+            (dired-mode)
+            (should (eq (key-binding (kbd "<f9>")) #'find-file))
+            (should (eq (key-binding (kbd "C-x C-f")) #'find-file))
+            (should (eq (key-binding (kbd "C-x C-q")) #'dired-toggle-read-only)))
+          (should (equal (ewm--event-entry 'f9) '(find-file :repeat)))
+          (should (equal (ewm--event-entry ?\C-x) '(nil :intercept :fullscreen)))
+          (let ((spec (ewm--event-to-intercept-spec ?\C-x)))
+            (should (equal (plist-get spec :dispatch) "keyboard"))
+            (should (eq (plist-get spec :fullscreen) t)))
+          (should (eq (plist-get (ewm--event-to-intercept-spec 'f9) :repeat) t)))
+      (ewm-input-tests--mode -1))))
 
 (defun ewm-input-tests--go () (interactive))
 (function-put 'ewm-input-tests--go 'ewm-action '(focus-frame :delta 1))
@@ -154,7 +162,7 @@
           (should (eq (plist-get spec :super) t))
           (should (equal (plist-get spec :dispatch) "command"))
           (should (equal (plist-get spec :action) action))
-          (should (memq event (ewm--mode-map-events)))))
+          (should (assq event (ewm--mode-map-entries)))))
     (define-key ewm-mode-map (kbd "s-<swipe-4-left>") nil t)
     (define-key ewm-mode-map (kbd "s-<wheel-down>") nil t)))
 
@@ -177,15 +185,15 @@
   (let ((spec (ewm--event-to-intercept-spec ?\C-x)))
     (should (equal (plist-get spec :dispatch) "keyboard"))))
 
-(ert-deftest ewm-input-tests/intercept-prefix-command-uses-keyboard-dispatch ()
-  "Plain intercept-prefix commands like M-x enter the Emacs keyboard path."
-  (should (equal (ewm--event-dispatch ?\M-x t) "keyboard"))
-  (should (equal (ewm--event-dispatch ?\C-u t) "keyboard")))
+(ert-deftest ewm-input-tests/intercepted-emacs-keys-use-keyboard-dispatch ()
+  "Intercepted Emacs keys like M-x enter the Emacs keyboard path."
+  (should (equal (ewm--event-dispatch ?\M-x nil t) "keyboard"))
+  (should (equal (ewm--event-dispatch ?\C-u nil t) "keyboard")))
 
 (ert-deftest ewm-input-tests/mode-map-command-uses-command-dispatch ()
   "`ewm-mode-map' commands stay on command dispatch, even if fullscreen-lifted."
   (let ((event (aref (key-parse "<AudioLowerVolume>") 0)))
-    (should (equal (ewm--event-dispatch event t) "command"))))
+    (should (equal (ewm--event-dispatch event #'ewm-volume-lower t) "command"))))
 
 (ert-deftest ewm-input-tests/repeatable-mode-command-sets-repeat ()
   "Only explicitly repeatable commands request compositor command repeat."
@@ -218,10 +226,12 @@
 (ert-deftest ewm-input-tests/send-intercept-keys-has-runtime-dispatch-contract ()
   "The actual module payload keeps M-x keyboard-routed and media command-routed."
   (let ((ewm--module-mode t)
-        (ewm-intercept-prefixes
-         '(?\M-x ?\C-u ("<AudioLowerVolume>" :fullscreen)
-           ("<Print>" :fullscreen) "<Print>"))
+        (ewm-mode-map (make-sparse-keymap))
         captured)
+    (keymap-set ewm-mode-map "M-x" (ewm-key :intercept))
+    (keymap-set ewm-mode-map "C-u" (ewm-key :intercept))
+    (keymap-set ewm-mode-map "<AudioLowerVolume>" (ewm-key #'ewm-volume-lower :fullscreen :repeat))
+    (keymap-set ewm-mode-map "<Print>" (ewm-key :intercept :fullscreen))
     (cl-letf (((symbol-function 'ewm-intercept-keys-module)
                (lambda (keys) (setq captured keys))))
       (ewm--send-intercept-keys))
@@ -264,38 +274,6 @@
         (advice-remove 'define-key #'ewm-input--on-define-key)
         (cancel-function-timers #'ewm--send-intercept-keys)
         (setq ewm-input--resend-timer nil)))))
-
-;;;; ewm--parse-intercept-entry
-
-(ert-deftest ewm-input-tests/parse-integer-entry ()
-  "Bare character → (event . nil), no fullscreen."
-  (should (equal (ewm--parse-intercept-entry ?\C-x) (cons ?\C-x nil))))
-
-(ert-deftest ewm-input-tests/parse-string-entry ()
-  "String entry is parsed via `key-parse', no fullscreen."
-  (let ((parsed (ewm--parse-intercept-entry "<MonBrightnessUp>")))
-    (should (equal (car parsed) (aref (key-parse "<MonBrightnessUp>") 0)))
-    (should (null (cdr parsed)))))
-
-(ert-deftest ewm-input-tests/parse-list-with-fullscreen ()
-  "List containing `:fullscreen' carries the flag."
-  (should (equal (ewm--parse-intercept-entry '(?\s-f :fullscreen))
-                 (cons ?\s-f t))))
-
-(ert-deftest ewm-input-tests/parse-list-string-with-fullscreen ()
-  "String entry inside a `:fullscreen' list still carries the flag."
-  (let ((parsed (ewm--parse-intercept-entry '("<MonBrightnessUp>" :fullscreen))))
-    (should (equal (car parsed) (aref (key-parse "<MonBrightnessUp>") 0)))
-    (should (eq (cdr parsed) t))))
-
-(ert-deftest ewm-input-tests/parse-list-without-fullscreen-rejected ()
-  "Lists without `:fullscreen' aren't recognised — return nil."
-  (should (null (ewm--parse-intercept-entry '(?\s-f :other)))))
-
-(ert-deftest ewm-input-tests/parse-invalid-returns-nil ()
-  "Unknown shapes (number list, vector) return nil."
-  (should (null (ewm--parse-intercept-entry [some vector])))
-  (should (null (ewm--parse-intercept-entry 'a-symbol))))
 
 (ert-deftest ewm-input-tests/key-event-names-one-key ()
   "`ewm--key-event' returns the one event a description names, else nil."

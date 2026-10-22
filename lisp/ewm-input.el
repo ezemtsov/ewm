@@ -8,17 +8,17 @@
 ;; Input handling for EWM including key interception, mouse-follows-focus,
 ;; and keyboard layout configuration.
 ;;
-;; The compositor intercepts keys from three sources:
+;; The compositor intercepts keys from two sources:
 ;;
-;; 1. `ewm-mode-map' - All bindings in this keymap are intercepted, those
-;;    of commands with an `ewm-action' property run in the compositor.
-;;    Override defaults with use-package :bind (:map ewm-mode-map ...).
-;;    Touchpad swipes bind as `<swipe-FINGERS-DIRECTION>' keys and scrolls
-;;    as `<wheel-DIRECTION>' keys, with the usual modifier prefixes.
-;; 2. `ewm-intercept-prefixes' - Extra keys to intercept, plus keys that
-;;    should also be intercepted while a client is fullscreen, as the
-;;    compositor commands of `ewm-mode-map' are.
-;; 3. `ewm-surface-emulate-keys' - Key entries are intercepted as commands
+;; 1. `ewm-mode-map' - Every binding is intercepted, those of commands with
+;;    an `ewm-action' property run in the compositor. `ewm-key' flags a
+;;    binding: :repeat while held, :fullscreen over a fullscreen window, and
+;;    :intercept for an Emacs key such as C-x that keeps its own meaning but
+;;    reaches Emacs while an application has focus. Override defaults with
+;;    use-package :bind (:map ewm-mode-map ...). Touchpad swipes bind as
+;;    `<swipe-FINGERS-DIRECTION>' keys and scrolls as `<wheel-DIRECTION>'
+;;    keys, with the usual modifier prefixes.
+;; 2. `ewm-surface-emulate-keys' - Key entries are intercepted as commands
 ;;    and `ewm-surface-emulate' sends the mapped keys to the client.
 ;;
 ;; Example:
@@ -40,75 +40,104 @@
 (require 'ewm-text-input)
 (require 'ewm-commands)
 
+(defconst ewm-input--flags '(:repeat :fullscreen :intercept)
+  "The flags `ewm-key' takes.")
+
+(defun ewm-key (&rest args)
+  "A binding for `ewm-mode-map': a command followed by flags, or flags alone.
+Flags are present or absent. :repeat repeats the key while it is held,
+:fullscreen keeps it intercepted over a fullscreen window, and :intercept,
+with no command, lets an Emacs key such as C-x or M-x keep its own meaning
+while reaching Emacs even when an application has focus.
+
+  (keymap-set ewm-mode-map \"s-=\" (ewm-key #\='ewm-volume-raise :repeat))
+  (keymap-set ewm-mode-map \"C-x\" (ewm-key :intercept))"
+  (let ((command (and (not (keywordp (car args))) (pop args))))
+    (dolist (flag args)
+      (unless (memq flag ewm-input--flags)
+        (error "ewm-key: %S is not one of %S" flag ewm-input--flags)))
+    (cond ((and command (memq :intercept args))
+           (error "ewm-key: %S and :intercept cannot both apply" command))
+          ((not (or command (memq :intercept args)))
+           (error "ewm-key: a command or :intercept is needed")))
+    (if (or args (null command)) `(menu-item "" ,command :ewm ,args) command)))
+
+;; Commands that repeat on any key they are bound to.
 (defvar-keymap ewm-mode-map
   :doc "Keymap for `ewm-mode'.
-Default super-key bindings for window management.
-Override individual bindings with `use-package':
-  :bind (:map ewm-mode-map (\"s-d\" . my-launcher))"
+Default super-key bindings for window management, see `ewm-key' for the
+flags a binding takes. Add or override bindings in the same shape:
+  (define-keymap :keymap ewm-mode-map \"s-d\" #\\='my-launcher)"
   "<XF86WakeUp>" #'ignore
   "C-M-<XF86WakeUp>" #'ignore
   ;; Media/hardware keys
-  "<AudioRaiseVolume>" #'ewm-volume-raise
-  "<AudioLowerVolume>" #'ewm-volume-lower
-  "<AudioMute>" #'ewm-volume-mute
-  "<AudioMicMute>" #'ewm-mic-mute
-  "<MonBrightnessUp>" #'ewm-brightness-up
-  "<MonBrightnessDown>" #'ewm-brightness-down
+  "<AudioRaiseVolume>" (ewm-key #'ewm-volume-raise :fullscreen :repeat)
+  "<AudioLowerVolume>" (ewm-key #'ewm-volume-lower :fullscreen :repeat)
+  "<AudioMute>" (ewm-key #'ewm-volume-mute :fullscreen :repeat)
+  "<AudioMicMute>" (ewm-key #'ewm-mic-mute :fullscreen :repeat)
+  "<MonBrightnessUp>" (ewm-key #'ewm-brightness-up :fullscreen :repeat)
+  "<MonBrightnessDown>" (ewm-key #'ewm-brightness-down :fullscreen :repeat)
   ;; Window navigation; crosses outputs at the frame edge.
-  "s-<left>" #'ewm-focus-left
-  "s-<right>" #'ewm-focus-right
-  "s-<up>" #'ewm-focus-up
-  "s-<down>" #'ewm-focus-down
+  "s-<left>" (ewm-key #'ewm-focus-left :repeat)
+  "s-<right>" (ewm-key #'ewm-focus-right :repeat)
+  "s-<up>" (ewm-key #'ewm-focus-up :repeat)
+  "s-<down>" (ewm-key #'ewm-focus-down :repeat)
   ;; Workspace switching on the current output's strip.
-  "S-s-<left>" #'ewm-frame-left
-  "S-s-<right>" #'ewm-frame-right
+  "S-s-<left>" (ewm-key #'ewm-frame-left :fullscreen :repeat)
+  "S-s-<right>" (ewm-key #'ewm-frame-right :fullscreen :repeat)
   ;; Overview: zoom the strip out and back in.
-  "S-s-<up>" #'ewm-overview-open
-  "S-s-<down>" #'ewm-overview-close
+  "S-s-<up>" (ewm-key #'ewm-overview-open :fullscreen)
+  "S-s-<down>" (ewm-key #'ewm-overview-close :fullscreen)
   ;; Touchpad swipes follow the fingers: up and down drive the overview, a swipe
   ;; left brings in the frame to the right.
-  "<swipe-3-up>" #'ewm-overview-open
-  "<swipe-3-down>" #'ewm-overview-close
-  "<swipe-3-left>" #'ewm-frame-right
-  "<swipe-3-right>" #'ewm-frame-left
+  "<swipe-3-up>" (ewm-key #'ewm-overview-open :fullscreen)
+  "<swipe-3-down>" (ewm-key #'ewm-overview-close :fullscreen)
+  "<swipe-3-left>" (ewm-key #'ewm-frame-right :fullscreen)
+  "<swipe-3-right>" (ewm-key #'ewm-frame-left :fullscreen)
   ;; Slide every frame off screen and back.
-  "s-m" #'ewm-hide-toggle
+  "s-m" (ewm-key #'ewm-hide-toggle :fullscreen)
   ;; Clipboard
   "s-c" #'kill-ring-save
   "s-v" #'yank
   ;; Application launcher
   "s-d" #'ewm-launch-app
   ;; Fullscreen toggle
-  "s-f" #'ewm-toggle-fullscreen
+  "s-f" (ewm-key #'ewm-toggle-fullscreen :fullscreen)
   ;; Floating detach/attach toggle
   "S-s-SPC" #'ewm-floating-toggle
   ;; Lock session
-  "s-l" #'ewm-lock-session
+  "s-l" (ewm-key #'ewm-lock-session :fullscreen)
   ;; Edit the focused text field
   "s-e" #'ewm-edit
   ;; Surface buffer cycling
-  "s-<tab>" #'ewm-next-surface-buffer
+  "s-<tab>" (ewm-key #'ewm-next-surface-buffer :repeat)
   ;; Emacs sees S-Tab as iso-lefttab; compositor sees Tab+Shift.  Need both.
-  "s-<iso-lefttab>" #'ewm-prev-surface-buffer
-  "S-s-<tab>" #'ewm-prev-surface-buffer
+  "s-<iso-lefttab>" (ewm-key #'ewm-prev-surface-buffer :repeat)
+  "S-s-<tab>" (ewm-key #'ewm-prev-surface-buffer :repeat)
   ;; Frame strip
   "s-t" #'ewm-frame-new
   "s-w" #'ewm-frame-close
   ;; Reorder frames horizontally; reorder windows within a frame vertically.
-  "C-s-<left>" #'ewm-frame-move-left
-  "C-s-<right>" #'ewm-frame-move-right
-  "C-s-<up>" #'windmove-swap-states-up
-  "C-s-<down>" #'windmove-swap-states-down
+  "C-s-<left>" (ewm-key #'ewm-frame-move-left :fullscreen :repeat)
+  "C-s-<right>" (ewm-key #'ewm-frame-move-right :fullscreen :repeat)
+  "C-s-<up>" (ewm-key #'windmove-swap-states-up :repeat)
+  "C-s-<down>" (ewm-key #'windmove-swap-states-down :repeat)
   ;; Select Nth frame on current output's strip.
-  "s-1" #'ewm-frame-select
-  "s-2" #'ewm-frame-select
-  "s-3" #'ewm-frame-select
-  "s-4" #'ewm-frame-select
-  "s-5" #'ewm-frame-select
-  "s-6" #'ewm-frame-select
-  "s-7" #'ewm-frame-select
-  "s-8" #'ewm-frame-select
-  "s-9" #'ewm-frame-select)
+  "s-1" (ewm-key #'ewm-frame-select :fullscreen)
+  "s-2" (ewm-key #'ewm-frame-select :fullscreen)
+  "s-3" (ewm-key #'ewm-frame-select :fullscreen)
+  "s-4" (ewm-key #'ewm-frame-select :fullscreen)
+  "s-5" (ewm-key #'ewm-frame-select :fullscreen)
+  "s-6" (ewm-key #'ewm-frame-select :fullscreen)
+  "s-7" (ewm-key #'ewm-frame-select :fullscreen)
+  "s-8" (ewm-key #'ewm-frame-select :fullscreen)
+  "s-9" (ewm-key #'ewm-frame-select :fullscreen)
+  ;; Emacs keys that win over an application, keeping their own meaning.
+  "C-x" (ewm-key :intercept)
+  "C-u" (ewm-key :intercept)
+  "C-h" (ewm-key :intercept)
+  "M-x" (ewm-key :intercept)
+  "<Print>" (ewm-key :intercept :fullscreen))
 
 ;;; Libinput device configuration
 
@@ -197,26 +226,6 @@ Example:
   :type '(choice character integer string)
   :match (lambda (_ key) (ewm--key-event key)))
 
-(defcustom ewm-intercept-prefixes
-  '(?\C-x ?\C-u ?\C-h ?\M-x ("<Print>" :fullscreen))
-  "Keys that always go to Emacs, even when a surface has focus.
-Each entry is a key or (key :fullscreen), where a key is an integer
-event such as ?\\M-x or a key description naming one key. :fullscreen
-entries are intercepted even when a fullscreen surface has focus, as the
-compositor commands of `ewm-mode-map' are.
-
-Bindings in `ewm-mode-map' are always intercepted (without :fullscreen)
-and use command-event delivery. Other keys enter the Emacs keyboard path.
-
-Set with `setopt' (or `:custom' in `use-package'):
-
-  (setopt ewm-intercept-prefixes
-          \\='(\"C-x\" \"C-u\" \"C-h\" \"M-x\" \"M-`\"
-            (\"<Print>\" :fullscreen)))"
-  :type '(repeat (choice ewm-key (list ewm-key (const :fullscreen))))
-  :set (ewm--send-on-set #'ewm--send-intercept-keys)
-  :group 'ewm-keybindings)
-
 (defcustom ewm-surface-emulate-keys
   '((kill-ring-save . "C-c")
     (yank . "C-v"))
@@ -227,22 +236,6 @@ that surface only, see `ewm-update-app-hook'."
   :type '(alist :key-type (choice function ewm-key) :value-type string)
   :set (ewm--send-on-set #'ewm--send-intercept-keys)
   :group 'ewm-keybindings)
-
-(defcustom ewm-repeatable-commands
-  '(ewm-focus-left ewm-focus-right ewm-focus-up ewm-focus-down
-    ewm-frame-left ewm-frame-right
-    ewm-frame-move-left ewm-frame-move-right
-    windmove-swap-states-up windmove-swap-states-down
-    ewm-next-surface-buffer ewm-prev-surface-buffer)
-  "Commands whose intercepted key bindings repeat while held."
-  :type '(repeat function)
-  :set (ewm--send-on-set #'ewm--send-intercept-keys)
-  :group 'ewm-keybindings)
-
-(defconst ewm-input--repeatable-key-descriptions
-  '("<AudioRaiseVolume>" "<AudioLowerVolume>" "<AudioMute>" "<AudioMicMute>"
-    "<MonBrightnessUp>" "<MonBrightnessDown>")
-  "Hardware keys that repeat whatever they are bound to.")
 
 (defun ewm-input--gdk-style-xf86-key-p (event)
   "Return non-nil when EVENT is a GDK-style XF86 key name."
@@ -537,35 +530,49 @@ Nil for both means the focused surface. Waits while Emacs holds the keyboard."
            (numberp binding)
            (memq binding '(ignore undefined)))))
 
-(defun ewm--event-mode-binding (event)
-  "Return EVENT's `ewm-mode-map' binding, or nil."
-  (let ((binding (lookup-key ewm-mode-map (vector event))))
-    (and (ewm--live-binding-p binding) binding)))
+(defun ewm--binding-entry (binding)
+  "BINDING as (COMMAND . FLAGS), the flags from `ewm-key', nil for a dead binding."
+  (pcase binding
+    (`(menu-item ,_ ,command . ,props)
+     (let ((flags (plist-get props :ewm)))
+       (and (or (memq :intercept flags) (ewm--live-binding-p command))
+            (cons command flags))))
+    ((pred ewm--live-binding-p) (cons binding nil))))
 
-(defun ewm--event-dispatch (event &optional intercept-prefix-entry)
-  "Return the compositor dispatch mode for EVENT.
-Keymap prefixes and plain `ewm-intercept-prefixes' entries need keyboard
-delivery.  `ewm-mode-map' command bindings use command-event delivery so
-they can repeat without moving Wayland keyboard focus; if they enter a
+(defun ewm--mode-map-entries ()
+  "Every intercepted single key of `ewm-mode-map' as (EVENT COMMAND . FLAGS)."
+  (let (entries)
+    (map-keymap
+     (lambda (event binding)
+       ;; Meta keys live under the ESC prefix, so descend and re-apply meta.
+       (if (and (eq event meta-prefix-char) (keymapp binding))
+           (map-keymap
+            (lambda (ev b)
+              (when-let* (((not (keymapp b))) (entry (ewm--binding-entry b)))
+                (push (cons (event-apply-modifier ev 'meta 27 "M-") entry) entries)))
+            binding)
+         (when-let* ((entry (ewm--binding-entry binding)))
+           (push (cons event entry) entries))))
+     ewm-mode-map)
+    (nreverse entries)))
+
+(defun ewm--event-entry (event)
+  "EVENT's (COMMAND . FLAGS) in `ewm-mode-map', or nil."
+  (cdr (assq event (ewm--mode-map-entries))))
+
+(defun ewm--event-dispatch (event command &optional intercept)
+  "Return the compositor dispatch mode for EVENT, bound to COMMAND.
+Keymap prefixes and intercepted Emacs keys need keyboard delivery.
+`ewm-mode-map' command bindings use command-event delivery so they can
+repeat without moving Wayland keyboard focus; if they enter a
 minibuffer/transient/read-key state, Lisp enables keyboard capture at
 runtime."
-  (let ((mode-binding (ewm--event-mode-binding event)))
-    (cond
-     ((keymapp mode-binding) "keyboard")
-     (mode-binding "command")
-     ((keymapp (key-binding (vector event) t)) "keyboard")
-     (intercept-prefix-entry "keyboard")
-     (t "command"))))
-
-(defun ewm--event-repeat-p (event)
-  "Return non-nil when EVENT's intercepted command should repeat."
-  (or (member (key-description (vector event))
-              ewm-input--repeatable-key-descriptions)
-      (memq (ewm--event-mode-binding event) ewm-repeatable-commands)))
-
-(defun ewm--event-fullscreen-p (event)
-  "Return non-nil when EVENT's command is intercepted under fullscreen."
-  (function-get (ewm--event-mode-binding event) 'ewm-fullscreen))
+  (cond
+   ((keymapp command) "keyboard")
+   (command "command")
+   ((keymapp (key-binding (vector event) t)) "keyboard")
+   (intercept "keyboard")
+   (t "command")))
 
 (defun ewm--event-key-spec (event)
   "Return a (:key VALUE modifier-flags) plist for EVENT, or nil.
@@ -593,26 +600,23 @@ VALUE is the ASCII code or special-key name; flags are t or nil."
   (when-let* ((key-spec (ewm--event-key-spec event)))
     `(,@key-spec :description ,(key-description (vector event)) ,@props)))
 
-(defun ewm--event-action (event)
-  "The compositor action EVENT's `ewm-mode-map' command declares, or nil."
-  (let ((binding (ewm--event-mode-binding event)))
-    (when-let* (((symbolp binding))
-                (action (function-get binding 'ewm-action)))
-      (if (functionp action) (funcall action event) action))))
+(defun ewm--event-action (event command)
+  "The compositor action COMMAND declares for EVENT, or nil."
+  (when-let* (((symbolp command))
+              (action (function-get command 'ewm-action)))
+    (if (functionp action) (funcall action event) action)))
 
-(defun ewm--event-to-intercept-spec (event &optional fullscreen dispatch)
-  "Return EVENT's compositor intercept spec plist, or nil."
-  (ewm--intercept-spec event
-                       :fullscreen (and fullscreen t)
-                       :dispatch (or dispatch (ewm--event-dispatch event))
-                       :repeat (and (ewm--event-repeat-p event) t)
-                       :action (ewm--event-action event)))
-
-(defun ewm--parse-intercept-entry (entry)
-  "Parse ENTRY from `ewm-intercept-prefixes' into (event . fullscreen-p), or nil."
-  (let* ((fullscreen (and (listp entry) (memq :fullscreen entry)))
-         (event (ewm--key-event (if fullscreen (car entry) entry))))
-    (and event (cons event (and fullscreen t)))))
+(defun ewm--event-to-intercept-spec (event &optional entry)
+  "Return EVENT's compositor intercept spec plist, or nil.
+ENTRY is its (COMMAND . FLAGS) in `ewm-mode-map', looked up when omitted."
+  (pcase-let ((`(,command . ,flags) (or entry (ewm--event-entry event))))
+    (ewm--intercept-spec event
+                         :fullscreen (and (or (memq :fullscreen flags)
+                                              (function-get command 'ewm-fullscreen))
+                                          t)
+                         :dispatch (ewm--event-dispatch event command (memq :intercept flags))
+                         :repeat (and (memq :repeat flags) t)
+                         :action (ewm--event-action event command))))
 
 (defun ewm--emulation-specs (table &optional surface)
   "Return command intercepts for TABLE's key entries, scoped to SURFACE when given.
@@ -637,42 +641,16 @@ Every entry also runs as `ewm-surface-emulate' in surface buffers."
                   collect (cons surface (buffer-local-value 'ewm-surface-emulate-keys buf)))
          (list (cons nil (default-value 'ewm-surface-emulate-keys)))))
 
-(defun ewm--mode-map-events ()
-  "Single-key events bound to live commands in `ewm-mode-map'."
-  (let (events)
-    (map-keymap
-     (lambda (event binding)
-       ;; Meta keys live under the ESC prefix, so descend and re-apply meta.
-       (if (and (eq event meta-prefix-char) (keymapp binding))
-           (map-keymap
-            (lambda (ev b)
-              (when (and (not (keymapp b)) (ewm--live-binding-p b))
-                (push (event-apply-modifier ev 'meta 27 "M-") events)))
-            binding)
-         (when (ewm--live-binding-p binding)
-           (push event events))))
-     ewm-mode-map)
-    (nreverse events)))
-
 (defun ewm--send-intercept-keys ()
-  "Send emulations, prefix and `ewm-mode-map' keys to the compositor.
+  "Send emulations and `ewm-mode-map' keys to the compositor.
 Emulations go first, since the compositor takes the first match."
   (ewm-input--cancel-resend)
   (ewm-input--install-xf86-key-aliases)
-  (let* ((prefixes (seq-keep #'ewm--parse-intercept-entry ewm-intercept-prefixes))
-         (fullscreen-events (mapcar #'car (cl-remove-if-not #'cdr prefixes)))
-         specs)
-    (dolist (event (delete-dups (append (mapcar #'car prefixes)
-                                       (ewm--mode-map-events))))
-      (when-let* ((spec (ewm--event-to-intercept-spec
-                         event
-                         (or (memq event fullscreen-events) (ewm--event-fullscreen-p event))
-                         (ewm--event-dispatch event (assq event prefixes)))))
-        (push spec specs)))
-    (ewm-intercept-keys-module
-     (vconcat (cl-loop for (surface . table) in (ewm--emulation-tables)
-                       nconc (ewm--emulation-specs table surface))
-              (nreverse specs)))))
+  (ewm-intercept-keys-module
+   (vconcat (cl-loop for (surface . table) in (ewm--emulation-tables)
+                     nconc (ewm--emulation-specs table surface))
+            (seq-keep (lambda (item) (ewm--event-to-intercept-spec (car item) (cdr item)))
+                      (ewm--mode-map-entries)))))
 
 (defun ewm-input--on-define-key (keymap &optional _key _def _remove)
   "Resend the intercept list once idle after a change to `ewm-mode-map'."

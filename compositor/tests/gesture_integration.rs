@@ -388,9 +388,8 @@ fn a_binding_yields_to_the_fullscreen_surface_under_the_pointer_only() {
 fn a_fullscreen_flag_keeps_a_gesture_over_the_fullscreen_view() {
     let _serial = SERIAL.lock().unwrap();
     let mut fix = two_output_fixture(
-        r#"(keymap-set ewm-mode-map "<swipe-4-up>" #'ewm-frame-new)
-           (keymap-set ewm-mode-map "s-<wheel-down>" #'ewm-frame-new)
-           (setopt ewm-intercept-prefixes '(("<swipe-4-up>" :fullscreen) ("s-<wheel-down>" :fullscreen)))"#,
+        r#"(keymap-set ewm-mode-map "<swipe-4-up>" (ewm-key #'ewm-frame-new :fullscreen))
+           (keymap-set ewm-mode-map "s-<wheel-down>" (ewm-key #'ewm-frame-new :fullscreen))"#,
     );
     let (_client, _toplevel) = fullscreen_view(&mut fix);
     fix.ewm()

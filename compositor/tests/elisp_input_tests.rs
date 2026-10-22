@@ -8,6 +8,11 @@ fn ewm_input_ert_suite() {
 }
 
 #[test]
+fn ewm_compat_ert_suite() {
+    common::run_ert_suite("ewm-compat-tests.el");
+}
+
+#[test]
 fn ewm_text_input_ert_suite() {
     common::run_ert_suite("ewm-text-input-tests.el");
 }
