@@ -131,7 +131,6 @@ impl Fixture {
         self.roundtrip(client);
     }
 
-    #[cfg(feature = "testing-layer-shell")]
     fn finish_layer_surface(
         &mut self,
         client: &mut TestClient,
@@ -377,7 +376,6 @@ impl Fixture {
     }
 
     /// Drive a full layer-shell surface lifecycle.
-    #[cfg(feature = "testing-layer-shell")]
     pub fn open_layer_surface(
         &mut self,
         client: &mut TestClient,
@@ -391,7 +389,6 @@ impl Fixture {
     }
 
     /// Drive a full xdg popup lifecycle parented to a layer-shell surface.
-    #[cfg(feature = "testing-layer-shell")]
     pub fn open_layer_popup(
         &mut self,
         client: &mut TestClient,

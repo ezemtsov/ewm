@@ -8,7 +8,6 @@ mod fixture;
 mod input;
 pub mod lisp;
 
-#[cfg(feature = "testing-layer-shell")]
 pub use client::LayerSurface;
 pub use client::{
     ClientEvent, ClientState as TestClientState, Gesture, Popup, Subsurface, TestClient, Toplevel,

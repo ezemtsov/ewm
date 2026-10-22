@@ -46,7 +46,6 @@ use wayland_protocols_misc::server_decoration::client::org_kde_kwin_server_decor
 use wayland_protocols_misc::zwp_input_method_v2::client::{
     zwp_input_method_manager_v2, zwp_input_method_v2,
 };
-#[cfg(feature = "testing-layer-shell")]
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
 use crate::utils::ensure_min_max_size;
@@ -168,7 +167,6 @@ pub enum ClientEvent {
     },
     SessionLocked,
     SessionLockFinished,
-    #[cfg(feature = "testing-layer-shell")]
     LayerClosed {
         layer_surface: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
     },
@@ -202,7 +200,6 @@ pub struct ClientState {
     pub workspace_manager: Option<ExtWorkspaceManagerV1>,
     /// Name and version of the `ext_workspace_manager_v1` global, bound on demand.
     pub(crate) workspace_manager_global: Option<(u32, u32)>,
-    #[cfg(feature = "testing-layer-shell")]
     pub layer_shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
     /// `wl_output` protocol id -> server-advertised name.
     pub output_names: HashMap<u32, String>,
@@ -264,7 +261,6 @@ pub struct Subsurface {
     pub subsurface: wl_subsurface::WlSubsurface,
 }
 
-#[cfg(feature = "testing-layer-shell")]
 #[derive(Clone)]
 pub struct LayerSurface {
     pub surface: wl_surface::WlSurface,
@@ -376,7 +372,6 @@ impl TestClient {
             .expect("xdg_wm_base not bound; roundtrip the registry first")
     }
 
-    #[cfg(feature = "testing-layer-shell")]
     fn layer_shell(&self) -> &zwlr_layer_shell_v1::ZwlrLayerShellV1 {
         self.state
             .layer_shell
@@ -546,7 +541,6 @@ impl TestClient {
     }
 
     /// Caller must roundtrip before attaching the first buffer.
-    #[cfg(feature = "testing-layer-shell")]
     pub fn create_layer_surface(
         &mut self,
         namespace: &str,
@@ -647,7 +641,6 @@ impl TestClient {
     }
 
     /// Caller must roundtrip before reading server-side state.
-    #[cfg(feature = "testing-layer-shell")]
     pub fn create_layer_popup(
         &mut self,
         parent: &LayerSurface,
@@ -729,7 +722,6 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientState {
         } else if interface == ExtWorkspaceManagerV1::interface().name {
             state.workspace_manager_global = Some((name, version));
         }
-        #[cfg(feature = "testing-layer-shell")]
         if interface == zwlr_layer_shell_v1::ZwlrLayerShellV1::interface().name {
             state.layer_shell = Some(registry.bind(name, version, qh, ()));
         }
@@ -950,7 +942,6 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for ClientState {
     }
 }
 
-#[cfg(feature = "testing-layer-shell")]
 impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for ClientState {
     fn event(
         state: &mut Self,
@@ -1267,5 +1258,4 @@ impl Dispatch<ExtWorkspaceHandleV1, ()> for ClientState {
     }
 }
 
-#[cfg(feature = "testing-layer-shell")]
 wayland_client::delegate_noop!(ClientState: ignore zwlr_layer_shell_v1::ZwlrLayerShellV1);

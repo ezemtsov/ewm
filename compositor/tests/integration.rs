@@ -546,7 +546,6 @@ fn disabling_and_reenabling_headless_output_updates_protocol_state() {
     assert!(head.current_mode.is_some());
 }
 
-#[cfg(feature = "testing-layer-shell")]
 #[test]
 fn disabling_an_output_closes_its_layer_surfaces() {
     let mut fixture = Fixture::new().expect("Failed to create fixture");

@@ -98,7 +98,6 @@ features = ["client", "staging"]
 [dependencies.wayland-protocols-wlr]
 version = "0.3"
 features = ["client"]
-optional = true
 
 # GIO for XDG desktop app enumeration
 [dependencies.gio]
@@ -112,7 +111,6 @@ features = [ "emacs-28" ]
 [features]
 default = []
 screencast = ["pipewire", "async-io", "async-channel"]
-testing-layer-shell = ["dep:wayland-protocols-wlr"]
 
 # Tracy profiling support
 profile-with-tracy = ["tracy-client/default"]

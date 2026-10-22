@@ -1150,7 +1150,6 @@ fn assert_invariants(h: &mut Harness, last_op: &Op) -> Result<(), TestCaseError>
     h.plain_entry_under_pointer = plain_entry_under_frame_pointer(h);
     Ok(())
 }
-#[cfg(feature = "testing-layer-shell")]
 #[test]
 fn layer_shell_popup_receives_placement_and_hit_testing() {
     let mut fix = Fixture::new().expect("fixture");
