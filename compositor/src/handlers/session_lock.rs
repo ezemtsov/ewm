@@ -1,8 +1,11 @@
 //! Session lock protocol, ext-session-lock-v1.
 
 use std::mem;
+use std::time::Duration;
 
 use smithay::output::Output;
+use smithay::reexports::calloop::RegistrationToken;
+use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::ExtSessionLockV1;
 use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
@@ -11,48 +14,95 @@ use smithay::wayland::compositor::with_states;
 use smithay::wayland::session_lock::{
     LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
 };
-use tracing::{info, warn};
+use tracing::{error, info, trace, warn};
 
+use crate::utils::is_mapped;
 use crate::{Ewm, FocusSource, Notify, State};
 
 /// Session lock state machine for secure screen locking.
 ///
 /// Follows the ext-session-lock-v1 protocol requirements:
-/// - Lock is confirmed only after all outputs render a locked frame
-/// - Input is blocked during locking/locked states
+/// - Lock surfaces get a second to paint before the first locked frame.
+/// - Lock is confirmed only after all outputs render a locked frame.
+/// - Input is blocked during locking/locked states.
 #[derive(Default)]
 pub enum LockState {
-    /// Session is not locked
+    /// Session is not locked.
     #[default]
     Unlocked,
-    /// Lock requested, waiting for all outputs to render locked frame
+    /// Lock requested, waiting for a mapped lock surface on every mapped output.
+    WaitingForSurfaces {
+        confirmation: SessionLocker,
+        deadline_token: RegistrationToken,
+    },
+    /// Lock requested, waiting for all outputs to render a locked frame.
     Locking(SessionLocker),
-    /// Session is fully locked (stores the lock object to detect dead clients)
+    /// Session is fully locked, the lock object detects a dead client.
     Locked(ExtSessionLockV1),
 }
 
 /// Per-output lock render state for tracking lock confirmation.
 #[derive(Default, PartialEq, Eq, Clone, Copy, Debug)]
 pub enum LockRenderState {
-    /// Output is showing normal content (or not yet rendered locked)
+    /// Output is showing normal content, or has not rendered locked yet.
     #[default]
     Unlocked,
-    /// Output has rendered a locked frame
+    /// Output has rendered a locked frame.
     Locked,
 }
 
 impl Ewm {
     /// Check if the session is locked (locking or fully locked)
     pub fn is_locked(&self) -> bool {
-        !matches!(self.lock_state, LockState::Unlocked)
+        matches!(
+            self.lock_state,
+            LockState::Locking(_) | LockState::Locked(_)
+        )
     }
 
     /// Check whether a live client holds the session lock, or is taking it.
     pub fn lock_client_is_live(&self) -> bool {
         match &self.lock_state {
             LockState::Unlocked => false,
-            LockState::Locking(locker) => locker.ext_session_lock().is_alive(),
+            LockState::WaitingForSurfaces { confirmation, .. }
+            | LockState::Locking(confirmation) => confirmation.ext_session_lock().is_alive(),
             LockState::Locked(lock) => lock.is_alive(),
+        }
+    }
+
+    /// Leave the lock surface wait once every mapped output shows one.
+    pub fn maybe_continue_to_locking(&mut self) {
+        if !matches!(self.lock_state, LockState::WaitingForSurfaces { .. }) {
+            return;
+        }
+        let ready = self.layout.outputs().all(|output| {
+            self.output_state[output]
+                .lock_surface
+                .as_ref()
+                .is_some_and(|surface| is_mapped(surface.wl_surface()))
+        });
+        if ready {
+            trace!("lock surfaces are ready, continuing");
+            self.continue_to_locking();
+        }
+    }
+
+    /// Render the locked frame on every output, which confirms at once without any.
+    fn continue_to_locking(&mut self) {
+        match mem::take(&mut self.lock_state) {
+            LockState::WaitingForSurfaces {
+                confirmation,
+                deadline_token,
+            } => {
+                self.loop_handle.remove(deadline_token);
+                self.lock_state = LockState::Locking(confirmation);
+                self.check_lock_complete();
+                self.queue_redraw_all();
+            }
+            other => {
+                error!("continue_to_locking() called in the wrong lock state");
+                self.lock_state = other;
+            }
         }
     }
 
@@ -137,21 +187,22 @@ impl SessionLockHandler for State {
         // Save current focus to restore after unlock
         self.ewm.pre_lock_focus = self.ewm.focused_surface_id();
 
-        if self.ewm.output_state.is_empty() {
-            // No outputs: lock immediately
-            let lock = confirmation.ext_session_lock().clone();
-            confirmation.lock();
-            self.ewm.lock_state = LockState::Locked(lock);
-            info!("Session locked (no outputs)");
-        } else {
-            // Enter Locking state and queue redraw to show locked frame
-            self.ewm.lock_state = LockState::Locking(confirmation);
-            // Reset all output lock render states
-            for state in self.ewm.output_state.values_mut() {
-                state.lock_render_state = LockRenderState::Unlocked;
-            }
-            self.ewm.queue_redraw_all();
-        }
+        // Give the lock surfaces a second to paint before the first locked frame.
+        let timer = Timer::from_duration(Duration::from_millis(1000));
+        let deadline_token = self
+            .ewm
+            .loop_handle
+            .insert_source(timer, |_, _, state| {
+                trace!("lock deadline expired, continuing");
+                state.ewm.continue_to_locking();
+                TimeoutAction::Drop
+            })
+            .unwrap();
+        self.ewm.lock_state = LockState::WaitingForSurfaces {
+            confirmation,
+            deadline_token,
+        };
+        self.ewm.maybe_continue_to_locking();
 
         // Monitors on for the lock screen. After the state is set, so the wake
         // spares the lock client.
@@ -160,7 +211,11 @@ impl SessionLockHandler for State {
 
     fn unlock(&mut self) {
         info!("Session unlock requested");
-        self.ewm.lock_state = LockState::Unlocked;
+        if let LockState::WaitingForSurfaces { deadline_token, .. } =
+            mem::take(&mut self.ewm.lock_state)
+        {
+            self.ewm.loop_handle.remove(deadline_token);
+        }
 
         // Clear lock surfaces and reset render states
         for state in self.ewm.output_state.values_mut() {

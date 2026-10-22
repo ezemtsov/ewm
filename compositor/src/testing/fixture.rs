@@ -123,11 +123,8 @@ impl Fixture {
         xdg_surface: &wayland_protocols::xdg::shell::client::xdg_surface::XdgSurface,
         size: Size<i32, Logical>,
     ) {
-        let buffer = client.create_shm_buffer(size);
-        surface.attach(Some(&buffer), 0, 0);
-        surface.damage_buffer(0, 0, size.w, size.h);
         xdg_surface.set_window_geometry(0, 0, size.w, size.h);
-        surface.commit();
+        client.paint(surface, size);
         self.roundtrip(client);
     }
 
@@ -137,10 +134,7 @@ impl Fixture {
         surface: &wayland_client::protocol::wl_surface::WlSurface,
         size: Size<i32, Logical>,
     ) {
-        let buffer = client.create_shm_buffer(size);
-        surface.attach(Some(&buffer), 0, 0);
-        surface.damage_buffer(0, 0, size.w, size.h);
-        surface.commit();
+        client.paint(surface, size);
         self.roundtrip(client);
     }
 
@@ -218,10 +212,7 @@ impl Fixture {
                 .xdg_surface
                 .set_window_geometry(0, 0, size.w, size.h);
             toplevel.surface.commit();
-            let buffer = client.create_shm_buffer(size);
-            below.surface.attach(Some(&buffer), 0, 0);
-            below.surface.damage_buffer(0, 0, size.w, size.h);
-            below.surface.commit();
+            client.paint(&below.surface, size);
             self.roundtrip(client);
         }
         sizes

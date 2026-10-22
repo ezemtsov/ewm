@@ -21,7 +21,7 @@ use wayland_protocols::ext::background_effect::v1::client::ext_background_effect
 };
 use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_surface_v1;
 use wayland_protocols::ext::session_lock::v1::client::{
-    ext_session_lock_manager_v1, ext_session_lock_v1,
+    ext_session_lock_manager_v1, ext_session_lock_surface_v1, ext_session_lock_v1,
 };
 use wayland_protocols::ext::workspace::v1::client::{
     ext_workspace_group_handle_v1::{self, ExtWorkspaceGroupHandleV1},
@@ -215,6 +215,8 @@ pub struct ClientState {
     pub layer_shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
     /// `wl_output` protocol id -> server-advertised name.
     pub output_names: HashMap<u32, String>,
+    /// `wl_output` proxies by server-advertised name.
+    pub outputs: HashMap<String, wl_output::WlOutput>,
     /// Registry name -> interface of every global currently advertised.
     pub globals: HashMap<u32, String>,
     pub events: Vec<ClientEvent>,
@@ -363,6 +365,17 @@ impl TestClient {
             .lock(&self.qh(), ())
     }
 
+    /// Put a lock surface on `output`, painted as soon as it is configured.
+    pub fn lock_output(&self, lock: &ext_session_lock_v1::ExtSessionLockV1, output: &str) {
+        let surface = self.create_surface();
+        lock.get_lock_surface(
+            &surface,
+            &self.state.outputs[output],
+            &self.qh(),
+            surface.clone(),
+        );
+    }
+
     fn compositor(&self) -> &wl_compositor::WlCompositor {
         self.state
             .compositor
@@ -400,15 +413,12 @@ impl TestClient {
 
     /// Zero-filled ARGB8888 SHM buffer of the given size.
     pub fn create_shm_buffer(&self, size: Size<i32, Logical>) -> wl_buffer::WlBuffer {
-        let qh = self.eq.handle();
-        let stride = size.w * 4;
-        let total = stride * size.h;
-        let fd = create_memfd(total as usize);
-        let pool = self.shm().create_pool(fd.as_fd(), total, &qh, ());
-        let buffer =
-            pool.create_buffer(0, size.w, size.h, stride, wl_shm::Format::Argb8888, &qh, ());
-        pool.destroy();
-        buffer
+        shm_buffer(self.shm(), &self.eq.handle(), size)
+    }
+
+    /// Attach a fresh buffer of `size` to `surface` and commit it.
+    pub fn paint(&self, surface: &wl_surface::WlSurface, size: Size<i32, Logical>) {
+        paint(self.shm(), &self.eq.handle(), surface, size);
     }
 
     /// Caller must roundtrip before reading server-side state.
@@ -750,6 +760,7 @@ impl Dispatch<wl_output::WlOutput, ()> for ClientState {
         _: &QueueHandle<Self>,
     ) {
         if let wl_output::Event::Name { name } = event {
+            state.outputs.insert(name.clone(), output.clone());
             state.output_names.insert(output.id().protocol_id(), name);
         }
     }
@@ -975,6 +986,34 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for ClientState {
     }
 }
 
+/// Zero-filled ARGB8888 SHM buffer of the given size.
+fn shm_buffer(
+    shm: &wl_shm::WlShm,
+    qh: &QueueHandle<ClientState>,
+    size: Size<i32, Logical>,
+) -> wl_buffer::WlBuffer {
+    let stride = size.w * 4;
+    let total = stride * size.h;
+    let fd = create_memfd(total as usize);
+    let pool = shm.create_pool(fd.as_fd(), total, qh, ());
+    let buffer = pool.create_buffer(0, size.w, size.h, stride, wl_shm::Format::Argb8888, qh, ());
+    pool.destroy();
+    buffer
+}
+
+/// Attach a fresh buffer of `size` to `surface` and commit it.
+fn paint(
+    shm: &wl_shm::WlShm,
+    qh: &QueueHandle<ClientState>,
+    surface: &wl_surface::WlSurface,
+    size: Size<i32, Logical>,
+) {
+    let buffer = shm_buffer(shm, qh, size);
+    surface.attach(Some(&buffer), 0, 0);
+    surface.damage_buffer(0, 0, size.w, size.h);
+    surface.commit();
+}
+
 /// Anonymous file-backed shared memory, zero-filled on `ftruncate`.
 fn create_memfd(size: usize) -> OwnedFd {
     let name = c"ewm-test-shm";
@@ -1138,6 +1177,30 @@ wayland_client::delegate_noop!(ClientState: ignore xdg_system_bell_v1::XdgSystem
 wayland_client::delegate_noop!(ClientState: ignore wl_region::WlRegion);
 wayland_client::delegate_noop!(ClientState: ignore ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1);
 wayland_client::delegate_noop!(ClientState: ignore ext_session_lock_manager_v1::ExtSessionLockManagerV1);
+
+impl Dispatch<ext_session_lock_surface_v1::ExtSessionLockSurfaceV1, wl_surface::WlSurface>
+    for ClientState
+{
+    fn event(
+        state: &mut Self,
+        lock_surface: &ext_session_lock_surface_v1::ExtSessionLockSurfaceV1,
+        event: ext_session_lock_surface_v1::Event,
+        surface: &wl_surface::WlSurface,
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        if let ext_session_lock_surface_v1::Event::Configure {
+            serial,
+            width,
+            height,
+        } = event
+        {
+            lock_surface.ack_configure(serial);
+            let size = Size::from((width as i32, height as i32));
+            paint(state.shm.as_ref().unwrap(), qh, surface, size);
+        }
+    }
+}
 
 impl Dispatch<ext_session_lock_v1::ExtSessionLockV1, ()> for ClientState {
     fn event(

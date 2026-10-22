@@ -112,6 +112,7 @@ impl Ewm {
         #[cfg(feature = "screencast")]
         self.stop_output_casts(output);
         self.output_state.get_mut(output).unwrap().lock_surface = None;
+        self.maybe_continue_to_locking();
         self.retire_output_global(output);
         self.sync_sorted_outputs();
         self.refresh_cursor_outputs();

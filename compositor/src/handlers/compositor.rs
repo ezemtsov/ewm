@@ -12,7 +12,7 @@ use smithay::wayland::shell::xdg::{SurfaceCachedState, ToplevelSurface};
 use smithay::wayland::shm::{ShmHandler, ShmState};
 
 use crate::utils::ensure_min_max_size;
-use crate::{Event, Ewm, State, client_state, is_portal_surface, surface_root};
+use crate::{Event, Ewm, LockState, State, client_state, is_portal_surface, surface_root};
 
 // Buffer handling
 impl BufferHandler for State {
@@ -201,20 +201,22 @@ impl CompositorHandler for State {
             return;
         }
 
-        // 4. Queue redraw for lock surface commits.
-        if self.ewm.is_locked() {
-            let output = self
-                .ewm
-                .output_state
-                .iter()
-                .find(|(_, state)| {
-                    state
-                        .lock_surface
-                        .as_ref()
-                        .is_some_and(|ls| ls.wl_surface() == &root_surface)
-                })
-                .map(|(o, _)| o.clone());
-            if let Some(output) = output {
+        // 4. Handle lock surface commits
+        let output = self
+            .ewm
+            .output_state
+            .iter()
+            .find(|(_, state)| {
+                state
+                    .lock_surface
+                    .as_ref()
+                    .is_some_and(|ls| ls.wl_surface() == &root_surface)
+            })
+            .map(|(o, _)| o.clone());
+        if let Some(output) = output {
+            if matches!(self.ewm.lock_state, LockState::WaitingForSurfaces { .. }) {
+                self.ewm.maybe_continue_to_locking();
+            } else {
                 self.ewm.queue_redraw(&output);
             }
         }

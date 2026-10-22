@@ -65,6 +65,7 @@ fn lock_parks_every_hidden_source_until_unlock() {
         assert_eq!(timer_armed(&fix), !any, "{case}: timer before lock");
 
         let lock = client.lock_session();
+        client.lock_output(&lock, OUTPUT);
         fix.roundtrip(&mut client);
         fix.roundtrip(&mut client);
         assert!(fix.ewm_ref().is_locked(), "{case}: not locked");
@@ -92,7 +93,8 @@ fn idle_blanks_behind_the_lock_despite_fullscreen() {
     fix.dispatch_roundtrip(3);
     assert!(fix.ewm_ref().monitors_active, "blanked while inhibited");
 
-    let _lock = client.lock_session();
+    let lock = client.lock_session();
+    client.lock_output(&lock, OUTPUT);
     fix.roundtrip(&mut client);
     fix.roundtrip(&mut client);
     assert!(fix.ewm_ref().is_locked());
