@@ -1125,43 +1125,24 @@ mod tests {
     }
 
     #[test]
-    fn change_plan_is_empty_for_equal_states() {
+    fn change_plan_lists_what_differs_between_the_states() {
         let current = state([head("HEAD-A")]);
-        let new = current.clone();
+        assert!(output_change_plan(&current, &current.clone()).is_empty());
 
-        let plan = output_change_plan(&current, &new);
-
-        assert!(plan.is_empty());
-    }
-
-    #[test]
-    fn change_plan_detects_added_and_removed_outputs() {
-        let current = state([head("HEAD-A")]);
-        let new = state([head("HEAD-B")]);
-
-        let plan = output_change_plan(&current, &new);
-
+        let plan = output_change_plan(&current, &state([head("HEAD-B")]));
         assert_eq!(plan.added, ["HEAD-B"]);
         assert_eq!(plan.removed, ["HEAD-A"]);
         assert!(plan.updated.is_empty());
-        assert!(!plan.is_empty());
-    }
 
-    #[test]
-    fn change_plan_tracks_mode_current_mode_and_properties() {
-        let current_head = head("HEAD-A");
-        let mut new_head = current_head.clone();
-        new_head.modes[0] = mode(2560, 1440, 144_000);
-        new_head.scale = Some(1.5);
-        new_head.transform = Some(Transform::_90);
-
-        let plan = output_change_plan(&state([current_head]), &state([new_head]));
-
-        assert_eq!(plan.added, Vec::<String>::new());
-        assert_eq!(plan.removed, Vec::<String>::new());
-        assert_eq!(plan.updated.len(), 1);
-
-        let change = &plan.updated[0];
+        let mut changed = head("HEAD-A");
+        changed.modes[0] = mode(2560, 1440, 144_000);
+        changed.scale = Some(1.5);
+        changed.transform = Some(Transform::_90);
+        let plan = output_change_plan(&current, &state([changed]));
+        assert!(plan.added.is_empty() && plan.removed.is_empty());
+        let [change] = &plan.updated[..] else {
+            panic!("one updated head, got {:?}", plan.updated);
+        };
         assert_eq!(change.output_name, "HEAD-A");
         assert!(change.modes_changed);
         assert_eq!(change.current_mode, CurrentModeChange::Set(0));
@@ -1173,92 +1154,53 @@ mod tests {
                 transform: Some(Transform::_90),
             }),
         );
-    }
 
-    #[test]
-    fn change_plan_tracks_enable_and_disable_transitions() {
-        let enabled = head("HEAD-A");
-        let mut disabled = enabled.clone();
+        let mut disabled = head("HEAD-A");
         disabled.enabled = false;
         disabled.current_mode = None;
+        let off = output_change_plan(&current, &state([disabled.clone()]));
+        assert_eq!(off.updated[0].current_mode, CurrentModeChange::Disabled);
+        let on = output_change_plan(&state([disabled.clone()]), &current);
+        assert_eq!(on.updated[0].current_mode, CurrentModeChange::Enabled(0));
 
-        let disable_plan =
-            output_change_plan(&state([enabled.clone()]), &state([disabled.clone()]));
-        assert_eq!(
-            disable_plan.updated[0].current_mode,
-            CurrentModeChange::Disabled,
-        );
-
-        let enable_plan = output_change_plan(&state([disabled]), &state([enabled]));
-        assert_eq!(
-            enable_plan.updated[0].current_mode,
-            CurrentModeChange::Enabled(0),
-        );
+        // The properties of a disabled head change nothing.
+        let mut moved = disabled.clone();
+        moved.position = Some((100, 200));
+        moved.scale = Some(2.0);
+        moved.transform = Some(Transform::_180);
+        assert!(output_change_plan(&state([disabled]), &state([moved])).is_empty());
     }
 
     #[test]
-    fn disabled_outputs_do_not_emit_property_changes() {
-        let mut old_head = head("HEAD-A");
-        old_head.enabled = false;
-        old_head.current_mode = None;
-
-        let mut new_head = old_head.clone();
-        new_head.position = Some((100, 200));
-        new_head.scale = Some(2.0);
-        new_head.transform = Some(Transform::_180);
-
-        let plan = output_change_plan(&state([old_head]), &state([new_head]));
-
-        assert!(plan.is_empty());
-    }
-
-    #[test]
-    fn taking_output_config_requires_one_enabled_head_and_finishes_state() {
+    fn an_ongoing_output_config_is_taken_once_and_needs_an_enabled_head() {
         let mut state = config_state([("HEAD-A", config(false)), ("HEAD-B", config(true))]);
-
-        let config = take_ongoing_output_config(Some(&mut state)).unwrap();
-
-        assert!(!config["HEAD-A"].enabled);
-        assert!(config["HEAD-B"].enabled);
+        assert!(ongoing_output_config_mut(Some(&mut state)).is_ok());
+        let taken = take_ongoing_output_config(Some(&mut state)).unwrap();
+        assert!(!taken["HEAD-A"].enabled && taken["HEAD-B"].enabled);
         assert!(matches!(state, OutputConfigurationState::Finished));
-    }
-
-    #[test]
-    fn taking_all_disabled_output_config_fails_and_finishes_state() {
-        let mut state = config_state([("HEAD-A", config(false))]);
-
-        let err = take_ongoing_output_config(Some(&mut state)).unwrap_err();
-
-        assert_eq!(err, FinishConfigError::AllDisabled);
-        assert!(matches!(state, OutputConfigurationState::Finished));
-    }
-
-    #[test]
-    fn taking_finished_or_missing_output_config_reports_protocol_errors() {
-        let mut state = OutputConfigurationState::Finished;
-
-        let already_used = take_ongoing_output_config(Some(&mut state)).unwrap_err();
-        let missing = take_ongoing_output_config(None).unwrap_err();
-
-        assert_eq!(already_used, FinishConfigError::AlreadyUsed);
-        assert_eq!(missing, FinishConfigError::Missing);
-        assert!(matches!(state, OutputConfigurationState::Finished));
-    }
-
-    #[test]
-    fn ongoing_output_config_mut_exposes_only_unfinished_configs() {
-        let mut ongoing = config_state([]);
-        let mut finished = OutputConfigurationState::Finished;
-
-        assert!(ongoing_output_config_mut(Some(&mut ongoing)).is_ok());
         assert_eq!(
-            ongoing_output_config_mut(Some(&mut finished)).unwrap_err(),
-            FinishConfigError::AlreadyUsed,
+            take_ongoing_output_config(Some(&mut state)).unwrap_err(),
+            FinishConfigError::AlreadyUsed
+        );
+        assert_eq!(
+            ongoing_output_config_mut(Some(&mut state)).unwrap_err(),
+            FinishConfigError::AlreadyUsed
+        );
+        assert_eq!(
+            take_ongoing_output_config(None).unwrap_err(),
+            FinishConfigError::Missing
         );
         assert_eq!(
             ongoing_output_config_mut(None).unwrap_err(),
-            FinishConfigError::Missing,
+            FinishConfigError::Missing
         );
+
+        let mut state = config_state([("HEAD-A", config(false))]);
+        assert_eq!(
+            take_ongoing_output_config(Some(&mut state)).unwrap_err(),
+            FinishConfigError::AllDisabled
+        );
+        assert!(matches!(state, OutputConfigurationState::Finished));
     }
 
     #[test]
@@ -1296,40 +1238,29 @@ mod tests {
     }
 
     #[test]
-    fn requested_scale_rejects_non_positive_and_non_finite_values() {
+    fn requested_scales_and_modes_reject_degenerate_values() {
         assert_eq!(requested_scale(1.25), Some(1.25));
-        assert_eq!(requested_scale(0.0), None);
-        assert_eq!(requested_scale(-1.0), None);
-        assert_eq!(requested_scale(f64::NAN), None);
-        assert_eq!(requested_scale(f64::INFINITY), None);
-    }
+        for scale in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(requested_scale(scale), None);
+        }
 
-    #[test]
-    fn requested_custom_mode_accepts_unspecified_refresh_only() {
+        let custom = |refresh| {
+            Some(Mode {
+                custom: true,
+                mode: ConfiguredMode {
+                    width: 1920,
+                    height: 1080,
+                    refresh,
+                },
+            })
+        };
         assert_eq!(
             requested_custom_mode(1920, 1080, 60_000),
-            Some(Mode {
-                custom: true,
-                mode: ConfiguredMode {
-                    width: 1920,
-                    height: 1080,
-                    refresh: Some(60.0),
-                },
-            })
+            custom(Some(60.0))
         );
-        assert_eq!(
-            requested_custom_mode(1920, 1080, 0),
-            Some(Mode {
-                custom: true,
-                mode: ConfiguredMode {
-                    width: 1920,
-                    height: 1080,
-                    refresh: None,
-                },
-            })
-        );
-        assert_eq!(requested_custom_mode(0, 1080, 60_000), None);
-        assert_eq!(requested_custom_mode(1920, 0, 60_000), None);
-        assert_eq!(requested_custom_mode(1920, 1080, -1), None);
+        assert_eq!(requested_custom_mode(1920, 1080, 0), custom(None));
+        for (width, height, refresh) in [(0, 1080, 60_000), (1920, 0, 60_000), (1920, 1080, -1)] {
+            assert_eq!(requested_custom_mode(width, height, refresh), None);
+        }
     }
 }

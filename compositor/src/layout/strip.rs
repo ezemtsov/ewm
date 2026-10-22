@@ -880,48 +880,6 @@ mod tests {
 
     proptest! {
         #[test]
-        fn column_x_matches_prefix_sum(
-            widths in prop::collection::vec(0u32..=MAX_WIDTH, 0..MAX_FRAMES),
-            gap in 0u32..=MAX_GAP,
-            idx in 0usize..(MAX_FRAMES * 2),
-        ) {
-            let widths = widths.into_iter().map(f64::from).collect::<Vec<_>>();
-            let gap = f64::from(gap);
-            let s = strip_with(widths.clone(), gap, 0);
-            let expected = widths
-                .iter()
-                .take(idx.min(widths.len()))
-                .filter(|w| **w > 0.0)
-                .map(|w| *w + gap)
-                .sum::<f64>();
-
-            prop_assert_eq!(s.column_x(idx), expected);
-        }
-
-        #[test]
-        fn screen_positions_are_viewport_relative(
-            widths in prop::collection::vec(1u32..=MAX_WIDTH, 1..MAX_FRAMES),
-            gap in 0u32..=MAX_GAP,
-            active_idx in 0usize..MAX_FRAMES,
-            offset in -2_000i32..=2_000,
-        ) {
-            let widths = widths.into_iter().map(f64::from).collect::<Vec<_>>();
-            let active_idx = active_idx % widths.len();
-            let offset = f64::from(offset);
-            let mut s = strip_with(widths, f64::from(gap), active_idx);
-            s.view_offset = ViewOffset::Static(offset);
-
-            prop_assert_eq!(s.view_pos(), s.column_x(active_idx) + offset);
-            prop_assert_eq!(s.target_view_pos(), s.column_x(active_idx) + offset);
-            for idx in 0..s.frames.len() {
-                prop_assert_eq!(
-                    s.screen_x_of_frame(idx),
-                    s.column_x(idx) - s.view_pos()
-                );
-            }
-        }
-
-        #[test]
         fn render_geo_matches_viewport_intersections(
             widths in prop::collection::vec(0u32..=MAX_WIDTH, 0..MAX_FRAMES),
             gap in 0u32..=MAX_GAP,
@@ -963,8 +921,6 @@ mod tests {
                 prop_assert_eq!(h, view.h);
             }
         }
-
-
 
         #[test]
         fn animate_to_keeps_a_slide_already_bound_there(

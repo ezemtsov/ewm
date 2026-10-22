@@ -622,7 +622,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_cursor_config_uses_loadable_env_theme() {
+    fn cursor_config_takes_the_env_theme_only_when_it_loads() {
         let _guard = env_lock().lock().unwrap();
         let _env = EnvRestore::capture(&["XCURSOR_PATH", "XCURSOR_THEME"]);
         let root = TempThemeRoot::new();
@@ -631,37 +631,22 @@ mod tests {
         unsafe { env::set_var("XCURSOR_PATH", root.path()) };
         unsafe { env::set_var("XCURSOR_THEME", "EnvTheme") };
 
-        let config = CursorConfig::resolve(None, 24);
+        assert_eq!(
+            CursorConfig::resolve(None, 24),
+            CursorConfig::new("EnvTheme", 24)
+        );
+        assert_eq!(
+            CursorConfig::resolve(Some("MissingTheme".to_owned()), 24),
+            CursorConfig::new("MissingTheme", 24)
+        );
 
-        assert_eq!(config, CursorConfig::new("EnvTheme", 24));
-    }
-
-    #[test]
-    fn auto_cursor_config_skips_unloadable_default() {
-        let _guard = env_lock().lock().unwrap();
-        let _env = EnvRestore::capture(&["XCURSOR_PATH", "XCURSOR_THEME"]);
-        let root = TempThemeRoot::new();
-        make_cursor_theme(root.path(), "LoadableTheme", "default");
-        unsafe { env::set_var("XCURSOR_PATH", root.path()) };
+        // An env theme that does not load gives way to one that does.
+        fs::remove_dir_all(root.path().join("OtherTheme")).unwrap();
         unsafe { env::set_var("XCURSOR_THEME", "default") };
-
-        let config = CursorConfig::resolve(None, 24);
-
-        assert_eq!(config, CursorConfig::new("LoadableTheme", 24));
-    }
-
-    #[test]
-    fn explicit_cursor_config_does_not_probe_theme() {
-        let _guard = env_lock().lock().unwrap();
-        let _env = EnvRestore::capture(&["XCURSOR_PATH", "XCURSOR_THEME"]);
-        let root = TempThemeRoot::new();
-        make_cursor_theme(root.path(), "EnvTheme", "default");
-        unsafe { env::set_var("XCURSOR_PATH", root.path()) };
-        unsafe { env::set_var("XCURSOR_THEME", "EnvTheme") };
-
-        let config = CursorConfig::resolve(Some("MissingTheme".to_owned()), 24);
-
-        assert_eq!(config, CursorConfig::new("MissingTheme", 24));
+        assert_eq!(
+            CursorConfig::resolve(None, 24),
+            CursorConfig::new("EnvTheme", 24)
+        );
     }
 
     #[test]

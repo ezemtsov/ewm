@@ -122,5 +122,4 @@ default-features = false
 optional = true
 
 [dev-dependencies]
-insta = { version = "1.46.0", features = ["yaml"] }
 proptest = "1.9.0"

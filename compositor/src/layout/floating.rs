@@ -734,6 +734,8 @@ impl FloatingSpace {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     fn test_space() -> FloatingSpace {
@@ -748,29 +750,42 @@ mod tests {
         frame
     }
 
-    #[test]
-    fn interactive_resize_left_top_keeps_opposite_edge_fixed() {
-        let mut space = test_space();
-        space.add_frame(test_frame(1));
-        let (_, start_rect) = space.frame_under(Point::from((600., 300.))).unwrap();
+    proptest! {
+        /// The dragged edges follow the pointer and the others stay where they were.
+        #[test]
+        fn interactive_resize_moves_only_the_dragged_edges(
+            edges in prop::sample::select(vec![
+                ResizeEdge::TOP,
+                ResizeEdge::BOTTOM,
+                ResizeEdge::LEFT,
+                ResizeEdge::RIGHT,
+                ResizeEdge::TOP_LEFT,
+                ResizeEdge::TOP_RIGHT,
+                ResizeEdge::BOTTOM_LEFT,
+                ResizeEdge::BOTTOM_RIGHT,
+            ]),
+            delta in (-100i32..=100, -100i32..=100),
+        ) {
+            let mut space = test_space();
+            space.add_frame(test_frame(1));
+            let (_, start) = space.frames_with_render_geo().next().unwrap();
+            let delta = Point::from((f64::from(delta.0), f64::from(delta.1)));
 
-        assert!(space.interactive_resize_begin(1, ResizeEdge::TOP_LEFT));
-        let size = space
-            .interactive_resize_update(1, Point::from((50., 40.)))
-            .unwrap();
-        let (_, end_rect) = space.frame_under(start_rect.loc).unwrap_or_else(|| {
-            let (frame, rect) = space.frames_with_render_geo().next().unwrap();
-            (frame.surface_id, rect)
-        });
+            prop_assert!(space.interactive_resize_begin(1, edges));
+            let size = space.interactive_resize_update(1, delta).unwrap();
+            let (_, end) = space.frames_with_render_geo().next().unwrap();
 
-        assert_eq!(size, Size::from((550, 260)));
-        assert_eq!(
-            end_rect.loc.x + end_rect.size.w,
-            start_rect.loc.x + start_rect.size.w
-        );
-        assert_eq!(
-            end_rect.loc.y + end_rect.size.h,
-            start_rect.loc.y + start_rect.size.h
-        );
+            let moved = |edge, pos: f64, by: f64| if edges.contains(edge) { pos + by } else { pos };
+            let edge_at = [
+                (end.loc.x, moved(ResizeEdge::LEFT, start.loc.x, delta.x)),
+                (end.loc.x + end.size.w, moved(ResizeEdge::RIGHT, start.loc.x + start.size.w, delta.x)),
+                (end.loc.y, moved(ResizeEdge::TOP, start.loc.y, delta.y)),
+                (end.loc.y + end.size.h, moved(ResizeEdge::BOTTOM, start.loc.y + start.size.h, delta.y)),
+            ];
+            for (actual, expected) in edge_at {
+                prop_assert!((actual - expected).abs() < 1e-6, "{} != {}", actual, expected);
+            }
+            prop_assert_eq!(size, end.size.to_i32_round());
+        }
     }
 }

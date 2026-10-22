@@ -3358,72 +3358,34 @@ mod tests {
     }
 
     #[test]
-    fn advertised_mode_with_refresh_picks_closest_precise_refresh() {
+    fn advertised_mode_prefers_the_precise_refresh_of_its_size() {
+        let want = |refresh| ConfiguredMode {
+            width: 800,
+            height: 600,
+            refresh,
+        };
+        let refresh = |modes: &[super::DrmMode], target| {
+            pick_advertised_mode(modes, target).map(mode_refresh_millihertz)
+        };
         let modes = [test_mode(800, 600, 60_000), test_mode(800, 600, 59_940)];
-        let selected = pick_advertised_mode(
-            &modes,
-            ConfiguredMode {
-                width: 800,
-                height: 600,
-                refresh: Some(60.0),
-            },
-        )
-        .unwrap();
-
-        assert_eq!(mode_refresh_millihertz(selected), 60_000);
-    }
-
-    #[test]
-    fn advertised_mode_with_refresh_accepts_precise_timing_delta() {
-        let modes = [calculate_mode_cvt(1920, 1080, 60.0)];
-        assert_ne!(mode_refresh_millihertz(modes[0]), 60_000);
-
-        let selected = pick_advertised_mode(
-            &modes,
-            ConfiguredMode {
-                width: 1920,
-                height: 1080,
-                refresh: Some(60.0),
-            },
-        )
-        .unwrap();
-
-        assert_eq!(selected.size(), (1920, 1080));
-    }
-
-    #[test]
-    fn advertised_mode_without_refresh_picks_highest_precise_refresh() {
-        let modes = [test_mode(800, 600, 59_940), test_mode(800, 600, 60_000)];
-        let selected = pick_advertised_mode(
-            &modes,
-            ConfiguredMode {
-                width: 800,
-                height: 600,
-                refresh: None,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(mode_refresh_millihertz(selected), 60_000);
-    }
-
-    #[test]
-    fn advertised_mode_ignores_interlaced_modes() {
-        let modes = [
+        assert_eq!(refresh(&modes, want(Some(60.0))), Some(60_000));
+        assert_eq!(refresh(&modes, want(Some(59.9))), Some(59_940));
+        assert_eq!(refresh(&modes, want(None)), Some(60_000));
+        assert_eq!(refresh(&modes, want(Some(75.0))), None);
+        let interlaced = [
             test_mode_with_flags(800, 600, 30_000, ModeFlags::INTERLACE),
             test_mode(800, 600, 59_940),
         ];
-        let selected = pick_advertised_mode(
-            &modes,
-            ConfiguredMode {
-                width: 800,
-                height: 600,
-                refresh: Some(60.0),
-            },
-        )
-        .unwrap();
-
-        assert_eq!(mode_refresh_millihertz(selected), 59_940);
+        assert_eq!(refresh(&interlaced, want(Some(60.0))), Some(59_940));
+        // CVT timing lands off 60_000 mHz, within the tolerance.
+        let cvt = [calculate_mode_cvt(1920, 1080, 60.0)];
+        assert_ne!(mode_refresh_millihertz(cvt[0]), 60_000);
+        let full_hd = ConfiguredMode {
+            width: 1920,
+            height: 1080,
+            refresh: Some(60.0),
+        };
+        assert!(pick_advertised_mode(&cvt, full_hd).is_some());
     }
 
     #[test]

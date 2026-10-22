@@ -578,73 +578,46 @@ fn system_bell_forwards_toplevel_id() {
 }
 
 #[test]
-fn background_title_updates_coalesce_to_latest() {
+fn title_updates_wait_for_a_flush_unless_focused_or_closing() {
     let mut fix = testing::Fixture::new().unwrap();
     let mut client = fix.new_client().unwrap();
     fix.roundtrip(&mut client);
     fix.add_output(HEAD_A, 1600, 900);
-    let id = fix.open_toplevel_id(&mut client, "background", Size::from((400, 400)));
+    let background = fix.open_toplevel_id(&mut client, "background", Size::from((400, 400)));
+    let focused = fix.open_toplevel_id(&mut client, "focused", Size::from((400, 400)));
+    fix.tile(HEAD_A, vec![frame_with_entry(100, nz(1), focused)]);
+    fix.ewm()
+        .set_focus_entry(nz(1), FocusSource::Test, Notify::None);
     fix.enable_event_capture();
+    let retitle = |fix: &mut testing::Fixture, id, title: &str| {
+        fix.ewm()
+            .queue_title_update(id, "app".to_string(), title.to_string(), false, false);
+    };
 
-    fix.ewm()
-        .queue_title_update(id, "app".to_string(), "one".to_string(), false, false);
-    fix.ewm()
-        .queue_title_update(id, "app".to_string(), "two".to_string(), false, false);
-
-    assert!(fix.drain_events().is_empty());
+    retitle(&mut fix, background, "one");
+    retitle(&mut fix, background, "two");
+    retitle(&mut fix, focused, "now");
+    let events = fix.drain_events();
+    assert!(
+        matches!(&events[..], [Event::Title { id, title, .. }] if *id == focused && title == "now"),
+        "{events:?}"
+    );
 
     fix.ewm().flush_pending_title_events();
     let events = fix.drain_events();
-    assert_eq!(events.len(), 1);
-    assert!(matches!(&events[0], Event::Title { id: titled, app, title }
-            if *titled == id && app == "app" && title == "two"));
-}
-
-#[test]
-fn focused_title_update_is_immediate() {
-    let mut fix = testing::Fixture::new().unwrap();
-    fix.add_output(HEAD_A, 1600, 900);
-    let entry_id = nz(3001);
-    let surface_id = 42;
-
-    let mut strip = strip::Strip::new(animation::Clock::default());
-    strip.push_frame(frame_with_entry(100, entry_id, surface_id));
-    fix.install_strip(HEAD_A, strip);
-    fix.enable_event_capture();
-
-    fix.ewm().queue_title_update(
-        surface_id,
-        "app".to_string(),
-        "focused".to_string(),
-        false,
-        false,
+    assert!(
+        matches!(&events[..], [Event::Title { id, title, .. }] if *id == background && title == "two"),
+        "{events:?}"
     );
 
+    retitle(&mut fix, background, "final");
+    fix.ewm().handle_toplevel_destroyed_by_id(background);
     let events = fix.drain_events();
-    assert_eq!(events.len(), 1);
-    assert!(matches!(&events[0], Event::Title { id, app, title }
-            if *id == surface_id && app == "app" && title == "focused"));
-}
-
-#[test]
-fn close_flushes_pending_title_before_close_event() {
-    let mut fix = testing::Fixture::new().unwrap();
-    let mut client = fix.new_client().unwrap();
-    fix.roundtrip(&mut client);
-    fix.add_output(HEAD_A, 1600, 900);
-    let id = fix.open_toplevel_id(&mut client, "closing", Size::from((400, 400)));
-    fix.enable_event_capture();
-
-    fix.ewm()
-        .queue_title_update(id, "app".to_string(), "final".to_string(), false, false);
-    assert!(fix.drain_events().is_empty());
-
-    fix.ewm().handle_toplevel_destroyed_by_id(id);
-    let events = fix.drain_events();
-    assert_eq!(events.len(), 2);
-    assert!(matches!(&events[0], Event::Title { id: titled, app, title }
-            if *titled == id && app == "app" && title == "final"));
-    assert!(matches!(&events[1], Event::Close { id: closed } if *closed == id));
+    assert!(
+        matches!(&events[..], [Event::Title { id, title, .. }, Event::Close { id: closed }]
+            if *id == background && title == "final" && *closed == background),
+        "{events:?}"
+    );
 }
 
 proptest! {

@@ -269,59 +269,18 @@ mod tests {
     }
 
     #[test]
-    fn apply_monitors_config_is_not_advertised_without_handler() {
-        let config = DisplayConfig::new(Arc::new(Mutex::new(Vec::new())));
-
-        assert!(!config.apply_monitors_config_allowed());
-    }
-
-    #[test]
-    fn monitor_serial_falls_back_to_connector_name() {
-        let outputs = Arc::new(Mutex::new(vec![output("HDMI-A-1")]));
-        let config = DisplayConfig::new(outputs);
-
-        let (_, monitors, _, _) = async_io::block_on(config.get_current_state()).unwrap();
-
-        assert_eq!(monitors[0].names.3, "HDMI-A-1");
-    }
-
-    #[test]
-    fn builtin_connector_is_reported_as_builtin_display() {
-        let outputs = Arc::new(Mutex::new(vec![output("eDP-1")]));
-        let config = DisplayConfig::new(outputs);
-
-        let (_, monitors, _, _) = async_io::block_on(config.get_current_state()).unwrap();
-
-        assert_eq!(
-            monitors[0].properties["display-name"],
-            OwnedValue::from(zvariant::Str::from("Built-in display"))
-        );
-        assert_eq!(monitors[0].properties["is-builtin"], OwnedValue::from(true));
-    }
-
-    #[test]
-    fn logical_monitors_do_not_invent_a_primary_output() {
-        let mut second = output("DP-1");
-        second.x = 1920;
-        let outputs = Arc::new(Mutex::new(vec![output("HDMI-A-1"), second]));
-        let config = DisplayConfig::new(outputs);
-
-        let (_, _, logical_monitors, _) = async_io::block_on(config.get_current_state()).unwrap();
-
-        assert!(logical_monitors.iter().all(|monitor| !monitor.is_primary));
-    }
-
-    #[test]
-    fn monitor_state_uses_compositor_output_metadata() {
-        let mut out = output("HDMI-A-1");
-        out.make = "Dell".to_owned();
-        out.model = "U2720Q".to_owned();
-        out.serial = "ABC123".to_owned();
-        out.x = 20;
-        out.y = 30;
-        out.scale = 1.25;
-        out.transform = 2;
-        let config = DisplayConfig::new(Arc::new(Mutex::new(vec![out])));
+    fn current_state_describes_the_outputs_as_mutter_would() {
+        let mut dell = output("HDMI-A-1");
+        dell.make = "Dell".to_owned();
+        dell.model = "U2720Q".to_owned();
+        dell.serial = "ABC123".to_owned();
+        dell.x = 20;
+        dell.y = 30;
+        dell.scale = 1.25;
+        dell.transform = 2;
+        let mut panel = output("eDP-1");
+        panel.x = 1920;
+        let config = DisplayConfig::new(Arc::new(Mutex::new(vec![dell, panel])));
 
         let (_, monitors, logical_monitors, _) =
             async_io::block_on(config.get_current_state()).unwrap();
@@ -351,21 +310,25 @@ mod tests {
         assert_eq!((logical_monitors[0].x, logical_monitors[0].y), (20, 30));
         assert_eq!(logical_monitors[0].scale, 1.25);
         assert_eq!(logical_monitors[0].transform, 2);
+        // A panel without a serial is named by its connector and reported built in.
+        assert_eq!(monitors[1].names.3, "eDP-1");
+        assert_eq!(
+            monitors[1].properties["display-name"],
+            OwnedValue::from(zvariant::Str::from("Built-in display"))
+        );
+        assert_eq!(monitors[1].properties["is-builtin"], OwnedValue::from(true));
+        assert!(logical_monitors.iter().all(|monitor| !monitor.is_primary));
+        assert!(!config.apply_monitors_config_allowed());
     }
 
     #[test]
-    fn display_name_falls_back_to_connector_for_unknown_metadata() {
+    fn display_name_and_scales_fall_back_to_the_connector_and_the_resolution() {
         let mut out = output("HDMI-A-1");
         out.make = "Unknown".to_owned();
         out.model = "Unknown".to_owned();
-
         assert_eq!(make_display_name(&out, false), "HDMI-A-1");
-    }
 
-    #[test]
-    fn supported_scales_follow_resolution_limits() {
         let scales: Vec<_> = supported_scales(Size::from((1920, 1080))).collect();
-
         assert_eq!(scales, vec![1.0, 1.25, 1.5, 1.75, 2.0, 2.25]);
     }
 }

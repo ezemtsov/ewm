@@ -482,18 +482,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn create_session_rejects_remote_desktop_session_id() {
-        let properties = HashMap::from([("remote-desktop-session-id", Value::U32(1))]);
-        let err = validate_create_session_properties(&properties)
-            .expect_err("remote desktop sessions are unsupported");
+    fn create_session_refuses_remote_desktop_and_ignores_the_cursor_mode() {
+        let remote = HashMap::from([("remote-desktop-session-id", Value::U32(1))]);
+        assert!(matches!(
+            validate_create_session_properties(&remote),
+            Err(fdo::Error::Failed(_))
+        ));
 
-        assert!(matches!(err, fdo::Error::Failed(_)));
-    }
-
-    #[test]
-    fn create_session_ignores_stream_cursor_mode() {
-        let properties = HashMap::from([("cursor-mode", Value::U32(3))]);
-
-        validate_create_session_properties(&properties).unwrap();
+        let cursor = HashMap::from([("cursor-mode", Value::U32(3))]);
+        validate_create_session_properties(&cursor).unwrap();
     }
 }

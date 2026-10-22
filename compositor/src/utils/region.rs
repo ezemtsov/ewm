@@ -198,92 +198,16 @@ pub fn region_to_non_overlapping_rects(
 
 #[cfg(test)]
 mod tests {
-    use std::fmt::Write as _;
-
-    use insta::assert_snapshot;
     use proptest::prelude::*;
     use smithay::utils::{Logical, Point, Rectangle, Size};
     use smithay::wayland::compositor::{RectangleKind, RegionAttributes};
 
     use super::region_to_non_overlapping_rects;
 
-    #[allow(clippy::type_complexity)]
-    fn check(rects: &[(RectangleKind, (i32, i32, i32, i32))]) -> String {
-        let region = RegionAttributes {
-            rects: rects
-                .iter()
-                .map(|(kind, (x1, y1, x2, y2))| {
-                    (*kind, Rectangle::from_extremities((*x1, *y1), (*x2, *y2)))
-                })
-                .collect(),
-        };
-        let mut output = Vec::new();
-        region_to_non_overlapping_rects(&region, &mut output);
-        let mut s = String::new();
-        for r in &output {
-            let x1 = r.loc.x;
-            let y1 = r.loc.y;
-            let x2 = x1 + r.size.w;
-            let y2 = y1 + r.size.h;
-            writeln!(s, "{x1:2} {y1:2} - {x2:2} {y2:2}").unwrap();
-        }
-        s
-    }
-
-    #[test]
-    fn test_region_to_non_overlapping_rects() {
-        use RectangleKind::*;
-
-        // empty_region
-        assert_snapshot!(check(&[]), @"");
-
-        // single_rectangle
-        assert_snapshot!(check(&[(Add, (0, 0, 10, 10))]), @" 0  0 - 10 10");
-
-        // empty_rectangle
-        assert_snapshot!(check(&[(Add, (0, 0, 0, 1))]), @"");
-        assert_snapshot!(check(&[(Add, (0, 0, 1, 0))]), @"");
-
-        // two_non_overlapping
-        assert_snapshot!(
-            check(&[(Add, (0, 0, 5, 10)), (Add, (7, 0, 12, 10))]),
-            @"
-        0  0 -  5 10
-        7  0 - 12 10
-        "
-        );
-
-        // two_overlapping
-        assert_snapshot!(
-            check(&[(Add, (0, 0, 10, 10)), (Add, (5, 5, 15, 15))]),
-            @"
-        0  0 - 10  5
-        0  5 - 15 10
-        5 10 - 15 15
-        "
-        );
-
-        // subtraction
-        assert_snapshot!(
-            check(&[(Add, (0, 0, 20, 20)), (Subtract, (5, 5, 15, 15))]),
-            @"
-         0  0 - 20  5
-         0  5 -  5 15
-        15  5 - 20 15
-         0 15 - 20 20
-        "
-        );
-
-        // adjacent_rectangles
-        assert_snapshot!(
-            check(&[(Add, (0, 0, 10, 10)), (Add, (10, 0, 20, 10))]),
-            @" 0  0 - 20 10"
-        );
-    }
-
     proptest! {
+        /// The rectangles are disjoint and together cover exactly the points the region keeps.
         #[test]
-        fn non_overlapping_output(
+        fn non_overlapping_output_covers_the_region(
             rects in proptest::collection::vec(
                 (
                     prop_oneof![Just(RectangleKind::Add), Just(RectangleKind::Subtract)],
@@ -292,13 +216,12 @@ mod tests {
                 1..10,
             )
         ) {
+            let rects: Vec<_> = rects
+                .into_iter()
+                .map(|(kind, (x, y, w, h))| (kind, Rectangle::new(Point::new(x, y), Size::new(w, h))))
+                .collect();
             let region = RegionAttributes {
-                rects: rects
-                    .into_iter()
-                    .map(|(kind, (x, y, w, h))| {
-                        (kind, Rectangle::new(Point::new(x, y), Size::new(w, h)))
-                    })
-                    .collect(),
+                rects: rects.clone(),
             };
 
             let mut output: Vec<Rectangle<i32, Logical>> = Vec::new();
@@ -315,6 +238,17 @@ mod tests {
                         output[i],
                         output[j],
                     );
+                }
+            }
+
+            for x in 0..40 {
+                for y in 0..40 {
+                    let point = Point::new(x, y);
+                    let kept = rects.iter().fold(false, |kept, (kind, rect)| match kind {
+                        RectangleKind::Add => kept || rect.contains(point),
+                        RectangleKind::Subtract => kept && !rect.contains(point),
+                    });
+                    prop_assert_eq!(output.iter().any(|r| r.contains(point)), kept, "{:?}", point);
                 }
             }
         }

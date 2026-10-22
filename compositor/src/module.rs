@@ -2022,67 +2022,26 @@ mod tests {
     }
 
     #[test]
-    fn stale_keyboard_capture_end_keeps_newer_lease() {
+    fn keyboard_capture_holds_while_any_lease_or_the_redirect_does() {
         let mut state = KeyboardCaptureState::default();
         let old = state.begin("prefix".to_string());
         let new = state.begin("minibuffer".to_string());
-
+        state.begin_redirect();
+        state.begin_redirect();
+        assert!(!state.end(new + 1));
         assert!(state.end(old));
-        assert!(state.is_active());
-        assert_eq!(state.debug_holders(), vec![(new, "minibuffer".to_string())]);
-    }
-
-    #[test]
-    fn keyboard_capture_is_inactive_after_last_lease_ends() {
-        let mut state = KeyboardCaptureState::default();
-        let token = state.begin("read-key".to_string());
-
-        assert!(state.is_active());
-        assert!(state.end(token));
-        assert!(!state.is_active());
-    }
-
-    #[test]
-    fn ending_unknown_keyboard_capture_token_is_noop() {
-        let mut state = KeyboardCaptureState::default();
-        let token = state.begin("transient".to_string());
-
-        assert!(!state.end(token + 1));
-        assert!(state.is_active());
         assert_eq!(
             state.debug_holders(),
-            vec![(token, "transient".to_string())]
+            vec![
+                (0, "keyboard-redirect".to_string()),
+                (new, "minibuffer".to_string())
+            ]
         );
-    }
-
-    #[test]
-    fn redirect_and_tokened_capture_clear_independently() {
-        let mut state = KeyboardCaptureState::default();
-        let token = state.begin("read-key".to_string());
-
-        state.begin_redirect();
         assert!(state.clear_redirect());
+        assert!(!state.clear_redirect());
         assert!(state.is_active());
-        assert_eq!(state.debug_holders(), vec![(token, "read-key".to_string())]);
-
-        state.begin_redirect();
-        assert!(state.end(token));
-        assert!(state.is_active());
-        assert_eq!(
-            state.debug_holders(),
-            vec![(0, "keyboard-redirect".to_string())]
-        );
-    }
-
-    #[test]
-    fn duplicate_redirect_capture_is_a_noop() {
-        let mut state = KeyboardCaptureState::default();
-
-        state.begin_redirect();
-        state.begin_redirect();
-        assert_eq!(
-            state.debug_holders(),
-            vec![(0, "keyboard-redirect".to_string())]
-        );
+        assert!(state.end(new));
+        assert!(!state.end(new));
+        assert!(!state.is_active());
     }
 }
