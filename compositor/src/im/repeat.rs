@@ -13,8 +13,9 @@ use serde::Serialize;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::calloop::{LoopHandle, RegistrationToken};
 
+use crate::State;
 use crate::event::TextInputKey;
-use crate::{Action, State};
+use crate::input::Bound;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) enum HeldKeyOwner {
@@ -113,7 +114,13 @@ mod tests {
 
         match (state.repeat_debug(), repeat) {
             (None, None) => {}
-            (Some(InterceptRepeat::Command { keycode, key }), Some(RepeatModel::Command(k))) => {
+            (
+                Some(InterceptRepeat::Bound {
+                    keycode,
+                    bound: Bound::Command { key },
+                }),
+                Some(RepeatModel::Command(k)),
+            ) => {
                 assert_eq!(keycode, k);
                 assert_eq!(key, &format!("key-{k}"));
                 assert_eq!(held.get(k), Some(&HeldKeyOwner::Command));
@@ -167,7 +174,7 @@ mod tests {
                         }
                     }
                     Op::StartCommandRepeat(key) if held.get(&key) == Some(&HeldKeyOwner::Command) => {
-                        state.start_repeat(&handle, InterceptRepeat::Command { keycode: key, key: format!("key-{key}") });
+                        state.start_repeat(&handle, InterceptRepeat::Bound { keycode: key, bound: Bound::Command { key: format!("key-{key}") } });
                         if repeat_enabled {
                             repeat = Some(RepeatModel::Command(key));
                         }
@@ -218,24 +225,23 @@ mod tests {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum InterceptRepeat {
     TextInput(TextInputKey),
-    Command { keycode: u32, key: String },
-    Action { keycode: u32, action: Action },
+    Bound { keycode: u32, bound: Bound },
 }
 
 impl InterceptRepeat {
     pub(crate) fn keycode(&self) -> u32 {
         match self {
-            Self::TextInput(TextInputKey { keycode, .. })
-            | Self::Command { keycode, .. }
-            | Self::Action { keycode, .. } => *keycode,
+            Self::TextInput(TextInputKey { keycode, .. }) | Self::Bound { keycode, .. } => *keycode,
         }
     }
 
     pub(crate) fn owner(&self) -> HeldKeyOwner {
         match self {
             Self::TextInput(_) => HeldKeyOwner::TextInput,
-            Self::Command { .. } => HeldKeyOwner::Command,
-            Self::Action { .. } => HeldKeyOwner::Action,
+            Self::Bound { bound, .. } => match bound {
+                Bound::Command { .. } => HeldKeyOwner::Command,
+                Bound::Action(_) => HeldKeyOwner::Action,
+            },
         }
     }
 }
@@ -310,7 +316,7 @@ impl InterceptRepeatState {
     }
 
     pub fn cancel_command_repeat(&mut self, loop_handle: &LoopHandle<State>) {
-        if matches!(self.repeat, Some(InterceptRepeat::Command { .. })) {
+        if self.repeat.as_ref().map(InterceptRepeat::owner) == Some(HeldKeyOwner::Command) {
             self.clear_repeat(loop_handle);
         }
         self.debug_assert_invariants();

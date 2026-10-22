@@ -2877,10 +2877,7 @@ impl State {
     fn deliver_intercept(&mut self, repeat: InterceptRepeat) {
         match repeat {
             InterceptRepeat::TextInput(key) => self.ewm.queue_event(Event::Key(key)),
-            InterceptRepeat::Command { key, .. } => {
-                self.ewm.queue_event(Event::InterceptedCommand { key })
-            }
-            InterceptRepeat::Action { action, .. } => self.do_action(action),
+            InterceptRepeat::Bound { bound, .. } => self.run_bound(bound),
         }
     }
 
@@ -2895,7 +2892,7 @@ impl State {
         self.ewm.notify_activity();
         self.ewm.reset_idle_timer();
 
-        if matches!(repeat, InterceptRepeat::Command { .. }) && module::get_keyboard_capture() {
+        if repeat.owner() == HeldKeyOwner::Command && module::get_keyboard_capture() {
             self.ewm.cancel_command_repeat();
             return;
         }

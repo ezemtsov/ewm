@@ -88,10 +88,8 @@ pub enum KeyAction {
     Forward,
     /// Redirect to Emacs through Wayland keyboard focus.
     KeyboardRedirect(u32),
-    /// Execute an Emacs command binding without moving Wayland keyboard focus.
-    Command { key: String, repeat: bool },
-    /// Run a compositor action, the key never leaving the compositor.
-    Action { action: Action, repeat: bool },
+    /// Run what the key is bound to, Wayland keyboard focus staying where it is.
+    Bound { bound: Bound, repeat: bool },
     /// Text input intercept: key plus original modifier snapshot for Emacs IM processing.
     TextInput {
         surface_id: u64,
@@ -136,10 +134,8 @@ pub enum KeyboardAction {
     Forward,
     /// Prefix/key-sequence input intercepted - redirect keyboard focus to Emacs
     RedirectToEmacs,
-    /// Command binding intercepted and queued to Emacs over IPC
-    CommandIntercepted,
-    /// A compositor action ran, the key never left the compositor
-    ActionRun,
+    /// A bound key ran, an Emacs command over IPC or a compositor action
+    Bound,
     /// Queued behind a Focus Emacs has not read yet
     Deferred,
     /// Key intercepted for text input (sent to Emacs via IPC)
@@ -219,8 +215,8 @@ impl SwipeDirection {
     }
 }
 
-/// What a bound swipe runs: a compositor action, or `key` as an Emacs command.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What a bound trigger runs: a compositor action, or `key` as an Emacs command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum Bound {
     Command { key: String },
     Action(Action),
@@ -472,8 +468,7 @@ impl State {
 
         Some(match owner {
             HeldKeyOwner::KeyboardRedirect => KeyboardAction::RedirectToEmacs,
-            HeldKeyOwner::Command => KeyboardAction::CommandIntercepted,
-            HeldKeyOwner::Action => KeyboardAction::ActionRun,
+            HeldKeyOwner::Command | HeldKeyOwner::Action => KeyboardAction::Bound,
             HeldKeyOwner::TextInput => KeyboardAction::TextInputIntercepted,
         })
     }
@@ -528,8 +523,22 @@ impl State {
         keyboard.advertise_modifier_state(self);
     }
 
-    /// Run `action`, the compositor's own answer to a key.
+    /// Run what a trigger bound to `bound` fires.
+    pub(crate) fn run_bound(&mut self, bound: Bound) {
+        match bound {
+            Bound::Action(action) => self.do_action(action),
+            Bound::Command { key } => self
+                .ewm
+                .queue_event(crate::Event::InterceptedCommand { key }),
+        }
+    }
+
+    /// Run `action`, the compositor's own answer to a trigger.
     pub(crate) fn do_action(&mut self, action: Action) {
+        // Nothing bound runs while the session is locked.
+        if self.ewm.is_locked() {
+            return;
+        }
         match action {
             Action::FocusFrame { delta } => self
                 .ewm
@@ -829,21 +838,9 @@ impl State {
                 return KeyboardAction::RedirectToEmacs;
             }
 
-            KeyAction::Command { key, repeat } => {
-                tracing::info!(
-                    "intercept_command: keycode={} key={} from surface {:?}",
-                    keycode,
-                    key,
-                    self.ewm.focused_surface_id()
-                );
-
-                self.intercept(InterceptRepeat::Command { keycode, key }, repeat);
-                return KeyboardAction::CommandIntercepted;
-            }
-
-            KeyAction::Action { action, repeat } => {
-                self.intercept(InterceptRepeat::Action { keycode, action }, repeat);
-                return KeyboardAction::ActionRun;
+            KeyAction::Bound { bound, repeat } => {
+                self.intercept(InterceptRepeat::Bound { keycode, bound }, repeat);
+                return KeyboardAction::Bound;
             }
         }
 
@@ -1451,15 +1448,7 @@ impl State {
                     },
                 );
             }
-            Swipe::Bound(bound) if !event.cancelled() => {
-                match bound {
-                    Bound::Action(action) => self.do_action(action),
-                    Bound::Command { key } => self
-                        .ewm
-                        .queue_event(crate::Event::InterceptedCommand { key }),
-                }
-                self.notify_activity();
-            }
+            Swipe::Bound(bound) if !event.cancelled() => self.run_bound(bound),
             Swipe::Overview => {
                 if self.ewm.overview_gesture_end() {
                     self.ewm.queue_redraw_all();
@@ -2045,14 +2034,16 @@ pub fn classify_key(
         }
         // Actions run wherever focus is, Emacs bindings only off Emacs.
         return match &ik.dispatch {
-            InterceptDispatch::Action(action) => KeyAction::Action {
-                action: action.clone(),
+            InterceptDispatch::Action(action) => KeyAction::Bound {
+                bound: Bound::Action(action.clone()),
                 repeat: ik.repeat,
             },
             _ if focus_on_emacs => KeyAction::Forward,
             InterceptDispatch::Keyboard => KeyAction::KeyboardRedirect(keysym_raw),
-            InterceptDispatch::Command => KeyAction::Command {
-                key: ik.key.clone(),
+            InterceptDispatch::Command => KeyAction::Bound {
+                bound: Bound::Command {
+                    key: ik.key.clone(),
+                },
                 repeat: ik.repeat,
             },
         };

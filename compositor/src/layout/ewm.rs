@@ -1386,9 +1386,6 @@ impl Ewm {
     }
 
     pub fn overview_toggle(&mut self) {
-        if self.is_locked() {
-            return;
-        }
         self.bake_overview_shifts();
         let was_active = self.overview.is_active();
         self.with_overview(|overview| overview.toggle());
@@ -1427,9 +1424,6 @@ impl Ewm {
     }
 
     pub fn overview_gesture_begin(&mut self) {
-        if self.is_locked() {
-            return;
-        }
         self.bake_overview_shifts();
         let was_active = self.overview.is_active();
         self.with_overview(|overview| overview.gesture_begin());
@@ -1450,9 +1444,6 @@ impl Ewm {
 
     /// Slide every frame off its output or bring them back, and tell Emacs.
     pub fn hide_toggle(&mut self) {
-        if self.is_locked() {
-            return;
-        }
         let hidden = !self.frames_hidden();
         self.hide.animate_to(
             self.animations_clock.clone(),

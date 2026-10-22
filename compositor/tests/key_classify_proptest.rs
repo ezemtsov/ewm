@@ -19,7 +19,7 @@
 //! K5  - A compositor action runs wherever focus is, under fullscreen only
 //!       when flagged (`Action` dispatch -> `Action`, else `Forward`).
 
-use ewm_core::input::{KeyAction, KeyInput, KeyRouting, classify_key};
+use ewm_core::input::{Bound, KeyAction, KeyInput, KeyRouting, classify_key};
 use ewm_core::{Action, InterceptDispatch, InterceptedKey, Trigger};
 use proptest::prelude::*;
 use smithay::input::keyboard::{Keysym, ModifiersState, keysyms};
@@ -140,7 +140,8 @@ proptest! {
             true,
             keysym,
         );
-        prop_assert_eq!(action, KeyAction::Command { key, repeat });
+        let bound = Bound::Command { key };
+        prop_assert_eq!(action, KeyAction::Bound { bound, repeat });
     }
 
     #[test]
@@ -163,7 +164,7 @@ proptest! {
             keysym,
         );
         let expected = if !fullscreen_active || flag {
-            KeyAction::Action { action, repeat }
+            KeyAction::Bound { bound: Bound::Action(action), repeat }
         } else {
             KeyAction::Forward
         };

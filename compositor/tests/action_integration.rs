@@ -52,8 +52,8 @@ fn fixture(frames: u64) -> Fixture {
 }
 
 fn tap(fix: &mut Fixture, key: u32) {
-    assert_eq!(fix.keyboard_key(key, true), KeyboardAction::ActionRun);
-    assert_eq!(fix.keyboard_key(key, false), KeyboardAction::ActionRun);
+    assert_eq!(fix.keyboard_key(key, true), KeyboardAction::Bound);
+    assert_eq!(fix.keyboard_key(key, false), KeyboardAction::Bound);
 }
 
 #[test]

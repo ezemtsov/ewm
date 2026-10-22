@@ -5,7 +5,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use Wire::{Key, Mods};
 use ewm_core::event::Event;
-use ewm_core::input::KeyboardAction::{self, CommandIntercepted, Forward};
+use ewm_core::input::KeyboardAction::{self, Bound, Forward};
 use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, TestClient};
 use ewm_core::{FocusSource, LayoutEntry, LayoutEntryId, Notify};
@@ -214,7 +214,7 @@ fn key_entries_are_intercepted_on_their_surface_only() {
     h.fix.enable_event_capture();
     assert_eq!(h.fix.keyboard_key(KEY_LEFTCTRL, true), Forward);
     h.wires();
-    assert_eq!(h.fix.keyboard_key(KEY_N, true), CommandIntercepted);
+    assert_eq!(h.fix.keyboard_key(KEY_N, true), Bound);
     let mut commands = 0;
     for _ in 0..100 {
         h.fix.roundtrip(&mut h.clients[APP0]);
@@ -228,7 +228,7 @@ fn key_entries_are_intercepted_on_their_surface_only() {
             break;
         }
     }
-    assert_eq!(h.fix.keyboard_key(KEY_N, false), CommandIntercepted);
+    assert_eq!(h.fix.keyboard_key(KEY_N, false), Bound);
     assert!(h.wires().iter().all(Vec::is_empty), "a client saw the key");
     assert!(commands >= 2, "press plus repeats: {commands}");
     assert_eq!(h.fix.keyboard_key(KEY_LEFTCTRL, false), Forward);
@@ -279,8 +279,8 @@ fn mode_map_command_keys_are_intercepted() {
     h.fix.enable_event_capture();
     for (modifier, key, name) in [(KEY_LEFTALT, KEY_W, "M-w"), (KEY_LEFTCTRL, KEY_Y, "C-y")] {
         assert_eq!(h.fix.keyboard_key(modifier, true), Forward);
-        assert_eq!(h.fix.keyboard_key(key, true), CommandIntercepted);
-        assert_eq!(h.fix.keyboard_key(key, false), CommandIntercepted);
+        assert_eq!(h.fix.keyboard_key(key, true), Bound);
+        assert_eq!(h.fix.keyboard_key(key, false), Bound);
         assert_eq!(h.fix.keyboard_key(modifier, false), Forward);
         // Emacs gets the key itself, not a mangled ESC sequence.
         let events = h.fix.drain_events();
