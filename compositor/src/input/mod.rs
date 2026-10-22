@@ -253,7 +253,7 @@ pub fn classify_swipe(
         .iter()
         .find(|ik| ik.in_scope(focused_surface_id) && ik.matches_swipe(fingers, direction, mods));
     if let Some(ik) = binding
-        && (ik.allow_fullscreen || !fullscreen_active)
+        && ik.runs_under(fullscreen_active)
     {
         return SwipeAction::Bound(match &ik.dispatch {
             InterceptDispatch::Action(action) => Bound::Action(action.clone()),
@@ -2044,7 +2044,7 @@ pub fn classify_key(
         .iter()
         .find(|ik| ik.in_scope(focused_surface_id) && ik.matches(keysym_raw, modified_raw, mods))
     {
-        if fullscreen_active && !ik.allow_fullscreen {
+        if !ik.runs_under(fullscreen_active) {
             return KeyAction::Forward;
         }
         // Actions run wherever focus is, Emacs bindings only off Emacs.

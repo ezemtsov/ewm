@@ -26,7 +26,8 @@
        ,docstring
        (interactive)
        (ewm-action-module ',action))
-     (function-put ',name 'ewm-action ',action)))
+     (function-put ',name 'ewm-action ',action)
+     (function-put ',name 'ewm-fullscreen t)))
 
 ;;; Frames and outputs
 
@@ -65,6 +66,7 @@ No-op if N is past the number of frames on this output."
   (ewm-action-module (ewm--frame-select-action last-command-event)))
 
 (function-put 'ewm-frame-select 'ewm-action #'ewm--frame-select-action)
+(function-put 'ewm-frame-select 'ewm-fullscreen t)
 
 (ewm--define-action ewm-frame-move-left (move-frame :delta -1)
   "Move the selected frame one slot left in the strip.")

@@ -16,7 +16,8 @@
 ;;    Touchpad swipes bind as `<swipe-FINGERS-DIRECTION>' keys, with the
 ;;    usual modifier prefixes.
 ;; 2. `ewm-intercept-prefixes' - Extra keys to intercept, plus keys that
-;;    should also be intercepted while a client is fullscreen.
+;;    should also be intercepted while a client is fullscreen, as the
+;;    compositor commands of `ewm-mode-map' are.
 ;; 3. `ewm-surface-emulate-keys' - Key entries are intercepted as commands
 ;;    and `ewm-surface-emulate' sends the mapped keys to the client.
 ;;
@@ -212,17 +213,12 @@ Nil disables the swipe."
   :match (lambda (_ key) (ewm--key-event key)))
 
 (defcustom ewm-intercept-prefixes
-  '(?\C-x ?\C-u ?\C-h ?\M-x (?\s-f :fullscreen)
-          ("s-S-<left>" :fullscreen) ("s-S-<right>" :fullscreen)
-          ("s-S-<up>" :fullscreen) ("s-S-<down>" :fullscreen) ("s-m" :fullscreen)
-          ("<MonBrightnessUp>" :fullscreen) ("<MonBrightnessDown>" :fullscreen)
-          ("<AudioRaiseVolume>" :fullscreen) ("<AudioLowerVolume>" :fullscreen)
-          ("<AudioMute>" :fullscreen) ("<AudioMicMute>" :fullscreen)
-          ("<Print>" :fullscreen))
+  '(?\C-x ?\C-u ?\C-h ?\M-x ("<Print>" :fullscreen))
   "Keys that always go to Emacs, even when a surface has focus.
 Each entry is a key or (key :fullscreen), where a key is an integer
 event such as ?\\M-x or a key description naming one key. :fullscreen
-entries are intercepted even when a fullscreen surface has focus.
+entries are intercepted even when a fullscreen surface has focus, as the
+compositor commands of `ewm-mode-map' are.
 
 Bindings in `ewm-mode-map' are always intercepted (without :fullscreen)
 and use command-event delivery. Other keys enter the Emacs keyboard path.
@@ -582,6 +578,10 @@ runtime."
               ewm-input--repeatable-key-descriptions)
       (memq (ewm--event-mode-binding event) ewm-repeatable-commands)))
 
+(defun ewm--event-fullscreen-p (event)
+  "Return non-nil when EVENT's command is intercepted under fullscreen."
+  (function-get (ewm--event-mode-binding event) 'ewm-fullscreen))
+
 (defun ewm--event-key-spec (event)
   "Return a (:key VALUE modifier-flags) plist for EVENT, or nil.
 VALUE is the ASCII code or special-key name; flags are t or nil."
@@ -681,7 +681,7 @@ Emulations go first, since the compositor takes the first match."
                                        (ewm--mode-map-events))))
       (when-let* ((spec (ewm--event-to-intercept-spec
                          event
-                         (memq event fullscreen-events)
+                         (or (memq event fullscreen-events) (ewm--event-fullscreen-p event))
                          (ewm--event-dispatch event (assq event prefixes)))))
         (push spec specs)))
     (ewm-intercept-keys-module

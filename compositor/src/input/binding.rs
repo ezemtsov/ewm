@@ -31,7 +31,7 @@ pub struct InterceptedKey {
     pub shift: bool,
     #[serde(rename = "super", default)]
     pub logo: bool,
-    /// If true, this key is redirected to Emacs even during fullscreen
+    /// Intercepted even while a fullscreen surface has focus.
     #[serde(default)]
     pub allow_fullscreen: bool,
     #[serde(default)]
@@ -43,6 +43,11 @@ pub struct InterceptedKey {
 }
 
 impl InterceptedKey {
+    /// Whether this binding runs while a fullscreen surface would take the input.
+    pub fn runs_under(&self, fullscreen: bool) -> bool {
+        self.allow_fullscreen || !fullscreen
+    }
+
     /// Whether this binding applies while `focused_surface_id` has focus.
     pub fn in_scope(&self, focused_surface_id: Option<u64>) -> bool {
         self.surface
