@@ -123,6 +123,25 @@
     (define-key ewm-mode-map (kbd "s-<f9>") nil)
     (define-key ewm-mode-map (kbd "s-C-7") nil)))
 
+(ert-deftest ewm-input-tests/default-swipes-are-actions ()
+  "The default swipe bindings reach the compositor as actions."
+  (let ((ewm--module-mode t) captured)
+    (cl-letf (((symbol-function 'ewm-intercept-keys-module)
+               (lambda (keys) (setq captured keys))))
+      (ewm--send-intercept-keys))
+    (pcase-dolist (`(,key . ,action) '(("<swipe-3-up>" . (overview open))
+                                       ("<swipe-3-down>" . (overview close))
+                                       ("<swipe-3-left>" . (focus-frame :delta 1))
+                                       ("<swipe-3-right>" . (focus-frame :delta -1))))
+      (let ((spec (seq-find (lambda (spec) (equal (plist-get spec :description) key))
+                            captured)))
+        (should (equal (plist-get spec :action) action))))))
+
+(ert-deftest ewm-input-tests/frame-select-ignores-non-digit-keys ()
+  "`ewm-frame-select' bound to a swipe yields no action instead of an error."
+  (should (equal (ewm--frame-select-action ?3) '(focus-nth-frame :n 3)))
+  (should-not (ewm--frame-select-action 'swipe-4-up)))
+
 (ert-deftest ewm-input-tests/spec-swipe-key ()
   "A swipe bound in `ewm-mode-map' rides the list as the key its name spells."
   (define-key ewm-mode-map (kbd "s-<swipe-4-left>") #'kill-buffer)

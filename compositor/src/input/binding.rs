@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use smithay::input::keyboard::ModifiersState;
 use smithay::input::keyboard::xkb::keysyms;
 
-use super::SwipeDirection;
+use super::Direction;
 use crate::module;
 
 /// What a binding listens for.
@@ -14,7 +14,7 @@ pub enum Trigger {
     /// A touchpad swipe of `fingers`, told apart by the direction it sets off in.
     Swipe {
         fingers: u32,
-        direction: SwipeDirection,
+        direction: Direction,
     },
 }
 
@@ -91,12 +91,7 @@ impl InterceptedKey {
     }
 
     /// Whether a swipe of `fingers` setting off in `direction` under `mods` is this binding's.
-    pub fn matches_swipe(
-        &self,
-        fingers: u32,
-        direction: SwipeDirection,
-        mods: &ModifiersState,
-    ) -> bool {
+    pub fn matches_swipe(&self, fingers: u32, direction: Direction, mods: &ModifiersState) -> bool {
         self.trigger == Trigger::Swipe { fingers, direction } && self.mods_match(mods, false)
     }
 }
@@ -144,4 +139,49 @@ pub enum Action {
     HideToggle,
     /// Run `command` detached from the compositor.
     Spawn { command: Vec<String> },
+}
+
+/// The end a two-ended transition heads for: the one its command names, or the other one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum End {
+    On,
+    Off,
+    Other,
+}
+
+impl End {
+    /// The direction whose travel heads for this end when the fingers moving `direction` head
+    /// there from a transition that is `on` or not.
+    pub fn forward(self, on: bool, direction: Direction) -> Direction {
+        match (self, on) {
+            (End::On, _) | (End::Other, false) => direction,
+            _ => direction.opposite(),
+        }
+    }
+}
+
+/// A swipe the fingers drive as they move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gesture {
+    /// Scrolls the strip under the pointer, the fingers moving `forward` bringing in the next frame.
+    Strip { forward: Direction },
+    /// Drives the overview toward `end`, the fingers moving `direction` heading there.
+    Overview { direction: Direction, end: End },
+}
+
+impl Action {
+    /// The gesture a swipe setting off in `direction` drives when bound to this action, if any.
+    pub fn as_gesture(&self, direction: Direction) -> Option<Gesture> {
+        use module::OverviewAction::{Close, Open, Toggle};
+        let strip = |forward| Gesture::Strip { forward };
+        let overview = |end| Gesture::Overview { direction, end };
+        Some(match self {
+            Action::FocusFrame { delta: 1 } => strip(direction),
+            Action::FocusFrame { delta: -1 } => strip(direction.opposite()),
+            Action::Overview(Open) => overview(End::On),
+            Action::Overview(Close) => overview(End::Off),
+            Action::Overview(Toggle) => overview(End::Other),
+            _ => return None,
+        })
+    }
 }

@@ -11,6 +11,9 @@ fn fixture() -> (Fixture, TestClient) {
     let mut client = fix.new_client().unwrap();
     fix.roundtrip(&mut client);
     fix.add_output(HEAD, 1600, 900);
+    fix.set_intercepted_keys_from_lisp(
+        r#"[(:key "swipe-3-left" :description "<swipe-3-left>" :action (focus-frame :delta 1))]"#,
+    );
     let (_app, sid) = fix.open_toplevel_with_id(&mut client, "app", Size::from((400, 400)));
     fix.tile(HEAD, vec![frame_with_entry(100, nz(1), sid)]);
     client.listen_for_gestures();
@@ -64,9 +67,13 @@ fn pinches_and_holds_reach_the_client() {
 fn a_swipe_nothing_listens_for_reaches_the_client() {
     let (mut fix, mut client) = fixture();
 
-    // Four fingers are nobody's with the default knobs, three horizontal ones are the strip's.
+    // Nothing is bound on four fingers, the three-finger swipe left scrolls the strip, and the
+    // unbound right of that bound finger count reaches no one.
     fix.swipe_begin(4);
     fix.swipe_update(0.0, -40.0);
+    fix.swipe_end();
+    fix.swipe_begin(3);
+    fix.swipe_update(-60.0, 0.0);
     fix.swipe_end();
     fix.swipe_begin(3);
     fix.swipe_update(60.0, 0.0);

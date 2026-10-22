@@ -1,31 +1,29 @@
-//! Touchpad swipes bound in `ewm-mode-map` run like keys once the fingers lift: an action in the
-//! compositor, or the key as an Emacs command over the pipe. The built-in strip and overview
-//! swipes keep the finger counts the gesture knobs give them.
+//! Touchpad swipes are bindings in `ewm-mode-map`. The overview and frame-focus actions follow
+//! the fingers and settle when they lift, every other binding runs when they lift.
 use std::sync::Mutex;
 
-use ewm_core::input::{Gestures, Swipe};
 use ewm_core::testing::{Fixture, frame_with_width};
 use ewm_core::{Event, FocusSource, Notify};
 
-// The intercept list is process-wide, so tests run one at a time.
+// The intercept list is process-wide: tests run one at a time.
 static SERIAL: Mutex<()> = Mutex::new(());
 
 const OUTPUT: &str = "HEAD-A";
 const KEY_LEFTMETA: u32 = 125 + 8;
 
-/// An output with three strip frames and the pointer on it, bindings from `keys`.
-fn fixture(keys: &str) -> Fixture {
+/// Three frames, the middle one focused and under the pointer, bound as `config` leaves them.
+fn fixture(config: &str) -> Fixture {
     let mut fix = Fixture::new().unwrap();
     fix.add_output(OUTPUT, 1920, 1080);
+    fix.configure_lisp(config);
     fix.ewm().animations_clock.set_complete_instantly(true);
     fix.tile_command(
         OUTPUT,
         (1..=3).map(|id| frame_with_width(id, 1920.0)).collect(),
     );
     fix.ewm()
-        .set_focus_frame(1, FocusSource::Test, Notify::None);
+        .set_focus_frame(2, FocusSource::Test, Notify::None);
     fix.pointer_motion_to(960.0, 540.0);
-    fix.set_intercepted_keys_from_lisp(keys);
     fix
 }
 
@@ -36,32 +34,83 @@ fn swipe(fix: &mut Fixture, fingers: u32, dx: f64, dy: f64) {
 }
 
 #[test]
-fn a_bound_swipe_runs_its_action_when_the_fingers_lift() {
+fn the_default_swipes_drive_the_overview_and_the_strip() {
     let _serial = SERIAL.lock().unwrap();
-    let mut fix =
-        fixture(r#"[(:key "swipe-4-up" :description "<swipe-4-up>" :action (overview toggle))]"#);
+    let mut fix = fixture("");
 
-    swipe(&mut fix, 4, 0.0, -40.0);
-    assert!(matches!(fix.ewm_ref().swipe, Swipe::Bound(_)));
+    swipe(&mut fix, 3, 0.0, -400.0);
+    assert!(fix.ewm_ref().overview.is_active());
+    fix.swipe_end();
+    assert!(fix.ewm_ref().overview.is_open());
+    swipe(&mut fix, 3, 0.0, 400.0);
+    fix.swipe_end();
     assert!(!fix.ewm_ref().overview.is_open());
-    fix.swipe_end();
-    assert!(fix.ewm_ref().overview.is_open());
-    assert!(matches!(fix.ewm_ref().swipe, Swipe::Client));
 
-    // The other directions of a bound finger count are the compositor's too, and run nothing.
-    swipe(&mut fix, 4, 0.0, 40.0);
-    assert!(matches!(fix.ewm_ref().swipe, Swipe::Swallowed));
+    // Closing a closed overview still follows the fingers, held at the closed end.
+    swipe(&mut fix, 3, 0.0, 400.0);
     fix.swipe_end();
-    assert!(fix.ewm_ref().overview.is_open());
+    assert!(!fix.ewm_ref().overview.is_open());
+
+    // Swiping left brings in the frame to the right, the content follows the fingers.
+    swipe(&mut fix, 3, -1200.0, 0.0);
+    assert!(!fix.strip(OUTPUT).view_is_static());
+    fix.swipe_end();
+    assert_eq!(fix.strip(OUTPUT).active_frame_id(), Some(3));
+    swipe(&mut fix, 3, 1200.0, 0.0);
+    fix.swipe_end();
+    assert_eq!(fix.strip(OUTPUT).active_frame_id(), Some(2));
 }
 
 #[test]
-fn a_bound_swipe_sends_its_key_to_emacs_in_place_of_the_built_in() {
+fn a_swapped_strip_binding_moves_the_strip_against_the_fingers() {
     let _serial = SERIAL.lock().unwrap();
-    let mut fix = fixture(r#"[(:key "swipe-3-up" :description "<swipe-3-up>" :dispatch command)]"#);
+    let mut fix = fixture(r#"(keymap-set ewm-mode-map "<swipe-3-left>" #'ewm-frame-left)"#);
+
+    swipe(&mut fix, 3, -1200.0, 0.0);
+    fix.swipe_end();
+    assert_eq!(fix.strip(OUTPUT).active_frame_id(), Some(1));
+}
+
+#[test]
+fn a_toggle_binding_drives_the_overview_both_ways() {
+    let _serial = SERIAL.lock().unwrap();
+    let mut fix = fixture(r#"(keymap-set ewm-mode-map "<swipe-3-up>" #'ewm-overview-toggle)"#);
+
+    swipe(&mut fix, 3, 0.0, -400.0);
+    fix.swipe_end();
+    assert!(fix.ewm_ref().overview.is_open());
+    swipe(&mut fix, 3, 0.0, -400.0);
+    fix.swipe_end();
+    assert!(!fix.ewm_ref().overview.is_open());
+}
+
+fn order(fix: &Fixture) -> Vec<u64> {
+    fix.strip(OUTPUT).frame_ids().collect()
+}
+
+#[test]
+fn a_bound_action_runs_when_the_fingers_lift() {
+    let _serial = SERIAL.lock().unwrap();
+    let mut fix = fixture(r#"(keymap-set ewm-mode-map "<swipe-4-up>" #'ewm-frame-move-right)"#);
+
+    swipe(&mut fix, 4, 0.0, -400.0);
+    assert_eq!(order(&fix), [1, 2, 3]);
+    fix.swipe_end();
+    assert_eq!(order(&fix), [1, 3, 2]);
+
+    // The other directions of a bound finger count are the compositor's too, and run nothing.
+    swipe(&mut fix, 4, 0.0, 400.0);
+    fix.swipe_end();
+    assert_eq!(order(&fix), [1, 3, 2]);
+}
+
+#[test]
+fn a_command_binding_runs_when_the_fingers_lift() {
+    let _serial = SERIAL.lock().unwrap();
+    let mut fix = fixture(r#"(keymap-set ewm-mode-map "<swipe-3-up>" #'ewm-frame-new)"#);
     fix.enable_event_capture();
 
-    swipe(&mut fix, 3, 0.0, -40.0);
+    swipe(&mut fix, 3, 0.0, -400.0);
     fix.swipe_end();
     assert!(!fix.ewm_ref().overview.is_active());
     let keys: Vec<String> = fix
@@ -74,17 +123,16 @@ fn a_bound_swipe_sends_its_key_to_emacs_in_place_of_the_built_in() {
         .collect();
     assert_eq!(keys, ["<swipe-3-up>"]);
 
-    // The binding shadows one direction, the strip swipe keeps the other axis.
-    swipe(&mut fix, 3, 700.0, 0.0);
-    assert!(!fix.strip(OUTPUT).view_is_static());
+    // The other default swipes are untouched.
+    swipe(&mut fix, 3, -1200.0, 0.0);
     fix.swipe_end();
-    assert!(fix.strip(OUTPUT).view_is_static());
+    assert_eq!(fix.strip(OUTPUT).active_frame_id(), Some(3));
 }
 
 #[test]
 fn gestures_count_as_activity() {
     let _serial = SERIAL.lock().unwrap();
-    let mut fix = fixture("[]");
+    let mut fix = fixture("");
 
     fix.ewm().idle_timeout.last_activity -= std::time::Duration::from_secs(1);
     let before = fix.ewm_ref().idle_timeout.last_activity;
@@ -102,52 +150,46 @@ fn gestures_count_as_activity() {
 #[test]
 fn a_cancelled_swipe_runs_nothing() {
     let _serial = SERIAL.lock().unwrap();
-    let mut fix =
-        fixture(r#"[(:key "swipe-4-up" :description "<swipe-4-up>" :action (overview toggle))]"#);
+    let mut fix = fixture(r#"(keymap-set ewm-mode-map "<swipe-4-up>" #'ewm-frame-move-right)"#);
 
-    swipe(&mut fix, 4, 0.0, -40.0);
+    swipe(&mut fix, 4, 0.0, -400.0);
     fix.swipe_cancel();
-    assert!(!fix.ewm_ref().overview.is_open());
-    assert!(matches!(fix.ewm_ref().swipe, Swipe::Client));
+    assert_eq!(order(&fix), [1, 2, 3]);
 }
 
 #[test]
 fn a_held_modifier_picks_the_modified_binding() {
     let _serial = SERIAL.lock().unwrap();
-    let mut fix = fixture(
-        r#"[(:key "swipe-3-up" :super t :description "s-<swipe-3-up>" :action hide-toggle)]"#,
-    );
+    let mut fix = fixture(r#"(keymap-set ewm-mode-map "s-<swipe-3-up>" #'ewm-hide-toggle)"#);
 
-    // Without Super the plain swipe is still the overview's.
-    swipe(&mut fix, 3, 0.0, -40.0);
+    swipe(&mut fix, 3, 0.0, -400.0);
     assert!(fix.ewm_ref().overview.is_active());
     fix.swipe_end();
     assert!(!fix.ewm_ref().frames_hidden());
 
     fix.keyboard_key(KEY_LEFTMETA, true);
-    swipe(&mut fix, 3, 0.0, -40.0);
+    swipe(&mut fix, 3, 0.0, -400.0);
     fix.swipe_end();
     assert!(fix.ewm_ref().frames_hidden());
     fix.keyboard_key(KEY_LEFTMETA, false);
 }
 
 #[test]
-fn the_gesture_knobs_move_the_built_in_swipes() {
+fn an_unbound_default_swipe_runs_nothing() {
     let _serial = SERIAL.lock().unwrap();
-    let mut fix = fixture("[]");
-    fix.ewm().config.gestures = Gestures {
-        strip_swipe_fingers: Some(4),
-        overview_swipe_fingers: None,
-    };
+    let mut fix = fixture(
+        r#"(keymap-set ewm-mode-map "<swipe-4-up>" #'ewm-overview-open)
+           (keymap-unset ewm-mode-map "<swipe-3-up>" t)"#,
+    );
 
-    // Nothing listens for three fingers any more: the client gets the swipe.
-    swipe(&mut fix, 3, 0.0, -40.0);
-    assert!(matches!(fix.ewm_ref().swipe, Swipe::Client));
+    // The fullscreen prefix entry alone binds nothing, and three fingers stay the compositor's
+    // for the directions still bound.
+    swipe(&mut fix, 3, 0.0, -400.0);
     assert!(!fix.ewm_ref().overview.is_active());
     fix.swipe_end();
 
-    swipe(&mut fix, 4, 700.0, 0.0);
-    assert!(!fix.strip(OUTPUT).view_is_static());
+    swipe(&mut fix, 4, 0.0, -400.0);
+    assert!(fix.ewm_ref().overview.is_active());
     fix.swipe_end();
-    assert!(fix.strip(OUTPUT).view_is_static());
+    assert!(fix.ewm_ref().overview.is_open());
 }

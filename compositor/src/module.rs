@@ -55,7 +55,6 @@ use tracing::{debug, info, trace};
 
 use crate::config::{self, Config};
 use crate::im::TextInputProvider;
-use crate::input::SwipeDirection;
 use crate::layout::Placement;
 use crate::layout::strip::{self, Frame};
 pub use crate::utils::reply::Reply;
@@ -1475,15 +1474,10 @@ fn resolve_keysym_from_name(name: &str) -> xkb::Keysym {
 /// `swipe-FINGERS-DIRECTION` as a trigger.
 fn swipe_trigger(name: &str) -> Option<Trigger> {
     let (fingers, direction) = name.strip_prefix("swipe-")?.split_once('-')?;
-    let fingers = fingers.parse().ok()?;
-    let direction = match direction {
-        "up" => SwipeDirection::Up,
-        "down" => SwipeDirection::Down,
-        "left" => SwipeDirection::Left,
-        "right" => SwipeDirection::Right,
-        _ => return None,
-    };
-    Some(Trigger::Swipe { fingers, direction })
+    Some(Trigger::Swipe {
+        fingers: fingers.parse().ok()?,
+        direction: elisp::serde::from_value(&Data::symbol(direction)).ok()?,
+    })
 }
 
 /// A key as Emacs names it: a character code or a key name like `left`.

@@ -28,7 +28,9 @@
 //! 6. **VT switching**: Ctrl+Alt+F1-F12 arrive as XF86Switch_VT_N keysyms.
 //!
 //! 7. **Swipe bindings**: `<swipe-FINGERS-DIRECTION>` entries match by fingers, direction and
-//!    modifiers under the same first-match and surface-scope rules, and run when the fingers lift.
+//!    modifiers under the same first-match and surface-scope rules. Bound to the overview or a
+//!    one-frame focus action the swipe drives that gesture as the fingers move, anything else
+//!    runs when they lift, and the unbound directions of a bound finger count do nothing.
 
 mod backend_ext;
 pub(crate) mod binding;
@@ -40,6 +42,7 @@ pub(crate) mod frame_click_grab;
 use std::any::Any;
 
 pub use backend_ext::*;
+pub use binding::{End, Gesture};
 pub use config::*;
 use frame_click_grab::FrameClickGrab;
 use serde::{Deserialize, Serialize};
@@ -179,8 +182,11 @@ pub enum Swipe {
         dx: f64,
         dy: f64,
     },
-    Strip(Output),
-    Overview,
+    /// Drives `gesture`, the fingers moving `forward` advancing it.
+    Gesture {
+        gesture: Gesture,
+        forward: Direction,
+    },
     /// Runs when the fingers lift.
     Bound(Bound),
     /// The compositor's, with nothing to drive.
@@ -189,15 +195,15 @@ pub enum Swipe {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum SwipeDirection {
+pub enum Direction {
     Up,
     Down,
     Left,
     Right,
 }
 
-impl SwipeDirection {
-    pub const ALL: [SwipeDirection; 4] = [Self::Up, Self::Down, Self::Left, Self::Right];
+impl Direction {
+    pub const ALL: [Direction; 4] = [Self::Up, Self::Down, Self::Left, Self::Right];
 
     /// The direction of a swipe that moved by `(dx, dy)` on the touchpad.
     pub fn of(dx: f64, dy: f64) -> Self {
@@ -210,8 +216,23 @@ impl SwipeDirection {
         }
     }
 
-    pub fn is_horizontal(self) -> bool {
-        matches!(self, Self::Left | Self::Right)
+    /// How far a move by `(dx, dy)` travels this way.
+    pub fn along(self, dx: f64, dy: f64) -> f64 {
+        match self {
+            Self::Up => -dy,
+            Self::Down => dy,
+            Self::Left => -dx,
+            Self::Right => dx,
+        }
+    }
+
+    pub fn opposite(self) -> Self {
+        match self {
+            Self::Up => Self::Down,
+            Self::Down => Self::Up,
+            Self::Left => Self::Right,
+            Self::Right => Self::Left,
+        }
     }
 }
 
@@ -222,48 +243,42 @@ pub enum Bound {
     Action(Action),
 }
 
-/// What a touchpad swipe does, decided by the direction it sets off in.
+/// What a touchpad swipe does, decided by the binding on the direction it sets off in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SwipeAction {
     /// Pass to the client under the pointer.
     Forward,
-    /// Scroll the strip under the pointer.
-    Strip,
-    /// Drive the overview.
-    Overview,
+    /// Follow the fingers.
+    Gesture(Gesture),
     Bound(Bound),
 }
 
-/// Pure classification of a swipe: a binding first, the built-in gesture of its finger count
-/// next, else the client's. A binding needs the flag under fullscreen, as a key does.
+/// Pure classification of a swipe by its binding: an action with a gesture is driven, anything
+/// else runs when the fingers lift, unbound is the client's.
 pub fn classify_swipe(
     bindings: &[InterceptedKey],
-    fullscreen_active: bool,
-    focused_surface_id: Option<u64>,
-    gestures: Gestures,
+    fullscreen: bool,
+    surface_id: Option<u64>,
     fingers: u32,
-    direction: SwipeDirection,
+    direction: Direction,
     mods: &ModifiersState,
 ) -> SwipeAction {
     let binding = bindings
         .iter()
-        .find(|ik| ik.in_scope(focused_surface_id) && ik.matches_swipe(fingers, direction, mods));
-    if let Some(ik) = binding
-        && ik.runs_under(fullscreen_active)
-    {
-        return SwipeAction::Bound(match &ik.dispatch {
-            InterceptDispatch::Action(action) => Bound::Action(action.clone()),
-            _ => Bound::Command {
-                key: ik.key.clone(),
-            },
-        });
-    }
-    if direction.is_horizontal() && gestures.strip_swipe_fingers == Some(fingers) {
-        SwipeAction::Strip
-    } else if !direction.is_horizontal() && gestures.overview_swipe_fingers == Some(fingers) {
-        SwipeAction::Overview
-    } else {
-        SwipeAction::Forward
+        .find(|ik| ik.in_scope(surface_id) && ik.matches_swipe(fingers, direction, mods));
+    let Some(ik) = binding.filter(|ik| ik.runs_under(fullscreen)) else {
+        return SwipeAction::Forward;
+    };
+    match &ik.dispatch {
+        InterceptDispatch::Action(action) => action.as_gesture(direction).map_or_else(
+            || SwipeAction::Bound(Bound::Action(action.clone())),
+            SwipeAction::Gesture,
+        ),
+        InterceptDispatch::Command => SwipeAction::Bound(Bound::Command {
+            key: ik.key.clone(),
+        }),
+        // A prefix entry with no binding has nothing to run.
+        InterceptDispatch::Keyboard => SwipeAction::Forward,
     }
 }
 
@@ -1271,23 +1286,18 @@ impl State {
         }
     }
 
-    fn working_area_width(&self, output: &Output) -> f64 {
-        self.ewm.get_working_area(output).size.w as f64
-    }
-
     /// What a swipe of `fingers` under `mods` does once it sets off in `direction`.
     fn classify_swipe(
         &self,
         bindings: &[InterceptedKey],
         fingers: u32,
-        direction: SwipeDirection,
+        direction: Direction,
         mods: &ModifiersState,
     ) -> SwipeAction {
         classify_swipe(
             bindings,
             self.ewm.focused_fullscreen_entry().is_some(),
             self.ewm.focused_surface_id(),
-            self.ewm.config.gestures,
             fingers,
             direction,
             mods,
@@ -1301,7 +1311,7 @@ impl State {
         }
     }
 
-    /// Swipe begin: take the swipe when a binding or a built-in gesture listens for its fingers.
+    /// Swipe begin: take the swipe when a binding listens for its fingers in some direction.
     pub(crate) fn on_gesture_swipe_begin<B: InputBackend>(
         &mut self,
         event: B::GestureSwipeBeginEvent,
@@ -1312,7 +1322,7 @@ impl State {
         if !self.ewm.is_locked() {
             let mods = self.ewm.keyboard.modifier_state();
             let bindings = module::intercepted_keys().read().unwrap();
-            let taken = SwipeDirection::ALL.into_iter().any(|direction| {
+            let taken = Direction::ALL.into_iter().any(|direction| {
                 self.classify_swipe(&bindings, fingers, direction, &mods) != SwipeAction::Forward
             });
             if taken {
@@ -1343,29 +1353,18 @@ impl State {
         event: B::GestureSwipeUpdateEvent,
     ) where
         B::GestureSwipeUpdateEvent: 'static,
-        B::Device: 'static,
     {
         use smithay::backend::input::{Event, GestureSwipeUpdateEvent as _};
         self.drop_swipe_under_lock();
         let mut dx = event.delta_x();
         let mut dy = event.delta_y();
-        // Use libinput's unaccelerated deltas. Invert when natural-scroll is on
-        // so the strip follows fingers regardless of scroll mode.
+        // Our gestures follow the fingers on the pad, unaccelerated.
         if let Some(le) = (&event as &dyn std::any::Any)
             .downcast_ref::<libinput::event::gesture::GestureSwipeUpdateEvent>()
         {
             use libinput::event::gesture::GestureEventCoordinates;
             dx = le.dx_unaccelerated();
             dy = le.dy_unaccelerated();
-        }
-        // The deadzone and the overview follow the fingers, whatever the scroll direction setting.
-        let (uninverted_dx, uninverted_dy) = (dx, dy);
-        if let Some(dev) =
-            (&event.device() as &dyn std::any::Any).downcast_ref::<libinput::Device>()
-            && dev.config_scroll_natural_scroll_enabled()
-        {
-            dx = -dx;
-            dy = -dy;
         }
         let timestamp = std::time::Duration::from_micros(event.time().micros());
 
@@ -1376,29 +1375,26 @@ impl State {
             dy: cy,
         } = &mut self.ewm.swipe
         {
-            *cx += uninverted_dx;
-            *cy += uninverted_dy;
+            *cx += dx;
+            *cy += dy;
             if *cx * *cx + *cy * *cy < GESTURE_DEADZONE_SQ {
                 return;
             }
-            let (fingers, mods, direction) = (*fingers, *mods, SwipeDirection::of(*cx, *cy));
+            let (fingers, mods, direction) = (*fingers, *mods, Direction::of(*cx, *cy));
+            // The travel through the deadzone counts from the first move.
+            (dx, dy) = (*cx, *cy);
             let action = {
                 let bindings = module::intercepted_keys().read().unwrap();
                 self.classify_swipe(&bindings, fingers, direction, &mods)
             };
             self.ewm.swipe = match action {
-                SwipeAction::Strip => self
-                    .ewm
-                    .strip_gesture_begin()
-                    .map_or(Swipe::Swallowed, Swipe::Strip),
-                SwipeAction::Overview => {
-                    self.ewm.overview_gesture_begin();
-                    Swipe::Overview
-                }
+                SwipeAction::Gesture(gesture) => match self.ewm.gesture_begin(gesture) {
+                    Some(forward) => Swipe::Gesture { gesture, forward },
+                    None => Swipe::Swallowed,
+                },
                 SwipeAction::Bound(bound) => Swipe::Bound(bound),
                 SwipeAction::Forward => Swipe::Swallowed,
             };
-            return;
         }
 
         match &self.ewm.swipe {
@@ -1408,24 +1404,13 @@ impl State {
                     self,
                     &GestureSwipeUpdateEvent {
                         time: event.time(),
-                        delta: (dx, dy).into(),
+                        delta: event.delta(),
                     },
                 );
             }
-            Swipe::Overview => {
-                if self.ewm.overview.gesture_update(-uninverted_dy, timestamp) == Some(true) {
-                    self.ewm.queue_redraw_all();
-                }
-            }
-            Swipe::Strip(out) => {
-                let out = out.clone();
-                let w = self.working_area_width(&out);
-                // Zoomed-out content still follows the fingers on screen.
-                let dx = dx / self.ewm.overview.zoom();
-                if let Some(strip) = self.ewm.layout.strip_mut(&out) {
-                    strip.gesture_update(dx, timestamp, w);
-                }
-                self.ewm.queue_redraw(&out);
+            Swipe::Gesture { gesture, forward } => {
+                let travel = forward.along(dx, dy);
+                self.ewm.gesture_update(*gesture, travel, timestamp);
             }
             Swipe::Deadzone { .. } | Swipe::Bound(_) | Swipe::Swallowed => {}
         }
@@ -1449,15 +1434,10 @@ impl State {
                 );
             }
             Swipe::Bound(bound) if !event.cancelled() => self.run_bound(bound),
-            Swipe::Overview => {
-                if self.ewm.overview_gesture_end() {
-                    self.ewm.queue_redraw_all();
+            Swipe::Gesture { gesture, .. } => {
+                if self.ewm.gesture_end(gesture) {
                     self.refresh_pointer_after_scene_change(false);
                 }
-            }
-            Swipe::Strip(out) => {
-                let w = self.working_area_width(&out);
-                self.ewm.strip_gesture_end(&out, w);
             }
             Swipe::Deadzone { .. } | Swipe::Bound(_) | Swipe::Swallowed => {}
         }

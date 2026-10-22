@@ -56,14 +56,17 @@
   "Slide to the next frame on the current output's strip.")
 
 (defun ewm--frame-select-action (event)
-  "The `focus-nth-frame' action for the digit key EVENT."
-  (list 'focus-nth-frame :n (- (event-basic-type event) ?0)))
+  "The `focus-nth-frame' action for the digit key EVENT, nil for any other key."
+  (let ((key (event-basic-type event)))
+    (and (integerp key) (<= ?0 key ?9)
+         (list 'focus-nth-frame :n (- key ?0)))))
 
 (defun ewm-frame-select ()
   "Select the Nth frame (1-based) on the current output, N the digit pressed.
 No-op if N is past the number of frames on this output."
   (interactive)
-  (ewm-action-module (ewm--frame-select-action last-command-event)))
+  (when-let* ((action (ewm--frame-select-action last-command-event)))
+    (ewm-action-module action)))
 
 (function-put 'ewm-frame-select 'ewm-action #'ewm--frame-select-action)
 (function-put 'ewm-frame-select 'ewm-fullscreen t)

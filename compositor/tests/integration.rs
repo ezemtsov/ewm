@@ -3,7 +3,6 @@
 //! These tests verify compositor behavior using the headless backend and test fixture.
 
 use ewm_core::backend::{closest_representable_scale, int_to_transform, transform_to_int};
-use ewm_core::input::Swipe;
 use ewm_core::layout::floating::{ResizeEdge, SizeFracPoint};
 use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, TestClient, WL_FIXED_TOLERANCE, nz};
@@ -404,9 +403,11 @@ fn strip_swipe_drives_the_output_under_the_pointer() {
         Some("Virtual-1".to_string())
     );
 
+    fixture.set_intercepted_keys_from_lisp(
+        r#"[(:key "swipe-3-right" :description "<swipe-3-right>" :action (focus-frame :delta -1))]"#,
+    );
     fixture.swipe_begin(3);
     fixture.swipe_update(700.0, 0.0);
-    assert!(matches!(&fixture.ewm_ref().swipe, Swipe::Strip(out) if out.name() == "Virtual-2"));
     assert!(fixture.strip("Virtual-1").view_is_static());
     assert!(!fixture.strip("Virtual-2").view_is_static());
     fixture.swipe_end();

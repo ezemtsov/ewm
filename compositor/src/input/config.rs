@@ -1,4 +1,4 @@
-//! Libinput device configuration from `ewm-input-config` and the touchpad gesture knobs.
+//! Libinput device configuration from `ewm-input-config`.
 
 use serde::Deserialize;
 use smithay::reexports::input as libinput;
@@ -142,25 +142,6 @@ pub fn effective_keyboard_repeat(configs: &[InputConfigEntry]) -> (i32, i32) {
     (rate, delay)
 }
 
-/// The gesture knobs, a plist from Lisp.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
-pub struct Gestures {
-    /// Fingers of the swipe that scrolls the strip, `None` for no such swipe.
-    pub strip_swipe_fingers: Option<u32>,
-    /// Fingers of the swipe that drives the overview, `None` for no such swipe.
-    pub overview_swipe_fingers: Option<u32>,
-}
-
-impl Default for Gestures {
-    fn default() -> Self {
-        Self {
-            strip_swipe_fingers: Some(3),
-            overview_swipe_fingers: Some(3),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use elisp::Value;
@@ -263,18 +244,5 @@ mod tests {
             effective_keyboard_repeat(&[delay_only]),
             (DEFAULT_KEYBOARD_REPEAT_RATE, 450),
         );
-    }
-
-    #[test]
-    fn gestures_read_the_lisp_plist() {
-        let gestures: Gestures = elisp::serde::from_value(&plist(&[
-            ("strip-swipe-fingers", Value::Int(4)),
-            ("overview-swipe-fingers", Value::NIL),
-        ]))
-        .unwrap();
-        assert_eq!(gestures.strip_swipe_fingers, Some(4));
-        assert_eq!(gestures.overview_swipe_fingers, None);
-        let defaults: Gestures = elisp::serde::from_value(&Value::NIL).unwrap();
-        assert_eq!(defaults, Gestures::default());
     }
 }

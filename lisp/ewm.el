@@ -285,7 +285,6 @@ both can be enabled together."
 (defun ewm--config ()
   "Every option as the plist `ewm-configure-module' takes."
   (list :input (ewm--input-config)
-        :gestures (ewm--gestures-config)
         :idle (pcase ewm-idle
                 ((pred integerp) (list :timeout ewm-idle))
                 (`(,(and (pred integerp) secs) . ,(and (pred stringp) command))

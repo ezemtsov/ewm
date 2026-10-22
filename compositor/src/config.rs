@@ -9,7 +9,7 @@ use serde::Deserialize;
 use crate::backend::drm::LidPolicyReason;
 use crate::cursor::CursorConfig;
 use crate::idle::IdleAction::{DeactivateMonitors, RunCommand};
-use crate::input::{Gestures, InputConfigEntry};
+use crate::input::InputConfigEntry;
 use crate::layout::overview::{DEFAULT_BACKDROP_COLOR, DEFAULT_BACKGROUND_COLOR, DEFAULT_ZOOM};
 use crate::render_helpers::shadow_style::Blur;
 use crate::{Event, State};
@@ -18,7 +18,6 @@ use crate::{Event, State};
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub struct Config {
     pub input: Vec<InputConfigEntry>,
-    pub gestures: Gestures,
     pub idle: Idle,
     pub cursor: Cursor,
     pub cursor_hide: CursorHide,
@@ -37,7 +36,6 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             input: Vec::new(),
-            gestures: Gestures::default(),
             idle: Idle::default(),
             cursor: Cursor::default(),
             cursor_hide: CursorHide::default(),

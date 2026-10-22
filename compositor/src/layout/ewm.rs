@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::mem;
+use std::time::Duration;
 
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::desktop::utils::under_from_surface_tree;
@@ -19,6 +20,7 @@ use super::resize_fade::{
 use super::snapshot::Snapshot;
 use super::{ActiveChange, FrameLocation, LayoutEntryLocation, Monitor, Moved, floating, strip};
 use crate::animation::Animation;
+use crate::input::{Direction, End, Gesture};
 use crate::render::render_view_snapshot;
 use crate::{
     Event, Ewm, FocusSource, LayoutEntry, LayoutEntryHit, LayoutEntryId, Notify, State, SurfaceHit,
@@ -1200,17 +1202,68 @@ impl Ewm {
 }
 
 impl Ewm {
-    /// Start a strip swipe on the output under the pointer, none while the frames are hidden.
-    pub fn strip_gesture_begin(&mut self) -> Option<Output> {
-        // A hidden strip would scroll unseen.
-        if self.frames_hidden() {
-            return None;
-        }
+    /// The strip under the pointer and the working width a swipe is measured against.
+    fn swiped_strip(&self) -> Option<(Output, f64)> {
         let output = self.output_under_cursor().cloned()?;
-        if let Some(strip) = self.layout.strip_mut(&output) {
-            strip.gesture_begin();
+        let working_w = self.get_working_area(&output).size.w as f64;
+        Some((output, working_w))
+    }
+
+    /// Start `gesture`, returning the direction whose travel advances it, none with nothing to drive.
+    pub fn gesture_begin(&mut self, gesture: Gesture) -> Option<Direction> {
+        match gesture {
+            Gesture::Strip { forward } => {
+                // A hidden strip would scroll unseen.
+                if self.frames_hidden() {
+                    return None;
+                }
+                let (output, _) = self.swiped_strip()?;
+                self.layout.strip_mut(&output)?.gesture_begin();
+                Some(forward)
+            }
+            Gesture::Overview { direction, end } => {
+                Some(self.overview_gesture_begin(direction, end))
+            }
         }
-        Some(output)
+    }
+
+    /// Push `travel` along the direction `gesture_begin` returned.
+    pub fn gesture_update(&mut self, gesture: Gesture, travel: f64, timestamp: Duration) {
+        let changed = match gesture {
+            Gesture::Strip { .. } => {
+                let Some((output, working_w)) = self.swiped_strip() else {
+                    return;
+                };
+                // Zoomed-out content still follows the fingers on screen.
+                let travel = travel / self.overview.zoom();
+                if let Some(strip) = self.layout.strip_mut(&output) {
+                    strip.gesture_update(travel, timestamp, working_w);
+                }
+                self.queue_redraw(&output);
+                return;
+            }
+            Gesture::Overview { .. } => self.overview.gesture_update(travel, timestamp),
+        };
+        if changed == Some(true) {
+            self.queue_redraw_all();
+        }
+    }
+
+    /// Settle `gesture` where the fingers left it, true when the scene under the pointer changed.
+    pub fn gesture_end(&mut self, gesture: Gesture) -> bool {
+        let changed = match gesture {
+            Gesture::Strip { .. } => {
+                if let Some((output, working_w)) = self.swiped_strip() {
+                    self.strip_gesture_end(&output, working_w);
+                }
+                return false;
+            }
+            Gesture::Overview { .. } => self.overview_gesture_end(),
+        };
+        if changed {
+            self.queue_redraw_all();
+        }
+        changed
     }
 
     /// End a strip swipe on `output`: snap to the nearest frame, the keyboard following unless a
@@ -1423,7 +1476,10 @@ impl Ewm {
         true
     }
 
-    pub fn overview_gesture_begin(&mut self) {
+    /// Start an overview swipe toward `end`, the fingers moving `direction` heading there, and
+    /// return the direction whose travel opens.
+    pub fn overview_gesture_begin(&mut self, direction: Direction, end: End) -> Direction {
+        let forward = end.forward(self.overview.is_open(), direction);
         self.bake_overview_shifts();
         let was_active = self.overview.is_active();
         self.with_overview(|overview| overview.gesture_begin());
@@ -1431,6 +1487,7 @@ impl Ewm {
             self.set_inactive_frames_shown(true);
         }
         self.queue_redraw_all();
+        forward
     }
 
     pub fn frames_hidden(&self) -> bool {

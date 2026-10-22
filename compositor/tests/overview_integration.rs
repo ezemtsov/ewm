@@ -1,6 +1,7 @@
 //! Overview through the headless fixture: zoom state, hit-testing and
 //! click-to-activate.
 
+use ewm_core::input::{Direction, End};
 use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{Fixture, nz};
 use ewm_core::{Event, LayoutEntry};
@@ -93,7 +94,7 @@ fn overview_events_follow_the_open_state() {
     assert_eq!(opens, [true, false]);
 
     // A gesture reports opening when it begins and closing when it snaps back.
-    fix.ewm().overview_gesture_begin();
+    fix.ewm().overview_gesture_begin(Direction::Up, End::On);
     fix.ewm().overview_gesture_end();
     let opens: Vec<bool> = fix
         .drain_events()

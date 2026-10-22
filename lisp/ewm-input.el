@@ -65,6 +65,12 @@ Override individual bindings with `use-package':
   ;; Overview: zoom the strip out and back in.
   "S-s-<up>" #'ewm-overview-open
   "S-s-<down>" #'ewm-overview-close
+  ;; Touchpad swipes follow the fingers: up and down drive the overview, a swipe
+  ;; left brings in the frame to the right.
+  "<swipe-3-up>" #'ewm-overview-open
+  "<swipe-3-down>" #'ewm-overview-close
+  "<swipe-3-left>" #'ewm-frame-right
+  "<swipe-3-right>" #'ewm-frame-left
   ;; Slide every frame off screen and back.
   "s-m" #'ewm-hide-toggle
   ;; Clipboard
@@ -173,27 +179,6 @@ Example:
                         (list :device key))
                       props)))
           ewm-input-config))
-
-;;; Touchpad gestures
-
-(defcustom ewm-strip-swipe-fingers 3
-  "Fingers of the touchpad swipe that scrolls the strip left and right.
-Nil disables the swipe."
-  :type '(choice (const :tag "None" nil) (integer :tag "Fingers"))
-  :set (ewm--send-on-set #'ewm--send-config)
-  :group 'ewm-input-devices)
-
-(defcustom ewm-overview-swipe-fingers 3
-  "Fingers of the touchpad swipe that opens and closes the overview.
-Nil disables the swipe."
-  :type '(choice (const :tag "None" nil) (integer :tag "Fingers"))
-  :set (ewm--send-on-set #'ewm--send-config)
-  :group 'ewm-input-devices)
-
-(defun ewm--gestures-config ()
-  "The touchpad gesture options as the plist the compositor reads."
-  (list :strip-swipe-fingers ewm-strip-swipe-fingers
-        :overview-swipe-fingers ewm-overview-swipe-fingers))
 
 ;;; Key interception
 
