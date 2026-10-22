@@ -185,6 +185,23 @@ mod tests {
 
     use super::*;
 
+    fn check_finite(damping_ratio: f64, stiffness: f64, from: f64, to: f64, initial_velocity: f64) {
+        let spring = Spring {
+            from,
+            to,
+            initial_velocity,
+            params: SpringParams::new(damping_ratio, stiffness, 0.0001),
+        };
+        let duration = spring.duration();
+        assert!(duration < Duration::MAX);
+        assert!(
+            spring
+                .clamped_duration()
+                .is_none_or(|d| d < Duration::from_secs(4))
+        );
+        assert!(spring.value_at(Duration::ZERO).is_finite());
+    }
+
     proptest! {
         // Overdamped springs used to produce NaN or panic in the duration search.
         #[test]
@@ -195,16 +212,19 @@ mod tests {
             to in -10f64..=10.,
             initial_velocity in -50f64..=50.,
         ) {
-            let spring = Spring {
-                from,
-                to,
-                initial_velocity,
-                params: SpringParams::new(damping_ratio, stiffness, 0.0001),
-            };
-            let duration = spring.duration();
-            prop_assert!(duration < Duration::MAX);
-            prop_assert!(spring.clamped_duration().is_none_or(|d| d < Duration::from_secs(4)));
-            prop_assert!(spring.value_at(Duration::ZERO).is_finite());
+            check_finite(damping_ratio, stiffness, from, to, initial_velocity);
         }
+    }
+
+    /// The overdamped spring the randomised test once found.
+    #[test]
+    fn an_overdamped_spring_stays_finite() {
+        check_finite(
+            6.268035415937293,
+            1569.7243775792472,
+            1.8081704760451986,
+            0.0,
+            0.0,
+        );
     }
 }

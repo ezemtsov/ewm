@@ -1,9 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc ccf6e98e179a838a160dc1c7071ed3fd713385c21237b668fb6d07d4e2da0978 # shrinks to ops = [RequestFullscreen { surface: 2, on: true }, RequestFullscreen { surface: 0, on: true }, ApplyLayout { output: 0, frames: [FrameSpec { frame_idx: 2, entries: [(0, 0), (2, 2)], selected: Some(0) }] }, RequestFullscreen { surface: 0, on: true }]
-cc ae2db6ffab76aabdce77fb7aa30a443e3f651222f49474cd7002c3af602537a6 # shrinks to ops = [ApplyLayout { output: 1, frames: [FrameSpec { frame_idx: 0, entries: [], selected: None }] }, ApplyLayout { output: 0, frames: [FrameSpec { frame_idx: 1, entries: [], selected: None }, FrameSpec { frame_idx: 3, entries: [(2, 1)], selected: None }] }, RequestFullscreen { surface: 1, on: true }, Commit(1), RemoveOutput(0), RemoveOutput(1), AddOutput(0)]
-cc 2e2593089d1a9e541828b0f2f80bd2d643de4eee6bb094914f5d9c290b38fdb0 # shrinks to ops = [RequestFullscreen { surface: 1, on: true }, ApplyLayout { output: 1, frames: [FrameSpec { frame_idx: 3, entries: [(1, 1)], selected: None }] }, Commit(1), ApplyLayout { output: 1, frames: [FrameSpec { frame_idx: 1, entries: [], selected: None }, FrameSpec { frame_idx: 3, entries: [], selected: None }] }]

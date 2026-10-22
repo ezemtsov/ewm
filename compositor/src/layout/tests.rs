@@ -823,6 +823,31 @@ fn verify_live_frames(layout: &Layout, live: &BTreeSet<u64>) -> Result<(), TestC
     Ok(())
 }
 
+fn check_layout_ops(ops: &[LayoutOp]) -> Result<(), TestCaseError> {
+    let mut layout = testing::layout_with(
+        PROP_HEADS
+            .iter()
+            .map(|name| (*name, strip::Strip::new(animation::Clock::default())))
+            .collect(),
+    );
+    let outputs: Vec<Output> = layout.outputs().cloned().collect();
+    let mut live = BTreeSet::new();
+    let mut remembered = BTreeMap::new();
+    let mut drag = None;
+    for op in ops {
+        apply_layout_op(
+            &mut layout,
+            &outputs,
+            &mut live,
+            &mut remembered,
+            &mut drag,
+            op,
+        )?;
+        verify_live_frames(&layout, &live)?;
+    }
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
@@ -830,19 +855,25 @@ proptest! {
     fn layout_invariants_hold_under_any_op_sequence(
         ops in prop::collection::vec(layout_op(), 1..40),
     ) {
-        let mut layout = testing::layout_with(
-            PROP_HEADS
-                .iter()
-                .map(|name| (*name, strip::Strip::new(animation::Clock::default())))
-                .collect(),
-        );
-        let outputs: Vec<Output> = layout.outputs().cloned().collect();
-        let mut live = BTreeSet::new();
-        let mut remembered = BTreeMap::new();
-        let mut drag = None;
-        for op in &ops {
-            apply_layout_op(&mut layout, &outputs, &mut live, &mut remembered, &mut drag, op)?;
-            verify_live_frames(&layout, &live)?;
-        }
+        check_layout_ops(&ops)?;
     }
+}
+
+/// A sequence the randomised test once found failing.
+#[test]
+fn a_pin_onto_a_frame_added_after_the_float() {
+    let add = |id, floating| LayoutOp::AddFrame {
+        id,
+        output: 0,
+        floating,
+        after: None,
+        filler: false,
+    };
+    check_layout_ops(&[
+        add(7, true),
+        add(1, false),
+        add(5, false),
+        LayoutOp::Pin { float: 7, frame: 5 },
+    ])
+    .unwrap();
 }

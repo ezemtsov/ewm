@@ -717,104 +717,172 @@ fn assert_invariants(fix: &Fixture) {
     );
 }
 
-proptest! {
-    #[test]
-    fn focus_invariants_hold(ops in prop::collection::vec(op_strategy(), 1..30)) {
-        let _serial = SERIAL.lock().unwrap();
-        let mut fix = Fixture::new().unwrap();
-        fix.enable_event_capture();
-        for name in OUTPUTS {
-            fix.add_output(name, 1920, 1080);
-        }
-        let mut frames = Frames::new(&mut fix);
+/// Every op keeps the focus invariants, and none asks Emacs to run a command (invariant 15).
+fn check_focus_ops(ops: Vec<Op>) -> Result<(), TestCaseError> {
+    let _serial = SERIAL.lock().unwrap();
+    let mut fix = Fixture::new().unwrap();
+    fix.enable_event_capture();
+    for name in OUTPUTS {
+        fix.add_output(name, 1920, 1080);
+    }
+    let mut frames = Frames::new(&mut fix);
+    assert_invariants(&fix);
+    for op in ops {
+        apply_op(&mut fix, &mut frames, op);
         assert_invariants(&fix);
-        for op in ops {
-            apply_op(&mut fix, &mut frames, op);
-            assert_invariants(&fix);
-            // Invariant 15: nothing here asks Emacs to run a command.
-            for event in fix.drain_events() {
-                prop_assert!(
-                    !matches!(event, Event::InterceptedCommand { .. } | Event::Key(_)),
-                    "{event:?}"
+        for event in fix.drain_events() {
+            prop_assert!(
+                !matches!(event, Event::InterceptedCommand { .. } | Event::Key(_)),
+                "{event:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Lisp freezes on `FrameHidden` and thaws on `FrameShown`, so a placed frame's last event must
+/// say shown iff it is its strip's active frame or the overview is active.
+fn check_show_hide_ops(ops: Vec<Op>) -> Result<(), TestCaseError> {
+    let _serial = SERIAL.lock().unwrap();
+    let mut fix = Fixture::new().unwrap();
+    fix.ewm().animations_clock.set_complete_instantly(true);
+    fix.enable_event_capture();
+    for name in OUTPUTS {
+        fix.add_output(name, 1920, 1080);
+    }
+    let mut frames = Frames::new(&mut fix);
+    let _ = fix.drain_events();
+
+    let mut shown: HashMap<u64, bool> = HashMap::new();
+
+    for op in ops {
+        apply_op(&mut fix, &mut frames, op);
+        assert_invariants(&fix);
+        // The overview refreezes the inactive frames on the redraw that ends it.
+        fix.dispatch();
+
+        for event in fix.drain_events() {
+            match event {
+                Event::FrameShown { id } => {
+                    shown.insert(id, true);
+                }
+                Event::FrameHidden { id } => {
+                    shown.insert(id, false);
+                }
+                Event::Close { id } => {
+                    shown.remove(&id);
+                }
+                _ => {}
+            }
+        }
+
+        let thawed = fix.ewm_ref().overview.is_active();
+        for (out_name, strip) in fix.ewm_ref().layout.strips() {
+            let active = strip.active_frame_id();
+            for frame in strip.frames() {
+                let id = frame.surface_id;
+                prop_assert_eq!(
+                    shown.get(&id),
+                    Some(&(thawed || active == Some(id))),
+                    "frame {} on {}: Lisp was last told {:?}, active {:?}, overview active {}",
+                    id,
+                    out_name,
+                    shown.get(&id),
+                    active,
+                    thawed,
                 );
             }
         }
+        for frame in &fix.ewm_ref().layout.homeless().tiled {
+            let id = frame.surface_id;
+            prop_assert_eq!(
+                shown.get(&id),
+                Some(&false),
+                "homeless frame {}: Lisp was last told {:?}",
+                id,
+                shown.get(&id),
+            );
+        }
+    }
+    Ok(())
+}
+
+proptest! {
+    #[test]
+    fn focus_invariants_hold(ops in prop::collection::vec(op_strategy(), 1..30)) {
+        check_focus_ops(ops)?;
     }
 }
+
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 64,
         ..ProptestConfig::default()
     })]
 
-    /// Lisp freezes on `FrameHidden` and thaws on `FrameShown`, so a placed frame's last event
-    /// must say shown iff it is its strip's active frame or the overview is active.
     #[test]
     fn frame_show_hide_tracks_active_slot(
         ops in prop::collection::vec(op_strategy(), 1..30)
     ) {
-        let _serial = SERIAL.lock().unwrap();
-        let mut fix = Fixture::new().unwrap();
-        fix.ewm().animations_clock.set_complete_instantly(true);
-        fix.enable_event_capture();
-        for name in OUTPUTS {
-            fix.add_output(name, 1920, 1080);
-        }
-        let mut frames = Frames::new(&mut fix);
-        let _ = fix.drain_events();
-
-        let mut shown: HashMap<u64, bool> = HashMap::new();
-
-        for op in ops {
-            apply_op(&mut fix, &mut frames, op);
-            assert_invariants(&fix);
-            // The overview refreezes the inactive frames on the redraw that ends it.
-            fix.dispatch();
-
-            for event in fix.drain_events() {
-                match event {
-                    Event::FrameShown { id } => {
-                        shown.insert(id, true);
-                    }
-                    Event::FrameHidden { id } => {
-                        shown.insert(id, false);
-                    }
-                    Event::Close { id } => {
-                        shown.remove(&id);
-                    }
-                    _ => {}
-                }
-            }
-
-            let thawed = fix.ewm_ref().overview.is_active();
-            for (out_name, strip) in fix.ewm_ref().layout.strips() {
-                let active = strip.active_frame_id();
-                for frame in strip.frames() {
-                    let id = frame.surface_id;
-                    prop_assert_eq!(
-                        shown.get(&id),
-                        Some(&(thawed || active == Some(id))),
-                        "frame {} on {}: Lisp was last told {:?}, active {:?}, overview active {}",
-                        id,
-                        out_name,
-                        shown.get(&id),
-                        active,
-                        thawed,
-                    );
-                }
-            }
-            for frame in &fix.ewm_ref().layout.homeless().tiled {
-                let id = frame.surface_id;
-                prop_assert_eq!(
-                    shown.get(&id),
-                    Some(&false),
-                    "homeless frame {}: Lisp was last told {:?}",
-                    id,
-                    shown.get(&id),
-                );
-            }
-        }
+        check_show_hide_ops(ops)?;
     }
+}
+
+// Sequences the randomised tests once found failing.
+
+#[test]
+fn frames_opened_under_the_overview() {
+    let ops = vec![
+        Op::Action(Action::Overview(OverviewAction::Toggle)),
+        Op::CreateEmacsFrame {
+            output: 1,
+            surface_id: 100,
+        },
+        Op::CreateEmacsFrame {
+            output: 1,
+            surface_id: 101,
+        },
+    ];
+    check_focus_ops(ops.clone()).unwrap();
+    check_show_hide_ops(ops).unwrap();
+}
+
+#[test]
+fn an_output_removed_under_the_overview() {
+    let ops = vec![
+        Op::CreateEmacsFrame {
+            output: 1,
+            surface_id: 101,
+        },
+        Op::CreateEmacsFrame {
+            output: 0,
+            surface_id: 100,
+        },
+        Op::Action(Action::Overview(OverviewAction::Toggle)),
+        Op::RemoveOutput(0),
+    ];
+    check_focus_ops(ops.clone()).unwrap();
+    check_show_hide_ops(ops).unwrap();
+}
+
+#[test]
+fn frames_back_from_parking_under_the_overview() {
+    let ops = vec![
+        Op::CreateEmacsFrame {
+            output: 0,
+            surface_id: 100,
+        },
+        Op::Action(Action::Overview(OverviewAction::Toggle)),
+        Op::CreateEmacsFrame {
+            output: 0,
+            surface_id: 101,
+        },
+        Op::DisableOutput(1),
+        Op::DisableOutput(0),
+        Op::EnableOutput(0),
+    ];
+    check_focus_ops(ops.clone()).unwrap();
+    check_show_hide_ops(ops).unwrap();
 }
 
 #[derive(Debug, Clone)]

@@ -7,3 +7,5 @@
 result
 \#*\#
 /docs/showcase/*.png
+proptest-regressions/
+*.proptest-regressions

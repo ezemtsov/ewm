@@ -269,6 +269,91 @@ impl Harness {
     }
 }
 
+fn check_ops(ops: &[Op]) -> Result<(), TestCaseError> {
+    let mut h = Harness::new();
+    for op in ops {
+        let before = h.rects();
+        let geometry = h.geometry();
+        let asked_for = h.expected_configure();
+        let answered = h.apply(op);
+        h.fix.ewm_ref().layout.verify_invariants();
+        let after = h.rects();
+        if let Some(asked) = answered {
+            // The configure followed the layout, and whatever came back settles the debt.
+            if let Some(asked_for) = asked_for {
+                prop_assert_eq!(
+                    Size::from(asked),
+                    asked_for,
+                    "the configure answered by {:?}",
+                    op
+                );
+            }
+            // A buffer brings the answered size, an ack alone leaves the last one.
+            let committed = if matches!(op, Op::Ack) {
+                geometry
+            } else {
+                h.answer(asked)
+            };
+            prop_assert_eq!(
+                h.geometry(),
+                committed,
+                "the size committed for {:?}",
+                asked
+            );
+            prop_assert!(!h.owes(), "answering {:?} left a buffer owed", asked);
+        }
+        if h.owes() {
+            // A layout or a request that leaves a buffer owed changes no view's contents' size.
+            for i in 0..2 {
+                let (Some(was), Some(now)) = (before[i], after[i]) else {
+                    continue;
+                };
+                prop_assert!(
+                    size_change(was.size, now.size) <= RESIZE_FADE_THRESHOLD,
+                    "view {} owed a buffer yet went from {:?} to {:?} on {:?}",
+                    ENTRIES[i],
+                    was,
+                    now,
+                    op
+                );
+            }
+        } else {
+            // Settled, every view draws by the fit computed now. A view still shown fullscreen
+            // after its surface asked to leave keeps its fit until the commit that leaves.
+            let buffer = h.geometry();
+            for view in h.views() {
+                if h.leaving_fullscreen(view.entry) {
+                    continue;
+                }
+                let scale = if view.fit.native {
+                    1.
+                } else {
+                    let window = view.fit.window;
+                    f64::max(
+                        window.w as f64 / buffer.w as f64,
+                        window.h as f64 / buffer.h as f64,
+                    )
+                };
+                prop_assert_eq!(
+                    view.scale,
+                    scale,
+                    "view {} draws at the wrong scale on {:?}",
+                    view.entry,
+                    op
+                );
+                prop_assert_eq!(
+                    view.rect.size,
+                    buffer.to_f64().upscale(scale).to_i32_round(),
+                    "view {} draws the wrong size on {:?}",
+                    view.entry,
+                    op
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 48,
@@ -277,77 +362,52 @@ proptest! {
 
     #[test]
     fn views_hold_until_the_buffer_comes(ops in prop::collection::vec(op_strategy(), 1..30)) {
-        let mut h = Harness::new();
-        for op in &ops {
-            let before = h.rects();
-            let geometry = h.geometry();
-            let asked_for = h.expected_configure();
-            let answered = h.apply(op);
-            h.fix.ewm_ref().layout.verify_invariants();
-            let after = h.rects();
-            if let Some(asked) = answered {
-                // The configure followed the layout, and whatever came back settles the debt.
-                if let Some(asked_for) = asked_for {
-                    prop_assert_eq!(
-                        Size::from(asked),
-                        asked_for,
-                        "the configure answered by {:?}",
-                        op
-                    );
-                }
-                // A buffer brings the answered size, an ack alone leaves the last one.
-                let committed = if matches!(op, Op::Ack) { geometry } else { h.answer(asked) };
-                prop_assert_eq!(h.geometry(), committed, "the size committed for {:?}", asked);
-                prop_assert!(!h.owes(), "answering {:?} left a buffer owed", asked);
-            }
-            if h.owes() {
-                // A layout or a request that leaves a buffer owed changes no view's contents' size.
-                for i in 0..2 {
-                    let (Some(was), Some(now)) = (before[i], after[i]) else {
-                        continue;
-                    };
-                    prop_assert!(
-                        size_change(was.size, now.size) <= RESIZE_FADE_THRESHOLD,
-                        "view {} owed a buffer yet went from {:?} to {:?} on {:?}",
-                        ENTRIES[i],
-                        was,
-                        now,
-                        op
-                    );
-                }
-            } else {
-                // Settled, every view draws by the fit computed now. A view still shown fullscreen
-                // after its surface asked to leave keeps its fit until the commit that leaves.
-                let buffer = h.geometry();
-                for view in h.views() {
-                    if h.leaving_fullscreen(view.entry) {
-                        continue;
-                    }
-                    let scale = if view.fit.native {
-                        1.
-                    } else {
-                        let window = view.fit.window;
-                        f64::max(
-                            window.w as f64 / buffer.w as f64,
-                            window.h as f64 / buffer.h as f64,
-                        )
-                    };
-                    prop_assert_eq!(
-                        view.scale,
-                        scale,
-                        "view {} draws at the wrong scale on {:?}",
-                        view.entry,
-                        op
-                    );
-                    prop_assert_eq!(
-                        view.rect.size,
-                        buffer.to_f64().upscale(scale).to_i32_round(),
-                        "view {} draws the wrong size on {:?}",
-                        view.entry,
-                        op
-                    );
-                }
-            }
-        }
+        check_ops(&ops)?;
     }
+}
+
+// Sequences the randomised test once found failing.
+
+const fn rect(w: u32, h: u32) -> RectSpec {
+    RectSpec { x: 0, y: 0, w, h }
+}
+
+#[test]
+fn an_answer_before_the_first_layout() {
+    check_ops(&[
+        Op::Answer,
+        Op::Layout([None, Some(rect(300, 200))]),
+        Op::Layout([Some(rect(300, 300)), Some(rect(300, 200))]),
+    ])
+    .unwrap();
+}
+
+#[test]
+fn fullscreen_on_and_off_answered_each_time() {
+    check_ops(&[
+        Op::Layout([Some(rect(300, 200)), Some(rect(300, 300))]),
+        Op::Fullscreen { entry: 0, on: true },
+        Op::Answer,
+        Op::Fullscreen {
+            entry: 0,
+            on: false,
+        },
+        Op::Answer,
+    ])
+    .unwrap();
+}
+
+#[test]
+fn an_ack_without_a_buffer_between_fullscreen_requests() {
+    check_ops(&[
+        Op::Layout([Some(rect(300, 200)), Some(rect(300, 300))]),
+        Op::Answer,
+        Op::Fullscreen { entry: 0, on: true },
+        Op::Ack,
+        Op::Fullscreen {
+            entry: 0,
+            on: false,
+        },
+    ])
+    .unwrap();
 }

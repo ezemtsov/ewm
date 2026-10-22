@@ -512,6 +512,32 @@ fn apply_op(
     check(fix, model, clients)
 }
 
+fn check_ops(ops: &[Op]) -> Result<(), TestCaseError> {
+    let mut fix = Fixture::new().unwrap();
+    for output in OUTPUTS {
+        fix.add_output(output, 1920, 1080);
+    }
+    let mut client = fix.new_client().unwrap();
+    fix.roundtrip(&mut client);
+    let (toplevels, sids) = (0..SURFACES)
+        .map(|i| fix.open_toplevel_with_id(&mut client, &format!("app{i}"), Size::from(VIEW)))
+        .unzip();
+    let mut clients = Clients {
+        client,
+        toplevels,
+        sids,
+        configured: BTreeMap::new(),
+        answered: BTreeSet::new(),
+    };
+    let mut model = Model::default();
+    drain(&mut fix, &mut clients);
+    check(&fix, &mut model, &clients)?;
+    for op in ops {
+        apply_op(&mut fix, &mut clients, &mut model, op)?;
+    }
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 48,
@@ -520,27 +546,108 @@ proptest! {
 
     #[test]
     fn fullscreen_lifecycle_invariants_hold(ops in prop::collection::vec(op_strategy(), 1..40)) {
-        let mut fix = Fixture::new().unwrap();
-        for output in OUTPUTS {
-            fix.add_output(output, 1920, 1080);
-        }
-        let mut client = fix.new_client().unwrap();
-        fix.roundtrip(&mut client);
-        let (toplevels, sids) = (0..SURFACES)
-            .map(|i| fix.open_toplevel_with_id(&mut client, &format!("app{i}"), Size::from(VIEW)))
-            .unzip();
-        let mut clients = Clients {
-            client,
-            toplevels,
-            sids,
-            configured: BTreeMap::new(),
-            answered: BTreeSet::new(),
-        };
-        let mut model = Model::default();
-        drain(&mut fix, &mut clients);
-        check(&fix, &mut model, &clients)?;
-        for op in &ops {
-            apply_op(&mut fix, &mut clients, &mut model, op)?;
-        }
+        check_ops(&ops)?;
     }
+}
+
+// Sequences the randomised test once found failing.
+
+#[test]
+fn two_requests_land_in_one_frame() {
+    check_ops(&[
+        Op::RequestFullscreen {
+            surface: 2,
+            on: true,
+        },
+        Op::RequestFullscreen {
+            surface: 0,
+            on: true,
+        },
+        Op::ApplyLayout {
+            output: 0,
+            frames: vec![FrameSpec {
+                frame_idx: 2,
+                entries: vec![(0, 0), (2, 2)],
+                selected: Some(0),
+            }],
+        },
+        Op::RequestFullscreen {
+            surface: 0,
+            on: true,
+        },
+    ])
+    .unwrap();
+}
+
+#[test]
+fn a_fullscreen_view_survives_losing_every_output() {
+    check_ops(&[
+        Op::ApplyLayout {
+            output: 1,
+            frames: vec![FrameSpec {
+                frame_idx: 0,
+                entries: vec![],
+                selected: None,
+            }],
+        },
+        Op::ApplyLayout {
+            output: 0,
+            frames: vec![
+                FrameSpec {
+                    frame_idx: 1,
+                    entries: vec![],
+                    selected: None,
+                },
+                FrameSpec {
+                    frame_idx: 3,
+                    entries: vec![(2, 1)],
+                    selected: None,
+                },
+            ],
+        },
+        Op::RequestFullscreen {
+            surface: 1,
+            on: true,
+        },
+        Op::Commit(1),
+        Op::RemoveOutput(0),
+        Op::RemoveOutput(1),
+        Op::AddOutput(0),
+    ])
+    .unwrap();
+}
+
+#[test]
+fn a_layout_drops_the_fullscreen_view() {
+    check_ops(&[
+        Op::RequestFullscreen {
+            surface: 1,
+            on: true,
+        },
+        Op::ApplyLayout {
+            output: 1,
+            frames: vec![FrameSpec {
+                frame_idx: 3,
+                entries: vec![(1, 1)],
+                selected: None,
+            }],
+        },
+        Op::Commit(1),
+        Op::ApplyLayout {
+            output: 1,
+            frames: vec![
+                FrameSpec {
+                    frame_idx: 1,
+                    entries: vec![],
+                    selected: None,
+                },
+                FrameSpec {
+                    frame_idx: 3,
+                    entries: vec![],
+                    selected: None,
+                },
+            ],
+        },
+    ])
+    .unwrap();
 }

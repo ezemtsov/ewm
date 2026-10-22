@@ -1200,6 +1200,35 @@ fn layer_shell_popup_receives_placement_and_hit_testing() {
         "layer popup centre {centre:?} should hit the popup surface",
     );
 }
+/// One output with two plain entries and the pointer moved over each, then `ops`.
+fn check_ops(ops: &[Op]) -> Result<(), TestCaseError> {
+    let mut h = Harness::new();
+    let prefix = [
+        Op::AddOutput(0),
+        Op::SetFocusFollowsMouse { on: true },
+        Op::WarpPointer { x: -100, y: -100 },
+        Op::ApplyPlainLayout {
+            output: 0,
+            n_entries: 2,
+        },
+        Op::WarpPointer {
+            x: VIEW_W / 4,
+            y: VIEW_H / 2,
+        },
+        Op::WarpPointer {
+            x: VIEW_W * 3 / 4,
+            y: VIEW_H / 2,
+        },
+    ];
+
+    for op in prefix.iter().chain(ops.iter()) {
+        apply_op(&mut h, op);
+        h.roundtrip_all();
+        assert_invariants(&mut h, op)?;
+    }
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 16,
@@ -1208,29 +1237,89 @@ proptest! {
 
     #[test]
     fn pointer_invariants_hold(ops in prop::collection::vec(op_strategy(), 1..10)) {
-        let mut h = Harness::new();
-        let prefix = [
-            Op::AddOutput(0),
-            Op::SetFocusFollowsMouse { on: true },
-            Op::WarpPointer { x: -100, y: -100 },
-            Op::ApplyPlainLayout {
-                output: 0,
-                n_entries: 2,
-            },
-            Op::WarpPointer {
-                x: VIEW_W / 4,
-                y: VIEW_H / 2,
-            },
-            Op::WarpPointer {
-                x: VIEW_W * 3 / 4,
-                y: VIEW_H / 2,
-            },
-        ];
-
-        for op in prefix.iter().chain(ops.iter()) {
-            apply_op(&mut h, op);
-            h.roundtrip_all();
-            assert_invariants(&mut h, op)?;
-        }
+        check_ops(&ops)?;
     }
+}
+
+// Sequences the randomised test once found failing.
+
+#[test]
+fn a_button_held_across_a_layout_that_empties_the_views() {
+    check_ops(&[
+        Op::ApplyLayout {
+            output: 0,
+            n_views: 1,
+            fullscreen_mask: 248572340,
+        },
+        Op::PointerButton { pressed: true },
+        Op::ApplyLayout {
+            output: 0,
+            n_views: 0,
+            fullscreen_mask: 3158454,
+        },
+        Op::PointerButton { pressed: false },
+    ])
+    .unwrap();
+}
+
+#[test]
+fn a_frame_popup_through_an_output_swap() {
+    check_ops(&[
+        Op::RemoveOutput(0),
+        Op::AddOutput(1),
+        Op::ApplyPlainLayout {
+            output: 1,
+            n_entries: 4,
+        },
+        Op::CreateFramePopup { ax: 206, ay: 132 },
+        Op::ApplyLayout {
+            output: 1,
+            n_views: 2,
+            fullscreen_mask: 1489761963,
+        },
+        Op::SetFocusFollowsMouse { on: false },
+        Op::AddOutput(0),
+    ])
+    .unwrap();
+}
+
+#[test]
+fn a_warp_onto_the_edge_of_fullscreen_views() {
+    check_ops(&[
+        Op::ApplyLayout {
+            output: 0,
+            n_views: 4,
+            fullscreen_mask: 2228042227,
+        },
+        Op::WarpPointer { x: 800, y: 0 },
+    ])
+    .unwrap();
+}
+
+#[test]
+fn a_frame_popup_under_fullscreen_views() {
+    check_ops(&[
+        Op::CreateFramePopup { ax: 50, ay: 50 },
+        Op::ApplyLayout {
+            output: 0,
+            n_views: 2,
+            fullscreen_mask: 1939294224,
+        },
+        Op::WarpPointer { x: 517, y: 277 },
+    ])
+    .unwrap();
+}
+
+#[test]
+fn a_release_after_a_programmatic_warp_into_fullscreen() {
+    check_ops(&[
+        Op::ProgrammaticWarpPointer { x: 800, y: 0 },
+        Op::ApplyLayout {
+            output: 0,
+            n_views: 2,
+            fullscreen_mask: 27956049,
+        },
+        Op::PointerButton { pressed: false },
+    ])
+    .unwrap();
 }
