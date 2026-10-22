@@ -165,6 +165,18 @@ pub enum ClientEvent {
     WorkspaceRemoved {
         workspace: ExtWorkspaceHandleV1,
     },
+    WorkspaceId {
+        workspace: ExtWorkspaceHandleV1,
+        id: String,
+    },
+    WorkspaceName {
+        workspace: ExtWorkspaceHandleV1,
+        name: String,
+    },
+    WorkspaceState {
+        workspace: ExtWorkspaceHandleV1,
+        state: WEnum<ext_workspace_handle_v1::State>,
+    },
     SessionLocked,
     SessionLockFinished,
     LayerClosed {
@@ -1250,11 +1262,15 @@ impl Dispatch<ExtWorkspaceHandleV1, ()> for ClientState {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let ext_workspace_handle_v1::Event::Removed = event {
-            state.events.push(ClientEvent::WorkspaceRemoved {
-                workspace: workspace.clone(),
-            });
-        }
+        use ext_workspace_handle_v1::Event;
+        let workspace = workspace.clone();
+        state.events.push(match event {
+            Event::Id { id } => ClientEvent::WorkspaceId { workspace, id },
+            Event::Name { name } => ClientEvent::WorkspaceName { workspace, name },
+            Event::State { state } => ClientEvent::WorkspaceState { workspace, state },
+            Event::Removed => ClientEvent::WorkspaceRemoved { workspace },
+            _ => return,
+        });
     }
 }
 

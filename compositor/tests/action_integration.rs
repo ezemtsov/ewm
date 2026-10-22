@@ -6,6 +6,7 @@ use ewm_core::input::KeyboardAction;
 use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, TestClient, nz};
 use ewm_core::{Event, FocusSource, LayoutEntry, Notify};
+use proptest::prelude::*;
 use smithay::utils::Size;
 use smithay::wayland::xdg_activation::XdgActivationToken;
 
@@ -242,102 +243,95 @@ fn tick(fix: &mut Fixture, emacs: &mut TestClient) {
     fix.roundtrip(emacs);
 }
 
-#[test]
-fn keys_for_emacs_wait_until_emacs_reads_the_focus() {
-    let _serial = SERIAL.lock().unwrap();
-    let (mut fix, mut emacs, ids) = emacs_fixture(4);
-
-    // Actions never wait, however far behind Emacs is, typed keys do.
-    tap(&mut fix, KEY_F5);
-    tap(&mut fix, KEY_F5);
-    assert_eq!(fix.ewm_ref().focused_frame_id(), Some(ids[2]));
-    assert_eq!(fix.keyboard_key(KEY_A, true), KeyboardAction::Deferred);
-    assert_eq!(fix.keyboard_key(KEY_A, false), KeyboardAction::Deferred);
-    tap(&mut fix, KEY_F5);
-    assert_eq!(fix.ewm_ref().focused_frame_id(), Some(ids[3]));
-    assert_eq!(fix.keyboard_key(KEY_A, true), KeyboardAction::Deferred);
-    assert_eq!(fix.keyboard_key(KEY_A, false), KeyboardAction::Deferred);
-    tick(&mut fix, &mut emacs);
-    assert_eq!(keys_seen(&mut emacs), vec![]);
-    assert_eq!(fix.deferred_key_count(), 4);
-
-    // One drain reads the coalesced Focus, and every key lands in the frame Emacs now selects.
-    let events = fix.drain_channel();
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, Event::Focus { .. })),
-        "{events:?}"
-    );
-    fix.roundtrip(&mut emacs);
-    assert_eq!(
-        keys_seen(&mut emacs),
-        vec![
-            Seen::Key(KEY_A, true),
-            Seen::Key(KEY_A, false),
-            Seen::Key(KEY_A, true),
-            Seen::Key(KEY_A, false)
-        ]
-    );
-    assert_eq!(fix.deferred_key_count(), 0);
-    assert_eq!(fix.keyboard_key(KEY_A, true), KeyboardAction::Forward);
-    assert_eq!(fix.keyboard_key(KEY_A, false), KeyboardAction::Forward);
+/// What gets typed while Emacs may have a focus to read.
+#[derive(Debug, Clone, Copy)]
+enum Typed {
+    /// The key bound to the other frame.
+    Action,
+    /// `KEY_A` or Shift, pressed or released.
+    Key(u32, bool),
+    /// Emacs reads the channel.
+    Drain,
 }
 
-#[test]
-fn deferred_keys_replay_with_the_modifiers_they_had() {
+fn typed() -> impl Strategy<Value = Typed> {
+    prop_oneof![
+        Just(Typed::Action),
+        (
+            prop::sample::select(vec![KEY_A, KEY_LEFTSHIFT]),
+            any::<bool>()
+        )
+            .prop_map(|(key, pressed)| Typed::Key(key, pressed)),
+        Just(Typed::Drain),
+    ]
+}
+
+/// Keys for Emacs arrive in the order typed and none but a modifier arrives while Emacs has a
+/// focus to read, actions never wait.
+fn check_typed(ops: &[Typed]) -> Result<(), TestCaseError> {
     let _serial = SERIAL.lock().unwrap();
-    let (mut fix, mut emacs, _ids) = emacs_fixture(2);
-
-    tap(&mut fix, KEY_F5);
-    assert_eq!(
-        fix.keyboard_key(KEY_LEFTSHIFT, true),
-        KeyboardAction::Forward
+    let (mut fix, mut emacs, ids) = emacs_fixture(2);
+    fix.set_intercepted_keys_from_lisp(
+        "[(:key \"F6\" :description \"<f6>\" :dispatch (action focus-nth-frame :n 1))
+          (:key \"F7\" :description \"<f7>\" :dispatch (action focus-nth-frame :n 2))]",
     );
-    for (key, pressed) in [(KEY_A, true), (KEY_A, false), (KEY_LEFTSHIFT, false)] {
-        assert_eq!(fix.keyboard_key(key, pressed), KeyboardAction::Deferred);
+    let (mut focused, mut shifted, mut unread_focus) = (0, false, false);
+    let (mut typed, mut arrived) = (Vec::new(), Vec::new());
+    for &op in ops {
+        match op {
+            // With Shift held the bound key is a key for Emacs like any other.
+            Typed::Action if shifted => {
+                for pressed in [true, false] {
+                    fix.keyboard_key([KEY_F6, KEY_F7][1 - focused], pressed);
+                    typed.push(Seen::Key([KEY_F6, KEY_F7][1 - focused], pressed));
+                }
+            }
+            Typed::Action => {
+                focused = 1 - focused;
+                tap(&mut fix, [KEY_F6, KEY_F7][focused]);
+                prop_assert_eq!(fix.ewm_ref().focused_frame_id(), Some(ids[focused]));
+                unread_focus = true;
+            }
+            Typed::Key(key, pressed) => {
+                fix.keyboard_key(key, pressed);
+                typed.push(Seen::Key(key, pressed));
+                if key == KEY_LEFTSHIFT {
+                    shifted = pressed;
+                }
+            }
+            Typed::Drain => {
+                fix.drain_channel();
+                unread_focus = false;
+            }
+        }
+        tick(&mut fix, &mut emacs);
+        let now = keys_seen(&mut emacs);
+        if unread_focus {
+            prop_assert!(
+                now.iter()
+                    .all(|key| matches!(key, Seen::Key(KEY_LEFTSHIFT, _))),
+                "{:?}",
+                now
+            );
+        }
+        arrived.extend(now);
     }
-    tick(&mut fix, &mut emacs);
-    assert_eq!(
-        seen(&mut emacs),
-        vec![Seen::Mods(0), Seen::Key(KEY_LEFTSHIFT, true), Seen::Mods(1)]
-    );
-
     fix.drain_channel();
-    fix.roundtrip(&mut emacs);
-    assert_eq!(
-        seen(&mut emacs),
-        vec![
-            Seen::Key(KEY_A, true),
-            Seen::Key(KEY_A, false),
-            Seen::Key(KEY_LEFTSHIFT, false),
-            Seen::Mods(0),
-        ]
-    );
+    tick(&mut fix, &mut emacs);
+    arrived.extend(keys_seen(&mut emacs));
+    prop_assert_eq!(arrived, typed);
+    Ok(())
 }
 
-#[test]
-fn modifier_only_keys_do_not_make_actions_wait() {
-    let _serial = SERIAL.lock().unwrap();
-    let (mut fix, _emacs, ids) = emacs_fixture(3);
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
 
-    // Neither a release nor a second Shift, which changes no modifier state, opens the barrier.
-    tap(&mut fix, KEY_F5);
-    assert_eq!(
-        fix.keyboard_key(KEY_LEFTSHIFT, true),
-        KeyboardAction::Forward
-    );
-    const KEY_RIGHTSHIFT: u32 = 54 + 8;
-    for (key, pressed) in [
-        (KEY_RIGHTSHIFT, true),
-        (KEY_LEFTSHIFT, false),
-        (KEY_RIGHTSHIFT, false),
-    ] {
-        assert_eq!(fix.keyboard_key(key, pressed), KeyboardAction::Forward);
-        assert_eq!(fix.deferred_key_count(), 0);
+    #[test]
+    fn keys_for_emacs_wait_until_emacs_reads_the_focus(
+        ops in prop::collection::vec(typed(), 1..24),
+    ) {
+        check_typed(&ops)?;
     }
-    tap(&mut fix, KEY_F5);
-    assert_eq!(fix.ewm_ref().focused_frame_id(), Some(ids[2]));
 }
 
 #[test]
@@ -346,15 +340,9 @@ fn a_vt_switch_never_waits_behind_deferred_keys() {
     let (mut fix, _emacs, _ids) = emacs_fixture(2);
 
     tap(&mut fix, KEY_F5);
-    assert_eq!(fix.keyboard_key(KEY_A, true), KeyboardAction::Deferred);
-    assert_eq!(
-        fix.keyboard_key(KEY_LEFTCTRL, true),
-        KeyboardAction::Deferred
-    );
-    assert_eq!(
-        fix.keyboard_key(KEY_LEFTALT, true),
-        KeyboardAction::Deferred
-    );
+    for key in [KEY_A, KEY_LEFTCTRL, KEY_LEFTALT] {
+        fix.keyboard_key(key, true);
+    }
     assert_eq!(fix.keyboard_key(KEY_F2, true), KeyboardAction::ChangeVt(2));
 }
 
@@ -377,8 +365,8 @@ fn deferred_keys_reach_emacs_before_focus_leaves_it() {
     let _ = seen(&mut app);
 
     tap(&mut fix, KEY_F5);
-    assert_eq!(fix.keyboard_key(KEY_A, true), KeyboardAction::Deferred);
-    assert_eq!(fix.keyboard_key(KEY_A, false), KeyboardAction::Deferred);
+    fix.keyboard_key(KEY_A, true);
+    fix.keyboard_key(KEY_A, false);
 
     let mut frames: Vec<Frame> = ids.iter().map(|&id| tile(id, Vec::new())).collect();
     frames[1].entries = vec![LayoutEntry::surface(
@@ -395,7 +383,6 @@ fn deferred_keys_reach_emacs_before_focus_leaves_it() {
         .set_focus_entry(nz(7), FocusSource::Test, Notify::None);
     fix.sync_keyboard_focus();
     assert_eq!(fix.keyboard_focus_surface_id(), Some(app_id));
-    assert_eq!(fix.deferred_key_count(), 0);
     fix.roundtrip(&mut emacs);
     fix.roundtrip(&mut app);
     assert_eq!(

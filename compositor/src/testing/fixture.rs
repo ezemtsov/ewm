@@ -1026,10 +1026,6 @@ impl Fixture {
         events
     }
 
-    pub fn deferred_key_count(&self) -> usize {
-        self.state.ewm.deferred_keys.len()
-    }
-
     /// Hold the animation clock where it is, so a spring or slide started now stays at its start.
     pub fn freeze_clock(&mut self) {
         let clock = &self.state.ewm.animations_clock;
