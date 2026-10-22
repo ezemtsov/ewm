@@ -739,8 +739,7 @@ fn check_landed(
         if on_strip(focused) {
             prop_assert_eq!(layout.active_frame_id(dst), Some(focused));
         }
-    } else if let Some(id) = returned.filter(|&id| on_strip(id) && !focused.is_some_and(&on_strip))
-    {
+    } else if let Some(id) = returned.filter(|&id| on_strip(id) && !focused.is_some_and(on_strip)) {
         prop_assert_eq!(
             layout.active_frame_id(dst),
             Some(id),
