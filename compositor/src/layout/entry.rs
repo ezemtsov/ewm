@@ -28,8 +28,7 @@ pub struct LayoutEntry {
 pub struct LayoutEntrySurface {
     /// Which Wayland surface this entry displays (analogous to an Emacs buffer).
     pub surface_id: u64,
-    /// Largest view per surface, computed by compositor from entry dimensions.
-    /// Drives send_configure() size + scale and native-size rendering.
+    /// The largest shown view of its surface, the one its configure is sized for.
     pub primary: bool,
     /// The view its frame shows fullscreen, marked by `Layout::reconcile_fullscreen`.
     #[serde(default)]

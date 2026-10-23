@@ -112,51 +112,25 @@ pub struct ViewRect {
     pub frame: u64,
     pub rect: Rectangle<i32, Logical>,
     pub scale: f64,
-    /// Its fit now, which it takes once nothing is owed.
-    pub fit: Fit,
+    /// Drawn at its own size, as the view the buffer was made for.
+    pub native: bool,
     /// Its window as Emacs laid it out.
     pub window: Rectangle<i32, Logical>,
 }
 
-/// How a view fits its contents: at their own size when native, else filling its window.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Fit {
-    /// The window's size, the slot's when fullscreen.
-    pub window: Size<i32, Logical>,
-    pub native: bool,
-}
-
-impl Fit {
-    /// The scale `buffer` is drawn at.
-    pub(crate) fn scale(self, buffer: Size<i32, Logical>) -> Option<f64> {
-        if self.native {
-            Some(1.)
-        } else {
-            fill_scale(buffer, self.window).map(|fill| fill.x)
-        }
-    }
-
-    /// Where fullscreen `buffer` starts in a `slot` that size: centered when native.
-    pub(crate) fn fullscreen_offset(
-        self,
-        buffer: Size<i32, Logical>,
-        slot: Size<i32, Logical>,
-    ) -> Point<i32, Logical> {
-        if self.native {
-            crate::fullscreen_center_offset(buffer, slot).into()
-        } else {
-            Point::from((0, 0))
-        }
-    }
-}
-
-/// Where contents sit and at what scale: `buffer` at `loc`, drawn by `fit`.
+/// Where contents sit and at what scale: `buffer` at `loc`, at its size when `native`, else
+/// filling `window`.
 pub(crate) fn contents_rect(
-    fit: Fit,
+    native: bool,
+    window: Size<i32, Logical>,
     buffer: Size<i32, Logical>,
     loc: Point<f64, Logical>,
 ) -> Option<(Rectangle<f64, Logical>, f64)> {
-    let scale = fit.scale(buffer)?;
+    let scale = if native {
+        1.
+    } else {
+        fill_scale(buffer, window)?.x
+    };
     Some((Rectangle::new(loc, buffer.to_f64().upscale(scale)), scale))
 }
 

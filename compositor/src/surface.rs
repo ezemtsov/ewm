@@ -1,6 +1,6 @@
 //! Compositor-side state of one toplevel, from creation to destruction.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -8,14 +8,14 @@ use smithay::desktop::Window;
 use smithay::output::Output;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgToplevelState;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Logical, Serial, Size};
+use smithay::utils::{Logical, Point, Serial, Size};
 use smithay::wayland::compositor::{HookId, remove_pre_commit_hook, with_states};
 use smithay::wayland::seat::WaylandFocus;
-use smithay::wayland::shell::xdg::{ToplevelSurface, XdgToplevelSurfaceData};
+use smithay::wayland::shell::xdg::{ToplevelCachedState, ToplevelSurface, XdgToplevelSurfaceData};
 
 use crate::animation::Animation;
-use crate::layout::resize_fade::{Fit, PendingResize, ResizeFade, ViewRect};
-use crate::{Ewm, LayoutEntry, LayoutEntryId, handlers};
+use crate::layout::resize_fade::{PendingResize, ResizeFade};
+use crate::{Ewm, LayoutEntry, LayoutEntryId, fullscreen_center_offset, handlers};
 
 const OPEN_ANIM_DURATION: Duration = Duration::from_millis(150);
 /// Holds alpha at 0 for one vblank so the empty first buffer some clients ship never shows.
@@ -66,10 +66,8 @@ pub struct SurfaceState {
     pending_resizes: Vec<(Serial, PendingResize)>,
     /// Old contents dissolving into the new.
     pub resize: Option<ResizeFade>,
-    /// How each view fits its contents, held while a resize is pending.
-    fitted: HashMap<LayoutEntryId, Fit>,
-    /// Where its views drew their contents before a commit that changes them.
-    pub(crate) rects_before: Vec<ViewRect>,
+    /// The view the buffer was made for, which the primary becomes as the client catches up.
+    pub presented: Option<LayoutEntryId>,
 }
 
 impl SurfaceState {
@@ -102,8 +100,7 @@ impl SurfaceState {
             open: None,
             pending_resizes: Vec::new(),
             resize: None,
-            fitted: HashMap::new(),
-            rects_before: Vec::new(),
+            presented: None,
         }
     }
 
@@ -150,9 +147,45 @@ impl SurfaceState {
         }
     }
 
-    /// Whether fullscreen `entry` draws at its own size: primary and owing no buffer.
-    pub(crate) fn fullscreen_native(&self, entry: &LayoutEntry) -> bool {
-        entry.primary() && !self.owes_buffer()
+    /// Whether `entry` draws the buffer at its own size, as the view it was made for.
+    pub(crate) fn presents(&self, entry: &LayoutEntry) -> bool {
+        self.presented == Some(entry.id)
+    }
+
+    /// Present `primary` once the client has caught up, or at once while nothing is presented.
+    pub(crate) fn present(&mut self, primary: LayoutEntryId) {
+        if self.presented.is_none() || self.synced() {
+            self.presented = Some(primary);
+        }
+    }
+
+    /// Where `entry` draws the buffer in a fullscreen `slot` that size, none unless it presents it.
+    pub(crate) fn fullscreen_offset(
+        &self,
+        entry: &LayoutEntry,
+        slot: Size<i32, Logical>,
+    ) -> Option<Point<i32, Logical>> {
+        self.presents(entry)
+            .then(|| fullscreen_center_offset(self.window.geometry().size, slot).into())
+    }
+
+    /// Whether the client has committed the last configure, so its views present the primary.
+    pub fn synced(&self) -> bool {
+        let Some(toplevel) = self.window.toplevel() else {
+            return true;
+        };
+        with_states(toplevel.wl_surface(), |states| {
+            let mut cached = states.cached_state.get::<ToplevelCachedState>();
+            let committed = cached
+                .current()
+                .last_acked
+                .as_ref()
+                .map(|configure| configure.serial);
+            let role = states.data_map.get::<XdgToplevelSurfaceData>().unwrap();
+            let role = role.lock().unwrap();
+            let acked = role.last_acked.as_ref().map(|configure| configure.serial);
+            role.pending_configures().is_empty() && acked == committed
+        })
     }
 
     /// Whether a size-changing configure is still unanswered.
@@ -229,24 +262,6 @@ impl SurfaceState {
         if self.resize.as_ref().is_some_and(ResizeFade::is_done) {
             self.resize = None;
         }
-    }
-
-    /// How view `entry` fits its contents, `now` until it has been fitted.
-    pub(crate) fn fit_of(&self, entry: LayoutEntryId, now: Fit) -> Fit {
-        self.fitted.get(&entry).copied().unwrap_or(now)
-    }
-
-    /// Fit view `entry` by `fit`, unless on `hold` it already has one.
-    pub(crate) fn fit(&mut self, entry: LayoutEntryId, fit: Fit, hold: bool) {
-        if !(hold && self.fitted.contains_key(&entry)) {
-            self.fitted.insert(entry, fit);
-        }
-    }
-
-    /// Forget the views no longer shown.
-    pub(crate) fn forget_views(&mut self, shown: &[ViewRect]) {
-        self.fitted
-            .retain(|entry, _| shown.iter().any(|view| view.entry == *entry));
     }
 
     /// Alpha of the open fade, 1 once it is over.

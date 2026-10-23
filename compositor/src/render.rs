@@ -39,7 +39,7 @@ use tracing::warn;
 use crate::cursor::{CursorTextureCache, RenderCursor, XCursor};
 use crate::layout::closing_frame::Closing;
 use crate::layout::overview::Geometry;
-use crate::layout::resize_fade::{Fit, ResizeFade, contents_rect};
+use crate::layout::resize_fade::{ResizeFade, contents_rect};
 use crate::layout::snapshot::Snapshot;
 use crate::layout::strip;
 use crate::layout::{FrameLocation, LayoutEntryLocation};
@@ -341,7 +341,8 @@ impl<'a> ViewPlace<'a> {
         }
     }
 
-    /// Fullscreen in `slot`: centered by its own size when primary, else from the slot's corner.
+    /// Fullscreen in `slot`: centered by its own size when it presents the buffer, else from the
+    /// slot's corner.
     fn fullscreen(
         surface: &'a SurfaceState,
         entry: &'a LayoutEntry,
@@ -350,14 +351,9 @@ impl<'a> ViewPlace<'a> {
         output_size: Size<i32, Logical>,
         scale: Scale<f64>,
     ) -> Self {
-        let fit = Fit {
-            window: output_size,
-            native: entry.primary(),
-        };
-        let geometry = surface.window.geometry().size;
         let offset = surface
-            .fit_of(entry.id, fit)
-            .fullscreen_offset(geometry, output_size);
+            .fullscreen_offset(entry, output_size)
+            .unwrap_or_default();
         let loc = slot.loc.to_f64().to_logical(scale) + offset.to_f64();
         Self {
             surface,
@@ -416,12 +412,8 @@ fn push_view(
         slot,
     } = *place;
     let geometry = surface.window.geometry().size;
-    let fit = Fit {
-        window,
-        native: entry.primary(),
-    };
-    let fit = surface.fit_of(entry.id, fit);
-    if let Some((at, content_scale)) = contents_rect(fit, geometry, loc) {
+    if let Some((at, content_scale)) = contents_rect(surface.presents(entry), window, geometry, loc)
+    {
         let at = at.to_physical(scale).to_i32_round();
         if let Some(crop) = at.intersection(clip) {
             let content_scale = Scale::from(content_scale);

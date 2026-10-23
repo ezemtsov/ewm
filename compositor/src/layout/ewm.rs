@@ -14,7 +14,7 @@ use smithay::wayland::seat::WaylandFocus;
 
 use super::overview::{Geometry, Overview};
 use super::resize_fade::{
-    FadingView, Fit, PendingResize, RESIZE_FADE_THRESHOLD, ResizeFade, ViewRect, contents_rect,
+    FadingView, PendingResize, RESIZE_FADE_THRESHOLD, ResizeFade, ViewRect, contents_rect,
     fade_spring, size_change,
 };
 use super::snapshot::Snapshot;
@@ -27,7 +27,7 @@ use crate::input::{Direction, End, Gesture};
 use crate::render::render_view_snapshot;
 use crate::{
     Event, Ewm, FocusSource, LayoutEntry, LayoutEntryHit, LayoutEntryId, Notify, State, SurfaceHit,
-    fullscreen_center_offset, module,
+    module,
 };
 
 pub(crate) fn enter_output_for_window(window: &Window, output: &Output) {
@@ -291,7 +291,8 @@ impl Ewm {
         self.entry_origin(location)
     }
 
-    /// Fullscreen `entry` in `slot`: centered at its own size when native, else across the slot.
+    /// Fullscreen `entry` in `slot`: centered at its own size when it presents the buffer, else
+    /// across the slot.
     pub(crate) fn fullscreen_entry_rect(
         &self,
         slot: Rectangle<i32, Logical>,
@@ -300,12 +301,10 @@ impl Ewm {
         let Some(surface) = entry.surface_id().and_then(|id| self.surfaces.get(&id)) else {
             return slot;
         };
-        if !surface.fullscreen_native(entry) {
+        let Some(offset) = surface.fullscreen_offset(entry, slot.size) else {
             return slot;
-        }
-        let window_size = surface.window.geometry().size;
-        let (ox, oy) = fullscreen_center_offset(window_size, slot.size);
-        Rectangle::new(slot.loc + Point::from((ox, oy)), window_size)
+        };
+        Rectangle::new(slot.loc + offset, surface.window.geometry().size)
     }
 
     /// Whether the view at `location` is drawn: its float shows and no sibling covers it.
@@ -350,21 +349,6 @@ impl Ewm {
     ) -> Rectangle<i32, Logical> {
         let dx = location.frame_location().slot_x().round() as i32;
         Rectangle::new(output_geo.loc + Point::from((dx, 0)), output_geo.size)
-    }
-
-    /// Where the view at `location` sits, globally, with its frame at `origin`: its slot when
-    /// fullscreen, else its window.
-    fn view_place(
-        location: LayoutEntryLocation<'_>,
-        output_geo: Rectangle<i32, Logical>,
-        origin: Point<i32, Logical>,
-    ) -> Rectangle<i32, Logical> {
-        let entry = location.entry;
-        if entry.fullscreen() {
-            Self::fullscreen_slot(location, output_geo)
-        } else {
-            Rectangle::new(origin + Point::from((entry.x, entry.y)), entry.rect().size)
-        }
     }
 
     /// `local`, an output-local rect, on `output_geo`.
@@ -660,6 +644,14 @@ impl Ewm {
             .map(|location| (location.monitor.output(), location.entry))
     }
 
+    /// The views of surface `id` as drawn.
+    pub fn views_of(&self, id: u64) -> Vec<ViewRect> {
+        self.view_rects()
+            .into_iter()
+            .filter(|view| view.surface == id)
+            .collect()
+    }
+
     /// Where every shown view sits on its output, as drawn.
     pub fn view_rects(&self) -> Vec<ViewRect> {
         self.layout
@@ -671,19 +663,10 @@ impl Ewm {
                 let state = self.surfaces.get(&surface)?;
                 let output = location.monitor.output().clone();
                 let output_geo = self.layout.output_rect(&output)?;
-                let origin = self.frame_origin(location.frame_location())?;
-                let place = Self::view_place(location, output_geo, origin);
-                let now = Fit {
-                    window: place.size,
-                    native: entry.primary(),
-                };
-                let fit = state.fit_of(entry.id, now);
+                let drawn = self.drawn_rect(location)?;
+                let native = state.presents(entry);
                 let buffer = state.window.geometry().size;
-                let mut loc = place.loc;
-                if entry.fullscreen() {
-                    loc += fit.fullscreen_offset(buffer, place.size);
-                }
-                let (rect, scale) = contents_rect(fit, buffer, loc.to_f64())?;
+                let (rect, scale) = contents_rect(native, drawn.size, buffer, drawn.loc.to_f64())?;
                 let mut rect = rect.to_i32_round();
                 rect.loc -= output_geo.loc;
                 Some(ViewRect {
@@ -693,7 +676,7 @@ impl Ewm {
                     frame: location.frame.surface_id,
                     rect,
                     scale,
-                    fit: now,
+                    native,
                     window: entry.rect(),
                 })
             })
@@ -971,7 +954,6 @@ impl Ewm {
             self.queue_redraw(output);
         }
         self.refresh_primary_assignments();
-        self.fit_views(false);
         self.layout.settle_resized();
         self.focus_pending_activation_surfaces();
     }
@@ -1171,7 +1153,18 @@ impl Ewm {
             };
             if let Some(surface) = self.surfaces.get_mut(&id) {
                 surface.configure(output, size, fullscreen, pending);
+                surface.present(location.entry.id);
             }
+        }
+    }
+
+    /// Present the primary of surface `id` once its client has committed the last configure.
+    pub(crate) fn sync_presented(&mut self, id: u64) {
+        let primary = self
+            .layout_entry_for_surface(id, LayoutEntry::primary)
+            .map(|location| location.entry.id);
+        if let (Some(primary), Some(surface)) = (primary, self.surfaces.get_mut(&id)) {
+            surface.present(primary);
         }
     }
 
@@ -1211,6 +1204,11 @@ impl Ewm {
                     surface.configured(),
                     Some(self.primary_configure(location)),
                     "surface {id} is not configured for its primary view {}",
+                    entry.id
+                );
+                assert!(
+                    !surface.synced() || surface.presents(entry),
+                    "surface {id} caught up yet presents another view than its primary {}",
                     entry.id
                 );
             }
@@ -1599,21 +1597,6 @@ impl Ewm {
 }
 
 impl Ewm {
-    /// Fit every shown view, holding the views of a surface owing a buffer until it comes, unless
-    /// this is its commit (`answered`). Views no longer shown are forgotten.
-    pub(crate) fn fit_views(&mut self, answered: bool) {
-        let shown = self.view_rects();
-        for now in &shown {
-            if let Some(surface) = self.surfaces.get_mut(&now.surface) {
-                let hold = !answered && surface.owes_buffer();
-                surface.fit(now.entry, now.fit, hold);
-            }
-        }
-        for surface in self.surfaces.values_mut() {
-            surface.forget_views(&shown);
-        }
-    }
-
     /// The views of `id` as drawn now, with the resolution the old contents need for them.
     fn fading_views(
         &self,
@@ -1655,12 +1638,10 @@ impl Ewm {
         })
     }
 
-    /// What a layout refitting views of `id` since `before` will fade, nothing while it owes a
-    /// buffer or its frame settles at once.
+    /// What a layout refitting views of `id` since `before` will fade, nothing for a frame that
+    /// settles at once.
     fn pending_refit(&self, id: u64, before: &[ViewRect]) -> Option<PendingResize> {
-        if self.animations_clock.should_complete_instantly()
-            || self.surfaces.get(&id)?.owes_buffer()
-        {
+        if self.animations_clock.should_complete_instantly() {
             return None;
         }
         self.fading_views(id, |now| {
@@ -1694,9 +1675,8 @@ impl State {
         let Some(surface) = ewm.surfaces.get_mut(&id) else {
             return;
         };
-        // A fade in flight keeps its snapshot, and an open fade would hide a new one.
+        // An open fade would hide it.
         if surface.open.as_ref().is_some_and(|open| !open.is_done())
-            || surface.resize.as_ref().is_some_and(|fade| !fade.is_done())
             || ewm.animations_clock.should_complete_instantly()
         {
             return;

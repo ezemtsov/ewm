@@ -26,8 +26,7 @@ use crate::layout::enter_output_for_window;
 use crate::surface::SurfaceState;
 use crate::{Event, Ewm, FocusSource, Notify, Placement, State, client_identity, im, module};
 
-/// Snapshot an unmapping frame or view, fade a resize answer, note where views sat before they
-/// move.
+/// Snapshot an unmapping frame or view, and fade a resize answer.
 pub(crate) fn add_toplevel_pre_commit_hook(surface: &WlSurface, id: u64) -> HookId {
     add_pre_commit_hook::<State, _>(surface, move |state, _dh, surface| {
         let (removed, attached, acked) = with_states(surface, |states| {
@@ -59,25 +58,10 @@ pub(crate) fn add_toplevel_pre_commit_hook(surface: &WlSurface, id: u64) -> Hook
         let Some(surface) = state.ewm.surfaces.get_mut(&id) else {
             return;
         };
-        // The commit carrying the ack applies the configure, buffer or not.
-        let mut answered = surface.take_answered_resize(serial);
+        // The commit carrying the ack applies the configure, buffer or not. Only new contents fade.
         let flips = surface.fullscreen != fullscreen;
-        if answered.is_some() || flips {
-            let rects: Vec<_> = state
-                .ewm
-                .view_rects()
-                .into_iter()
-                .filter(|view| view.surface == id)
-                .collect();
-            if let Some(pending) = &mut answered {
-                pending.place(&rects);
-            }
-            if let Some(surface) = state.ewm.surfaces.get_mut(&id) {
-                surface.rects_before = rects;
-            }
-        }
-        // Only new contents fade.
-        if let Some(pending) = answered.filter(|_| attached) {
+        if let Some(mut pending) = surface.take_answered_resize(serial).filter(|_| attached) {
+            pending.place(&state.ewm.views_of(id));
             state.start_resize_fade(id, pending, flips);
         }
     })
