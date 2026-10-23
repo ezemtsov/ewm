@@ -170,6 +170,8 @@ pub enum Action {
     Overview(module::OverviewAction),
     /// Slide every frame off its output, or back.
     HideToggle,
+    /// Scroll the strip under the pointer with the fingers, the way the touchpad scrolls.
+    StripScroll,
     /// Run `command` detached from the compositor.
     Spawn { command: Vec<String> },
 }
@@ -208,12 +210,12 @@ impl Action {
     /// The gesture a swipe setting off in `direction` drives when bound to this action, if any.
     pub fn as_gesture(&self, direction: Direction) -> Option<Gesture> {
         use module::OverviewAction::{Close, Open, Toggle};
-        let strip = |forward| Gesture::Strip { forward };
         let overview = |end| Gesture::Overview { direction, end };
         let hide = |end| Gesture::Hide { direction, end };
         Some(match self {
-            Action::FocusFrame { delta: 1 } => strip(direction),
-            Action::FocusFrame { delta: -1 } => strip(direction.opposite()),
+            Action::StripScroll => Gesture::Strip {
+                forward: Direction::Right,
+            },
             Action::Overview(Open) => overview(End::On),
             Action::Overview(Close) => overview(End::Off),
             Action::Overview(Toggle) => overview(End::Other),

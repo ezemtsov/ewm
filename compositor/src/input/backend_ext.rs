@@ -10,6 +10,14 @@ pub trait EwmInputDevice {
     fn output(&self) -> Option<&Output> {
         None
     }
+
+    fn natural_scroll(&self) -> bool {
+        false
+    }
 }
 
-impl EwmInputDevice for libinput::Device {}
+impl EwmInputDevice for libinput::Device {
+    fn natural_scroll(&self) -> bool {
+        self.config_scroll_natural_scroll_enabled()
+    }
+}

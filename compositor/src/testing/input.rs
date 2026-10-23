@@ -17,6 +17,7 @@ use crate::input::EwmInputDevice;
 #[derive(Clone, Default, PartialEq, Eq, Hash)]
 pub struct TestDevice {
     pub output: Option<Output>,
+    pub natural_scroll: bool,
 }
 
 impl Device for TestDevice {
@@ -47,6 +48,10 @@ impl Device for TestDevice {
 impl EwmInputDevice for TestDevice {
     fn output(&self) -> Option<&Output> {
         self.output.as_ref()
+    }
+
+    fn natural_scroll(&self) -> bool {
+        self.natural_scroll
     }
 }
 
@@ -99,6 +104,7 @@ impl PointerMotionAbsoluteEvent<TestInputBackend> for TestAbsoluteEvent {}
 /// A touchpad gesture: `fingers` going down, moving, pinching or lifting.
 #[derive(Default)]
 pub struct TestGestureEvent {
+    pub device: TestDevice,
     pub fingers: u32,
     pub dx: f64,
     pub dy: f64,
@@ -113,7 +119,7 @@ impl Event<TestInputBackend> for TestGestureEvent {
     }
 
     fn device(&self) -> TestDevice {
-        TestDevice::default()
+        self.device.clone()
     }
 }
 
@@ -157,13 +163,13 @@ impl GestureEndEvent<TestInputBackend> for TestGestureEvent {
     }
 }
 
-/// A scroll from `source`: in v120 steps for a wheel, else in pixels, the signs flipped by
-/// natural scrolling when `natural`.
+/// A scroll from `source`: in v120 steps for a wheel, else in pixels, the signs flipped already
+/// when `device` scrolls naturally.
 pub struct TestAxisEvent {
+    pub device: TestDevice,
     pub source: AxisSource,
     pub horizontal: f64,
     pub vertical: f64,
-    pub natural: bool,
 }
 
 impl TestAxisEvent {
@@ -181,7 +187,7 @@ impl Event<TestInputBackend> for TestAxisEvent {
     }
 
     fn device(&self) -> TestDevice {
-        TestDevice::default()
+        self.device.clone()
     }
 }
 
@@ -199,7 +205,7 @@ impl PointerAxisEvent<TestInputBackend> for TestAxisEvent {
     }
 
     fn relative_direction(&self, _axis: Axis) -> AxisRelativeDirection {
-        if self.natural {
+        if self.device.natural_scroll {
             AxisRelativeDirection::Inverted
         } else {
             AxisRelativeDirection::Identical

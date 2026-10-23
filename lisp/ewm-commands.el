@@ -55,6 +55,9 @@
 (ewm--define-action ewm-frame-right (focus-frame :delta 1)
   "Slide to the next frame on the current output's strip.")
 
+(ewm--define-action ewm-strip-scroll strip-scroll
+  "Scroll the strip under the pointer with a swipe, the way the touchpad scrolls.")
+
 (defun ewm--frame-select-action (event)
   "The `focus-nth-frame' action for the digit key EVENT, nil for any other key."
   (let ((key (event-basic-type event)))

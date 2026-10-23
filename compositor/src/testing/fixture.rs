@@ -36,6 +36,7 @@ pub struct Fixture {
     /// Server ends of the client sockets, hung up on drop.
     client_ends: Vec<UnixStream>,
     owns_event_channel: bool,
+    touchpad: TestDevice,
 }
 
 impl Drop for Fixture {
@@ -90,6 +91,7 @@ impl Fixture {
             state,
             client_ends: Vec::new(),
             owns_event_channel: false,
+            touchpad: TestDevice::default(),
         })
     }
 
@@ -672,6 +674,7 @@ impl Fixture {
     pub fn pointer_motion_absolute(&mut self, output: &str, x: f64, y: f64) {
         let device = TestDevice {
             output: self.state.ewm.find_mapped_output(output),
+            ..TestDevice::default()
         };
         let event = TestAbsoluteEvent { device, x, y };
         self.state
@@ -886,22 +889,18 @@ impl Fixture {
         self.state.process_input_event::<TestInputBackend>(event);
     }
 
+    /// Make the touchpad scroll content with the fingers, or against them.
+    pub fn set_natural_scroll(&mut self, natural_scroll: bool) {
+        self.touchpad.natural_scroll = natural_scroll;
+    }
+
     /// Scroll by (`dx`, `dy`) from `source`: notches of 120 for a wheel, pixels for fingers.
     pub fn scroll(&mut self, source: AxisSource, dx: f64, dy: f64) {
-        self.axis(source, dx, dy, false);
-    }
-
-    /// `scroll` from a device with natural scrolling, which has flipped the signs already.
-    pub fn scroll_natural(&mut self, source: AxisSource, dx: f64, dy: f64) {
-        self.axis(source, dx, dy, true);
-    }
-
-    fn axis(&mut self, source: AxisSource, dx: f64, dy: f64, natural: bool) {
         let event = TestAxisEvent {
+            device: self.touchpad.clone(),
             source,
             horizontal: dx,
             vertical: dy,
-            natural,
         };
         self.input(InputEvent::PointerAxis { event });
     }
@@ -918,6 +917,7 @@ impl Fixture {
     /// Move the swiping fingers by (`dx`, `dy`).
     pub fn swipe_update(&mut self, dx: f64, dy: f64) {
         let event = TestGestureEvent {
+            device: self.touchpad.clone(),
             dx,
             dy,
             ..TestGestureEvent::default()

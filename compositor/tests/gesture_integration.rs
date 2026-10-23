@@ -1,8 +1,8 @@
-//! Touchpad swipes and scrolls are bindings in `ewm-mode-map`. The overview and frame-focus
-//! actions follow the fingers and settle when they lift, every other swipe binding runs when they
-//! lift, and under the bound modifiers a wheel notch or ten units of two-finger travel runs its
-//! command once while the client sees no scroll at all. A gesture goes to the surface under the
-//! pointer, and that surface is the one a binding yields to.
+//! Touchpad swipes and scrolls are bindings in `ewm-mode-map`. The overview, the hide and the
+//! strip scroll follow the fingers and settle when they lift, every other swipe binding runs when
+//! they lift, and under the bound modifiers a wheel notch or ten units of two-finger travel runs
+//! its command once while the client sees no scroll at all. A gesture goes to the surface under
+//! the pointer, and that surface is the one a binding yields to.
 use std::sync::Mutex;
 
 use ewm_core::testing::{Fixture, TestClient, Toplevel, frame_with_entry, frame_with_width, nz};
@@ -131,24 +131,28 @@ fn the_default_swipes_drive_the_overview_and_the_strip() {
     fix.swipe_end();
     assert!(!fix.ewm_ref().overview.is_open());
 
-    // Swiping left brings in the frame to the right, the content follows the fingers.
-    swipe(&mut fix, 3, -1200.0, 0.0);
+    // Sideways scrolls the strip like a page, right brings in the next frame.
+    swipe(&mut fix, 3, 1200.0, 0.0);
     assert!(!fix.strip(OUTPUT).view_is_static());
     fix.swipe_end();
     assert_eq!(fix.strip(OUTPUT).active_frame_id(), Some(3));
-    swipe(&mut fix, 3, 1200.0, 0.0);
+    swipe(&mut fix, 3, -1200.0, 0.0);
     fix.swipe_end();
     assert_eq!(fix.strip(OUTPUT).active_frame_id(), Some(2));
 }
 
 #[test]
-fn a_swapped_strip_binding_moves_the_strip_against_the_fingers() {
+fn natural_scrolling_scrolls_the_strip_with_the_fingers() {
     let _serial = SERIAL.lock().unwrap();
-    let mut fix = fixture(r#"(keymap-set ewm-mode-map "<swipe-3-left>" #'ewm-frame-left)"#);
+    let mut fix = fixture("");
+    fix.set_natural_scroll(true);
 
     swipe(&mut fix, 3, -1200.0, 0.0);
     fix.swipe_end();
-    assert_eq!(fix.strip(OUTPUT).active_frame_id(), Some(1));
+    assert_eq!(fix.strip(OUTPUT).active_frame_id(), Some(3));
+    swipe(&mut fix, 3, 1200.0, 0.0);
+    fix.swipe_end();
+    assert_eq!(fix.strip(OUTPUT).active_frame_id(), Some(2));
 }
 
 #[test]
@@ -216,7 +220,7 @@ fn a_command_binding_runs_when_the_fingers_lift() {
     assert_eq!(commands(&mut fix), ["<swipe-3-up>"]);
 
     // The other default swipes are untouched.
-    swipe(&mut fix, 3, -1200.0, 0.0);
+    swipe(&mut fix, 3, 1200.0, 0.0);
     fix.swipe_end();
     assert_eq!(fix.strip(OUTPUT).active_frame_id(), Some(3));
 }
@@ -347,9 +351,10 @@ fn natural_scrolling_keeps_the_direction_the_fingers_moved() {
     fix.keyboard_key(KEY_LEFTMETA, true);
 
     // Fingers moving down arrive negative from a natural-scrolling touchpad.
-    fix.scroll_natural(AxisSource::Finger, 0.0, -12.0);
+    fix.set_natural_scroll(true);
+    fix.scroll(AxisSource::Finger, 0.0, -12.0);
     assert_eq!(active(&fix), Some(3));
-    fix.scroll_natural(AxisSource::Finger, 0.0, 12.0);
+    fix.scroll(AxisSource::Finger, 0.0, 12.0);
     assert_eq!(active(&fix), Some(3));
     fix.keyboard_key(KEY_LEFTMETA, false);
 }

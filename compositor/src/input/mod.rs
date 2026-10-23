@@ -29,9 +29,9 @@
 //!
 //! 7. **Swipe bindings**: `<swipe-FINGERS-DIRECTION>` entries match by fingers, direction and
 //!    modifiers under the same first-match rule, the surface under the pointer deciding scope and
-//!    fullscreen since that is where the swipe would go. Bound to the overview, the hide or a
-//!    one-frame focus action the swipe drives that gesture as the fingers move, anything else
-//!    runs when they lift, and the unbound directions of a bound finger count do nothing.
+//!    fullscreen since that is where the swipe would go. Bound to the overview, the hide or the
+//!    strip scroll the swipe drives that gesture as the fingers move, anything else runs when
+//!    they lift, and the unbound directions of a bound finger count do nothing.
 //!
 //! 8. **Scroll bindings**: `<wheel-DIRECTION>` entries match a wheel notch or ten units of
 //!    two-finger travel under the same rules and run once per tick. The direction is the one the
@@ -640,6 +640,8 @@ impl State {
                 self.ewm.hide_toggle();
                 self.refresh_pointer_after_scene_change(false);
             }
+            // A key has no fingers to scroll with.
+            Action::StripScroll => {}
             Action::Spawn { command } => {
                 let (token, _) = self.ewm.activation_state.create_external_token(None);
                 crate::utils::spawning::spawn(command, Some(token.clone()));
@@ -1434,6 +1436,7 @@ impl State {
         event: B::GestureSwipeUpdateEvent,
     ) where
         B::GestureSwipeUpdateEvent: 'static,
+        B::Device: EwmInputDevice,
     {
         use smithay::backend::input::{Event, GestureSwipeUpdateEvent as _};
         self.drop_swipe_under_lock();
@@ -1464,11 +1467,17 @@ impl State {
             let (fingers, mods, direction) = (*fingers, *mods, Direction::of(*cx, *cy));
             // The travel through the deadzone counts from the first move.
             (dx, dy) = (*cx, *cy);
-            let action = {
+            let mut action = {
                 let scope = self.pointer_scope();
                 let bindings = module::intercepted_keys().read().unwrap();
                 classify_swipe(&bindings, scope, fingers, direction, &mods)
             };
+            // The strip scrolls the way the touchpad does.
+            if let SwipeAction::Gesture(Gesture::Strip { forward }) = &mut action
+                && event.device().natural_scroll()
+            {
+                *forward = forward.opposite();
+            }
             self.ewm.swipe = match action {
                 SwipeAction::Gesture(gesture) => match self.ewm.gesture_begin(gesture) {
                     Some(forward) => Swipe::Gesture { gesture, forward },

@@ -363,7 +363,7 @@ fn strip_swipe_drives_the_output_under_the_pointer() {
     );
 
     fixture.set_intercepted_keys_from_lisp(
-        r#"[(:key "swipe-3-right" :description "<swipe-3-right>" :dispatch (action focus-frame :delta -1))]"#,
+        r#"[(:key "swipe-3-right" :description "<swipe-3-right>" :dispatch (action strip-scroll))]"#,
     );
     fixture.swipe_begin(3);
     fixture.swipe_update(700.0, 0.0);
@@ -388,13 +388,13 @@ fn strip_swipe_focuses_the_snapped_frame_without_moving_the_pointer() {
     fixture.dispatch_roundtrip(2);
     let neighbour_focus_id = fixture.strip("Virtual-1").frames()[1].focus_id;
     fixture.set_intercepted_keys_from_lisp(
-        r#"[(:key "swipe-3-left" :description "<swipe-3-left>" :dispatch (action focus-frame :delta 1))]"#,
+        r#"[(:key "swipe-3-right" :description "<swipe-3-right>" :dispatch (action strip-scroll))]"#,
     );
     fixture.pointer_motion_to(640.0, 360.0);
     fixture.enable_event_capture();
 
     fixture.swipe_begin(3);
-    fixture.swipe_update(-700.0, 0.0);
+    fixture.swipe_update(700.0, 0.0);
     fixture.swipe_end();
     fixture.dispatch_roundtrip(2);
 
@@ -410,7 +410,7 @@ fn strip_swipe_focuses_the_snapped_frame_without_moving_the_pointer() {
 
     // A swipe past the strip end snaps back to the same frame and changes no focus.
     fixture.swipe_begin(3);
-    fixture.swipe_update(-700.0, 0.0);
+    fixture.swipe_update(700.0, 0.0);
     fixture.swipe_end();
     fixture.dispatch_roundtrip(2);
 

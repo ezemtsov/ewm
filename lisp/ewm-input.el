@@ -88,12 +88,11 @@ flags a binding takes. Add or override bindings in the same shape:
   ;; Overview: zoom the strip out and back in.
   "S-s-<up>" (ewm-key #'ewm-overview-open :fullscreen)
   "S-s-<down>" (ewm-key #'ewm-overview-close :fullscreen)
-  ;; Touchpad swipes follow the fingers: up and down drive the overview, a swipe
-  ;; left brings in the frame to the right.
+  ;; Touchpad swipes: up and down drive the overview, sideways scrolls the strip.
   "<swipe-3-up>" (ewm-key #'ewm-overview-open :fullscreen)
   "<swipe-3-down>" (ewm-key #'ewm-overview-close :fullscreen)
-  "<swipe-3-left>" (ewm-key #'ewm-frame-right :fullscreen)
-  "<swipe-3-right>" (ewm-key #'ewm-frame-left :fullscreen)
+  "<swipe-3-left>" (ewm-key #'ewm-strip-scroll :fullscreen)
+  "<swipe-3-right>" (ewm-key #'ewm-strip-scroll :fullscreen)
   ;; Slide every frame off screen and back.
   "s-m" (ewm-key #'ewm-hide-toggle :fullscreen)
   ;; Clipboard
