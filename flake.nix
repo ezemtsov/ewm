@@ -28,7 +28,7 @@
       });
 
       checks = perSystem (pkgs: {
-        inherit (pkgs) ewm;
+        ewm-pgtk = pkgs.ewm;
         ewm-pwayl = pkgs.ewm.override { emacsPackage = pkgs.emacs31-pwayl; };
       });
 

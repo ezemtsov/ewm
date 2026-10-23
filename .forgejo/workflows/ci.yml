@@ -11,11 +11,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  checks:
+  emacs:
+    name: ${{ matrix.variant }}
     runs-on: aasgard
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [pgtk, pwayl]
     defaults:
       run:
-        shell: nix develop .#ci-pgtk -c bash -e {0}
+        shell: nix develop .#ci-${{ matrix.variant }} -c bash -e {0}
     steps:
       - name: checkout
         shell: bash
@@ -30,11 +36,11 @@ jobs:
         run: |
           cargo clippy --manifest-path compositor/Cargo.toml --all-targets -- -D warnings
           cargo clippy --manifest-path compositor/Cargo.toml --all-targets --features screencast -- -D warnings
-      - name: tests under pgtk
+      - name: tests
         run: cargo test --manifest-path compositor/Cargo.toml --no-fail-fast
-      - name: tests under pwayl
-        shell: nix develop .#ci-pwayl -c bash -e {0}
-        run: cargo test --manifest-path compositor/Cargo.toml --no-fail-fast
-      - name: nix flake check
+      - name: nix build
         shell: bash
-        run: nix flake check -L
+        run: nix build -L .#checks.x86_64-linux.ewm-${{ matrix.variant }}
+      - name: session
+        shell: bash
+        run: nix run -L .#session-test-${{ matrix.variant }}
