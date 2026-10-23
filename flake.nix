@@ -22,6 +22,9 @@
       packages = perSystem (pkgs: {
         default = pkgs.ewm;
         inherit (pkgs) emacs31-pwayl;
+        # Run outside the sandbox, see nix/vm-test.nix.
+        session-test-pwayl = pkgs.callPackage ./nix/vm-test.nix { withSkia = true; };
+        session-test-pgtk = pkgs.callPackage ./nix/vm-test.nix { withSkia = false; };
       });
 
       checks = perSystem (pkgs: {
