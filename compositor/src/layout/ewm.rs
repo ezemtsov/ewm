@@ -1124,6 +1124,25 @@ impl Ewm {
         for (id, count) in primaries {
             assert_eq!(count, 1, "primary views of surface {id} on screen");
         }
+        let mut on: HashMap<u64, HashSet<String>> = HashMap::new();
+        for monitor in self.layout.monitors() {
+            assert!(
+                self.space
+                    .outputs()
+                    .any(|output| output == monitor.output()),
+                "a monitor for unmapped output {}",
+                monitor.name()
+            );
+            for id in self.layout.surface_ids_on(monitor.output()) {
+                on.entry(id).or_default().insert(monitor.name().to_string());
+            }
+        }
+        assert!(
+            self.space.outputs().next().is_none() || self.layout.homeless().iter().next().is_none(),
+            "frames parked while an output is mapped"
+        );
+        on.retain(|id, _| self.surfaces.contains_key(id));
+        assert_eq!(self.surface_outputs(), on, "surfaces on the wrong outputs");
     }
 
     /// Tell Emacs when `output`'s active strip frame differs from `prev_active_id`.

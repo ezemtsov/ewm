@@ -1192,15 +1192,24 @@ impl Layout {
         }
     }
 
-    /// Panic unless every frame sits in exactly one place and names only entries it holds.
+    /// Panic unless every frame and entry sits in exactly one place and a frame names only
+    /// entries it holds.
     pub fn verify_invariants(&self) {
         let mut seen = HashSet::new();
+        let mut entries = HashSet::new();
         for frame in self.all_frames() {
             assert!(
                 seen.insert(frame.surface_id),
                 "frame {} sits in two places",
                 frame.surface_id
             );
+            for entry in &frame.entries {
+                assert!(
+                    entries.insert(entry.id),
+                    "entry {} sits in two frames",
+                    entry.id
+                );
+            }
             if let Some(sel) = frame.selected_entry_id {
                 assert!(
                     frame.entries.iter().any(|entry| entry.id == sel),

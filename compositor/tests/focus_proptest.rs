@@ -534,14 +534,6 @@ fn all_frames(fix: &Fixture) -> impl Iterator<Item = &ewm_core::layout::strip::F
     fix.ewm_ref().layout.all_frames()
 }
 
-fn mapped_output_names(fix: &Fixture) -> HashSet<String> {
-    fix.ewm_ref()
-        .space
-        .outputs()
-        .map(|output| output.name())
-        .collect()
-}
-
 fn is_output_mapped(fix: &Fixture, output_name: &str) -> bool {
     fix.ewm_ref()
         .space
@@ -560,28 +552,6 @@ fn set_output_enabled(fix: &mut Fixture, output_name: &str, enabled: bool) {
     if fix.has_output(output_name) {
         fix.apply_output_config(output_name);
     }
-}
-
-fn expected_surface_outputs(fix: &Fixture) -> HashMap<u64, HashSet<String>> {
-    let mut expected: HashMap<u64, HashSet<String>> = HashMap::new();
-
-    for monitor in fix.ewm_ref().layout.monitors() {
-        for surface_id in monitor
-            .frames()
-            .flat_map(|frame| {
-                std::iter::once(frame.surface_id)
-                    .chain(frame.entries.iter().filter_map(LayoutEntry::surface_id))
-            })
-            .filter(|id| fix.ewm_ref().surfaces.contains_key(id))
-        {
-            expected
-                .entry(surface_id)
-                .or_default()
-                .insert(monitor.name().to_string());
-        }
-    }
-
-    expected
 }
 
 proptest! {
@@ -660,63 +630,6 @@ fn layout_omission_empties_the_frame() {
     assert!(!fix.ewm_ref().surface_in_layout(1001));
 }
 
-fn assert_invariants(fix: &Fixture) {
-    let ewm = fix.ewm_ref();
-
-    // Invariants 2, 3 and 5 hold by construction: the focused frame is the active frame of the
-    // active output and the focused view its selected entry. Invariant 1 is kept by
-    // `Layout::settle_active_output` and checked below with invariant 4, the layout's own.
-    ewm.verify_invariants();
-
-    // Invariant 6: a frame's selected view is one of its own entries.
-    for frame in all_frames(fix) {
-        if let Some(selected) = frame.selected_entry_id {
-            assert!(
-                frame.entries.iter().any(|entry| entry.id == selected),
-                "invariant 6: frame {} selects {:?}, which it does not hold",
-                frame.surface_id,
-                selected,
-            );
-        }
-    }
-
-    // Invariant 10: frames park only while no output is mapped, and strips
-    // exist only for mapped outputs.
-    let mapped_outputs = mapped_output_names(fix);
-    for name in ewm.layout.strips().map(|(name, _)| name) {
-        assert!(
-            mapped_outputs.contains(name),
-            "invariant 10: layout has a monitor for unmapped output {}",
-            name,
-        );
-    }
-    assert!(
-        mapped_outputs.is_empty() || ewm.layout.homeless().tiled.is_empty(),
-        "invariant 10: homeless frames exist while an output is mapped",
-    );
-
-    // Invariant 7: every live entry entry_id identifies exactly one layout occurrence.
-    let mut entry_ids = HashMap::new();
-    for (frame_idx, frame) in all_frames(fix).enumerate() {
-        for (entry_idx, entry) in frame.entries.iter().enumerate() {
-            let occurrence = (frame.surface_id, frame_idx, entry_idx);
-            assert!(
-                entry_ids.insert(entry.id, occurrence).is_none(),
-                "invariant 7: duplicate entry_id {:?} at {:?}",
-                entry.id,
-                occurrence,
-            );
-        }
-    }
-
-    // Output membership is the set of strips holding each surface, nothing stale for a parked one.
-    assert_eq!(
-        ewm.surface_outputs(),
-        expected_surface_outputs(fix),
-        "surface_outputs diverged from the layout",
-    );
-}
-
 /// Every op keeps the focus invariants, and none asks Emacs to run a command (invariant 15).
 fn check_focus_ops(ops: Vec<Op>) -> Result<(), TestCaseError> {
     let _serial = SERIAL.lock().unwrap();
@@ -726,10 +639,10 @@ fn check_focus_ops(ops: Vec<Op>) -> Result<(), TestCaseError> {
         fix.add_output(name, 1920, 1080);
     }
     let mut frames = Frames::new(&mut fix);
-    assert_invariants(&fix);
+    fix.ewm_ref().verify_invariants();
     for op in ops {
         apply_op(&mut fix, &mut frames, op);
-        assert_invariants(&fix);
+        fix.ewm_ref().verify_invariants();
         for event in fix.drain_events() {
             prop_assert!(
                 !matches!(event, Event::InterceptedCommand { .. } | Event::Key(_)),
@@ -757,7 +670,7 @@ fn check_show_hide_ops(ops: Vec<Op>) -> Result<(), TestCaseError> {
 
     for op in ops {
         apply_op(&mut fix, &mut frames, op);
-        assert_invariants(&fix);
+        fix.ewm_ref().verify_invariants();
         // The overview refreezes the inactive frames on the redraw that ends it.
         fix.dispatch();
 
@@ -952,7 +865,7 @@ proptest! {
                 }
                 SuspendOp::Op(op) => apply_op(&mut fix, &mut frames, op),
             }
-            assert_invariants(&fix);
+            fix.ewm_ref().verify_invariants();
             fix.dispatch();
             fix.roundtrip(&mut frames.client);
             fix.roundtrip(&mut apps);
