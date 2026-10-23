@@ -88,6 +88,7 @@ impl Ewm {
         if let Some(change) = &removed {
             self.reconcile_output_entries(&change.output);
             self.reconcile_active_for_output(&change.output, change.prev_active);
+            self.refresh_primary_assignments();
         }
         removed.map(|change| change.output)
     }
