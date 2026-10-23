@@ -102,6 +102,7 @@ in
     services.displayManager.sessionPackages = [ ewmSystemPackage ];
     systemd.packages = [ ewmSystemPackage ];
     security.polkit.enable = true;
+    security.pam.services.swaylock = { };
 
     # Provides fonts, xdg-utils, graphics, PipeWire, inotify limits, etc.
     services.graphical-desktop.enable = true;
