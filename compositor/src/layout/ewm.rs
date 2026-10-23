@@ -19,7 +19,9 @@ use super::resize_fade::{
 };
 use super::snapshot::Snapshot;
 use super::transition::Transition;
-use super::{ActiveChange, FrameLocation, LayoutEntryLocation, Monitor, Moved, floating, strip};
+use super::{
+    ActiveChange, FrameLocation, LayoutEntryLocation, Monitor, Moved, entry_size, floating, strip,
+};
 use crate::animation::Animation;
 use crate::input::{Direction, End, Gesture};
 use crate::render::render_view_snapshot;
@@ -1138,6 +1140,18 @@ impl Ewm {
         self.configure_primary_entries();
     }
 
+    /// The size and fullscreen state the surface at `location`, a primary, is configured for.
+    fn primary_configure(&self, location: LayoutEntryLocation<'_>) -> (Size<i32, Logical>, bool) {
+        let fullscreen = location
+            .entry
+            .surface_id()
+            .is_some_and(|id| self.pending_fullscreen(id));
+        (
+            entry_size(location.monitor.output(), location.entry, fullscreen),
+            fullscreen,
+        )
+    }
+
     /// Configure every shown primary entry's surface for its slot, noting the resizes to fade.
     fn configure_primary_entries(&mut self) {
         let shown_primaries = self
@@ -1149,12 +1163,7 @@ impl Ewm {
                 continue;
             };
             let output = location.monitor.output();
-            let fullscreen = self.pending_fullscreen(id);
-            let size = if fullscreen {
-                crate::utils::output_size(output).to_i32_round()
-            } else {
-                location.entry.rect().size
-            };
+            let (size, fullscreen) = self.primary_configure(location);
             let pending = if location.monitor.settles_at_once(location.frame.surface_id) {
                 None
             } else {
@@ -1163,6 +1172,51 @@ impl Ewm {
             if let Some(surface) = self.surfaces.get_mut(&id) {
                 surface.configure(output, size, fullscreen, pending);
             }
+        }
+    }
+
+    /// Panic unless the layout holds and the surfaces follow it.
+    pub fn verify_invariants(&self) {
+        self.layout.verify_invariants();
+        let mut primaries: HashMap<u64, usize> = HashMap::new();
+        for location in self.layout.entry_locations() {
+            let entry = location.entry;
+            let Some(id) = entry.surface_id() else {
+                continue;
+            };
+            if location.shown() {
+                *primaries.entry(id).or_default() += usize::from(entry.primary());
+            } else {
+                assert!(
+                    !entry.primary(),
+                    "view {} of surface {id} is primary off screen",
+                    entry.id
+                );
+            }
+            let Some(surface) = self.surfaces.get(&id) else {
+                continue;
+            };
+            assert!(
+                !entry.fullscreen() || surface.fullscreen,
+                "view {} shows surface {id} fullscreen before it committed",
+                entry.id
+            );
+            assert!(
+                location.frame.fullscreen_entry().is_some() || !surface.fullscreen,
+                "frame {} marks no view of its committed fullscreen surface {id}",
+                location.frame.surface_id
+            );
+            if entry.primary() {
+                assert_eq!(
+                    surface.configured(),
+                    Some(self.primary_configure(location)),
+                    "surface {id} is not configured for its primary view {}",
+                    entry.id
+                );
+            }
+        }
+        for (id, count) in primaries {
+            assert_eq!(count, 1, "primary views of surface {id} on screen");
         }
     }
 

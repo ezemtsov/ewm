@@ -138,7 +138,7 @@ impl Harness {
     fn check(&mut self, sid: u64, kind: Kind, hints: Hints) -> Result<(), TestCaseError> {
         let is_emacs = kind == Kind::Emacs;
         prop_assert_eq!(self.fix.ewm_ref().layout.has_frame(sid), is_emacs);
-        self.fix.ewm_ref().layout.verify_invariants();
+        self.fix.ewm_ref().verify_invariants();
 
         let events = self.fix.drain_events();
         let new: Vec<_> = events

@@ -432,7 +432,7 @@ fn dragging_a_fullscreen_float_unfullscreens_and_moves_it() {
         (pos.x - expected.x).abs() < 0.5 && (pos.y - expected.y).abs() < 0.5,
         "{pos:?} is not {expected:?}"
     );
-    fix.ewm_ref().layout.verify_invariants();
+    fix.ewm_ref().verify_invariants();
 
     fix.pointer_button(BTN_LEFT, false);
     fix.keyboard_key(KEY_LEFTMETA, false);

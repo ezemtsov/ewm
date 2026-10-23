@@ -596,7 +596,7 @@ fn frame_is_homeless(fixture: &Fixture, id: u64) -> bool {
 ///   output is mapped, else in the homeless pool.
 fn assert_hotplug_invariants(fixture: &Fixture, displays: &[Display]) {
     let any_mapped = fixture.ewm_ref().space.outputs().next().is_some();
-    fixture.ewm_ref().layout.verify_invariants();
+    fixture.ewm_ref().verify_invariants();
 
     for display in displays {
         for &id in &display.frames {

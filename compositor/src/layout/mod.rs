@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::mem;
 
 use smithay::output::Output;
-use smithay::utils::{Logical, Point, Rectangle};
+use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use crate::layout::closing_frame::Closing;
 use crate::layout::snapshot::Snapshot;
@@ -1050,7 +1050,8 @@ impl Layout {
                 continue;
             };
             let fullscreen = location.entry.fullscreen() && requested(surface_id);
-            let area = entry_area(location.monitor.output(), location.entry, fullscreen);
+            let size = entry_size(location.monitor.output(), location.entry, fullscreen);
+            let area = size.w as u64 * size.h as u64;
             let entry = best.entry(surface_id).or_insert((area, location.entry.id));
             // A tie keeps the primary.
             if area > entry.0 || (area == entry.0 && location.entry.primary()) {
@@ -1420,13 +1421,16 @@ impl Layout {
     }
 }
 
-/// The entry's area, the output's when `fullscreen`.
-fn entry_area(output: &Output, entry: &LayoutEntry, fullscreen: bool) -> u64 {
+/// The entry's size, the output's when `fullscreen`.
+pub(crate) fn entry_size(
+    output: &Output,
+    entry: &LayoutEntry,
+    fullscreen: bool,
+) -> Size<i32, Logical> {
     if fullscreen {
-        let size = crate::utils::output_size(output);
-        size.w as u64 * size.h as u64
+        crate::utils::output_size(output).to_i32_round()
     } else {
-        entry.w as u64 * entry.h as u64
+        entry.rect().size
     }
 }
 

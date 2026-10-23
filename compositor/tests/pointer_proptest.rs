@@ -1118,7 +1118,7 @@ fn check_t1(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
 }
 
 fn assert_invariants(h: &mut Harness, last_op: &Op) -> Result<(), TestCaseError> {
-    h.fix.ewm_ref().layout.verify_invariants();
+    h.fix.ewm_ref().verify_invariants();
     let events = h.client.drain_events();
     h.fold_events(&events);
     h.app.fold(&h.client, &events);

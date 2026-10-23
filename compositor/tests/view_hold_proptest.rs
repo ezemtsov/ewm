@@ -276,7 +276,7 @@ fn check_ops(ops: &[Op]) -> Result<(), TestCaseError> {
         let geometry = h.geometry();
         let asked_for = h.expected_configure();
         let answered = h.apply(op);
-        h.fix.ewm_ref().layout.verify_invariants();
+        h.fix.ewm_ref().verify_invariants();
         let after = h.rects();
         if let Some(asked) = answered {
             // The configure followed the layout, and whatever came back settles the debt.

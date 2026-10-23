@@ -666,7 +666,7 @@ fn assert_invariants(fix: &Fixture) {
     // Invariants 2, 3 and 5 hold by construction: the focused frame is the active frame of the
     // active output and the focused view its selected entry. Invariant 1 is kept by
     // `Layout::settle_active_output` and checked below with invariant 4, the layout's own.
-    ewm.layout.verify_invariants();
+    ewm.verify_invariants();
 
     // Invariant 6: a frame's selected view is one of its own entries.
     for frame in all_frames(fix) {

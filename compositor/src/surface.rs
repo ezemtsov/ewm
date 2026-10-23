@@ -11,7 +11,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Serial, Size};
 use smithay::wayland::compositor::{HookId, remove_pre_commit_hook, with_states};
 use smithay::wayland::seat::WaylandFocus;
-use smithay::wayland::shell::xdg::ToplevelSurface;
+use smithay::wayland::shell::xdg::{ToplevelSurface, XdgToplevelSurfaceData};
 
 use crate::animation::Animation;
 use crate::layout::resize_fade::{Fit, PendingResize, ResizeFade, ViewRect};
@@ -158,6 +158,19 @@ impl SurfaceState {
     /// Whether a size-changing configure is still unanswered.
     pub fn owes_buffer(&self) -> bool {
         !self.pending_resizes.is_empty()
+    }
+
+    /// The size and fullscreen state last configured, none before the first configure.
+    pub(crate) fn configured(&self) -> Option<(Size<i32, Logical>, bool)> {
+        let toplevel = self.window.toplevel()?;
+        with_states(toplevel.wl_surface(), |states| {
+            let role = states.data_map.get::<XdgToplevelSurfaceData>().unwrap();
+            let state = role.lock().unwrap().current_server_state();
+            Some((
+                state.size?,
+                state.states.contains(XdgToplevelState::Fullscreen),
+            ))
+        })
     }
 
     /// Whether the window has shown a buffer.

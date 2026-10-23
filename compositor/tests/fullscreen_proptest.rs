@@ -279,7 +279,7 @@ fn to_frame(spec: &FrameSpec, sids: &[u64]) -> Frame {
 
 fn check(fix: &Fixture, model: &mut Model, clients: &Clients) -> Result<(), TestCaseError> {
     let ewm = fix.ewm_ref();
-    ewm.layout.verify_invariants();
+    ewm.verify_invariants();
     let mut shown = BTreeSet::new();
     let mut pins = BTreeMap::new();
     for monitor in ewm.layout.monitors() {
