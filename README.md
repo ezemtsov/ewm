@@ -31,7 +31,6 @@ The script builds ewm with screencast support, sets `EWM_MODULE_PATH`, and start
 
 ## known limitations
 
-- GPU selection is automatic (no override)
 - Must run from TTY (no nested mode)
 
 ## inspirations
