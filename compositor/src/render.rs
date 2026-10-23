@@ -39,7 +39,7 @@ use tracing::warn;
 use crate::cursor::{CursorTextureCache, RenderCursor, XCursor};
 use crate::layout::closing_frame::Closing;
 use crate::layout::overview::Geometry;
-use crate::layout::resize_fade::{ResizeFade, contents_rect};
+use crate::layout::resize_fade::ResizeFade;
 use crate::layout::snapshot::Snapshot;
 use crate::layout::strip;
 use crate::layout::{FrameLocation, LayoutEntryLocation};
@@ -50,7 +50,7 @@ use crate::render_helpers::shadow_style::{BackgroundEffect, Blur, CornerRadius};
 use crate::render_helpers::texture::TextureRenderElement;
 use crate::render_helpers::zoom::ZoomRenderElement;
 use crate::render_helpers::{render_to_dmabuf, render_to_shm};
-use crate::surface::SurfaceState;
+use crate::surface::{SurfaceState, view_box};
 use crate::{Ewm, LayoutEntry, LayoutEntryId, State, tracy_span};
 
 /// Render a window's surface tree without its popups. Popups are emitted once
@@ -318,75 +318,30 @@ struct ViewPlace<'a> {
 }
 
 impl<'a> ViewPlace<'a> {
-    /// `entry` fullscreen in the frame's slot, else at its rect, if any of it shows.
+    /// `entry` fullscreen in the frame's slot, else at its rect cropped to the frame's buffer, if
+    /// any of it shows.
     fn new(
         surface: &'a SurfaceState,
         entry: &'a LayoutEntry,
         alpha: f32,
         frame: FrameSpace,
-        output_size: Size<i32, Logical>,
         scale: Scale<f64>,
     ) -> Option<Self> {
-        if entry.fullscreen() {
-            Some(Self::fullscreen(
-                surface,
-                entry,
-                alpha,
-                frame.slot,
-                output_size,
-                scale,
-            ))
+        let slot = frame.slot.to_f64().to_logical(scale);
+        let rect = view_box(Some(surface), entry, frame.origin, slot);
+        let clip = if entry.fullscreen() {
+            frame.slot
         } else {
-            Self::in_frame(surface, entry, alpha, frame, scale)
-        }
-    }
-
-    /// Fullscreen in `slot`: centered by its own size when it presents the buffer, else from the
-    /// slot's corner.
-    fn fullscreen(
-        surface: &'a SurfaceState,
-        entry: &'a LayoutEntry,
-        alpha: f32,
-        slot: Rectangle<i32, Physical>,
-        output_size: Size<i32, Logical>,
-        scale: Scale<f64>,
-    ) -> Self {
-        let offset = surface
-            .fullscreen_offset(entry, output_size)
-            .unwrap_or_default();
-        let loc = slot.loc.to_f64().to_logical(scale) + offset.to_f64();
-        Self {
-            surface,
-            entry,
-            alpha,
-            loc,
-            window: output_size,
-            clip: slot,
-            slot,
-        }
-    }
-
-    /// At its rect in the frame, cropped to the frame's buffer.
-    fn in_frame(
-        surface: &'a SurfaceState,
-        entry: &'a LayoutEntry,
-        alpha: f32,
-        frame: FrameSpace,
-        scale: Scale<f64>,
-    ) -> Option<Self> {
-        let loc = frame.origin + Point::from((f64::from(entry.x), f64::from(entry.y)));
-        let window = entry.rect().size;
-        let rect = Rectangle::new(
-            loc.to_physical_precise_round(scale),
-            window.to_physical_precise_round(scale),
-        );
+            rect.to_physical_precise_round(scale)
+                .intersection(frame.bounds)?
+        };
         Some(Self {
             surface,
             entry,
             alpha,
-            loc,
-            window,
-            clip: rect.intersection(frame.bounds)?,
+            loc: rect.loc,
+            window: rect.size.to_i32_round(),
+            clip,
             slot: frame.slot,
         })
     }
@@ -398,6 +353,7 @@ fn push_view(
     content: &mut Vec<ContentRenderElement>,
     renderer: &mut GlesRenderer,
     place: &ViewPlace<'_>,
+    output: &Output,
     backdrop: Option<&SolidColorBuffer>,
     scale: Scale<f64>,
     blur_config: Blur,
@@ -411,13 +367,11 @@ fn push_view(
         clip,
         slot,
     } = *place;
-    let geometry = surface.window.geometry().size;
-    if let Some((at, content_scale)) = contents_rect(surface.presents(entry), window, geometry, loc)
-    {
+    if let Some((at, content_scale)) = surface.contents_rect(entry, window, loc) {
         let at = at.to_physical(scale).to_i32_round();
         if let Some(crop) = at.intersection(clip) {
             let content_scale = Scale::from(content_scale);
-            let fade = surface.resize_fade_for(entry);
+            let fade = surface.resize.as_ref();
             let progress = fade.map_or(1., ResizeFade::progress);
             let view_elements = render_window_without_popups(
                 &surface.window,
@@ -426,18 +380,26 @@ fn push_view(
                 scale,
                 alpha * progress,
             );
-            // The old contents fade where they were, over the whole slot through a fullscreen flip.
+            // The old contents of every view on this output fade where they were, over the whole
+            // slot through a fullscreen flip.
             let under = fade.map_or_else(Vec::new, |fade| {
-                let old = ViewBox {
-                    loc: fade
-                        .at(entry)
-                        .map_or(at.loc, |was| was.loc.to_physical_precise_round(scale)),
-                    element_scale: Scale::from(fade.scale(entry)),
-                    output_scale: scale,
-                    clip: crop,
-                };
-                let reach = if fade.flips() { slot } else { clip };
-                fade_elements(fade, progress, old, reach, alpha)
+                let reach = if fade.flips { slot } else { clip };
+                fade.views
+                    .iter()
+                    .filter(|view| view.output == *output)
+                    .filter_map(|view| {
+                        let old = ViewBox {
+                            loc: view.rect.loc.to_physical_precise_round(scale),
+                            element_scale: Scale::from(view.scale),
+                            output_scale: scale,
+                            clip: crop,
+                        };
+                        let reach =
+                            reach.intersection(view.window.to_physical_precise_round(scale))?;
+                        Some(fade_elements(fade, progress, old, reach, alpha))
+                    })
+                    .flatten()
+                    .collect()
             });
             let view = ViewBox {
                 loc: at.loc,
@@ -581,10 +543,10 @@ struct FrameGeo {
 /// What every view of a pass is drawn with, its frame's place aside.
 struct ViewCommon<'a> {
     surfaces: &'a HashMap<u64, SurfaceState>,
+    output: &'a Output,
     backdrop: Option<&'a SolidColorBuffer>,
     focused_entry_id: Option<LayoutEntryId>,
     unfocused_alpha: f32,
-    output_size: Size<i32, Logical>,
     scale: Scale<f64>,
     blur: Blur,
 }
@@ -627,13 +589,12 @@ impl ViewCommon<'_> {
             // Fullscreen forced opaque so the backdrop doesn't bleed through.
             let focused = entry.fullscreen() || self.focused_entry_id == Some(entry.id);
             let alpha = if focused { 1.0 } else { self.unfocused_alpha } * surface.open_alpha();
-            if let Some(place) =
-                ViewPlace::new(surface, entry, alpha, space, self.output_size, self.scale)
-            {
+            if let Some(place) = ViewPlace::new(surface, entry, alpha, space, self.scale) {
                 push_view(
                     content,
                     renderer,
                     &place,
+                    self.output,
                     self.backdrop,
                     self.scale,
                     self.blur,
@@ -701,13 +662,13 @@ impl<'a> OutputRender<'a> {
         let ewm = self.ewm;
         ViewCommon {
             surfaces: &ewm.surfaces,
+            output: self.output,
             backdrop: ewm
                 .output_state
                 .get(self.output)
                 .map(|state| &state.fullscreen_backdrop),
             focused_entry_id: ewm.focused_entry_id(),
             unfocused_alpha: ewm.config.unfocused_alpha,
-            output_size: self.rect.size,
             scale: self.scale,
             blur: self.blur,
         }
@@ -1245,13 +1206,14 @@ fn push_closing_views(
 
 /// The output around a frame being baked: scale, size, its origin in frame space, the backdrop.
 struct Bake<'a> {
+    output: &'a Output,
     scale: Scale<f64>,
     output_size: Size<i32, Logical>,
     origin: Point<i32, Logical>,
     backdrop: Option<&'a SolidColorBuffer>,
 }
 
-fn bake_env<'a>(ewm: &'a Ewm, location: FrameLocation<'_>) -> Bake<'a> {
+fn bake_env<'a>(ewm: &'a Ewm, location: FrameLocation<'a>) -> Bake<'a> {
     let output = location.monitor.output();
     // A float's own place is its origin, a strip frame's is in the working area.
     let origin = if location.floating {
@@ -1266,6 +1228,7 @@ fn bake_env<'a>(ewm: &'a Ewm, location: FrameLocation<'_>) -> Bake<'a> {
         Point::from((-working_area.loc.x, -working_area.loc.y))
     };
     Bake {
+        output,
         scale: Scale::from(output.current_scale().fractional_scale()),
         output_size: crate::utils::output_size(output).to_i32_round(),
         origin,
@@ -1312,12 +1275,12 @@ fn push_frame_view(
     } else {
         ewm.config.unfocused_alpha
     };
-    if let Some(place) = ViewPlace::new(surface, entry, alpha, space, bake.output_size, bake.scale)
-    {
+    if let Some(place) = ViewPlace::new(surface, entry, alpha, space, bake.scale) {
         push_view(
             content,
             renderer,
             &place,
+            bake.output,
             bake.backdrop,
             bake.scale,
             no_blur,

@@ -121,7 +121,7 @@ pub use focus::{FocusSource, Notify};
 pub use handlers::{LockRenderState, LockState};
 pub use idle::{CursorHideState, IdleAction, IdleTimeoutState};
 pub use input::binding::{Action, InterceptDispatch, InterceptedKey, Trigger};
-pub use layout::entry::{FocusId, LayoutEntry, LayoutEntryId, LayoutEntrySurface, fullscreen_center_offset};
+pub use layout::entry::{FocusId, LayoutEntry, LayoutEntryId, LayoutEntrySurface};
 pub use layout::{Layout, Monitor, Placement};
 use im::repeat::{HeldKeyOwner, InterceptRepeat, InterceptRepeatState};
 use smithay::backend::input::{InputTime, KeyState};
@@ -416,11 +416,7 @@ impl Default for SurfaceFrameThrottlingState {
     }
 }
 
-struct LayoutEntryHit<'a> {
-    entry: &'a LayoutEntry,
-    rect: Rectangle<i32, Logical>,
-    output_size: Size<i32, Logical>,
-}
+type LayoutEntryHit<'a> = (&'a LayoutEntry, Rectangle<i32, Logical>);
 
 pub(crate) type SurfaceHit = (WlSurface, Point<f64, Logical>);
 

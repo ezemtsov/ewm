@@ -14,7 +14,6 @@ use proptest::prelude::*;
 use smithay::utils::{Logical, Size};
 
 const OUTPUT: &str = "HEAD-A";
-const OUTPUT_SIZE: (i32, i32) = (1920, 1080);
 const FRAME: u64 = 500;
 const ENTRIES: [u64; 2] = [7, 8];
 /// Hints and forced sizes reach this far, past the largest window.
@@ -174,15 +173,6 @@ impl Harness {
             .find(|entry| entry.surface_id() == Some(self.sid) && entry.primary())
     }
 
-    /// Whether the frame shows `entry` fullscreen.
-    fn shown_fullscreen(&self, entry: LayoutEntryId) -> bool {
-        self.fix.ewm_ref().layout.all_frames().any(|frame| {
-            frame
-                .fullscreen_entry()
-                .is_some_and(|shown| shown.id == entry)
-        })
-    }
-
     /// Apply `op`, returning the configure an answer committed for.
     fn apply(&mut self, op: &Op) -> Option<Pair> {
         match op {
@@ -284,17 +274,12 @@ fn check_ops(ops: &[Op]) -> Result<(), TestCaseError> {
                 view.entry,
                 op
             );
-            let window = if h.shown_fullscreen(view.entry) {
-                Size::from(OUTPUT_SIZE)
-            } else {
-                view.window.size
-            };
             let scale = if view.native {
                 1.
             } else {
                 f64::max(
-                    window.w as f64 / buffer.w as f64,
-                    window.h as f64 / buffer.h as f64,
+                    view.window.size.w as f64 / buffer.w as f64,
+                    view.window.size.h as f64 / buffer.h as f64,
                 )
             };
             prop_assert_eq!(

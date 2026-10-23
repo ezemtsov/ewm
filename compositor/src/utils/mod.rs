@@ -19,7 +19,7 @@ use smithay::output::{self, Output};
 use smithay::reexports::rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
 use smithay::reexports::rustix::time::{ClockId, clock_gettime};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Coordinate, Logical, Point, Rectangle, Scale, Size, Transform};
+use smithay::utils::{Coordinate, Logical, Point, Rectangle, Size, Transform};
 use smithay::wayland::compositor::{SurfaceData, send_surface_state};
 use smithay::wayland::fractional_scale::with_fractional_scale;
 
@@ -139,16 +139,6 @@ pub fn surface_geo(states: &SurfaceData) -> Option<Rectangle<i32, Logical>> {
 pub(crate) fn ensure_min_max_size(x: i32, min: i32, max: i32) -> i32 {
     let x = if max > 0 { Ord::min(x, max) } else { x };
     if min > 0 { Ord::max(x, min) } else { x }
-}
-
-/// The uniform scale at which `source` covers `constrain`.
-pub(crate) fn fill_scale<K>(source: Size<i32, K>, constrain: Size<i32, K>) -> Option<Scale<f64>> {
-    (source.w > 0 && source.h > 0).then(|| {
-        Scale::from(f64::max(
-            constrain.w as f64 / source.w as f64,
-            constrain.h as f64 / source.h as f64,
-        ))
-    })
 }
 
 #[cfg(test)]

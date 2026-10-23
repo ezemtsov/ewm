@@ -903,13 +903,13 @@ fn views_jump_after_an_output_change() {
     fixture.apply_output_config("Virtual-1");
     fixture.tile("Virtual-1", vec![sized(surface_id, 600, 450)]);
     assert!(
-        !fixture.ewm_ref().surfaces[&surface_id].owes_buffer(),
+        !fixture.ewm_ref().surfaces[&surface_id].fade_pending(),
         "a fade waits after the output change"
     );
     fixture.answer_configure(&mut client, &toplevel);
     fixture.tile("Virtual-1", vec![sized(surface_id, 400, 300)]);
     assert!(
-        fixture.ewm_ref().surfaces[&surface_id].owes_buffer(),
+        fixture.ewm_ref().surfaces[&surface_id].fade_pending(),
         "no fade waits on a plain layout"
     );
 }
@@ -948,14 +948,14 @@ fn views_of_a_frame_resized_by_hand_do_not_fade() {
     );
     fix.float("Virtual-1", vec![float(500, sid)]);
     assert!(
-        !fix.ewm_ref().surfaces[&sid].owes_buffer(),
+        !fix.ewm_ref().surfaces[&sid].fade_pending(),
         "a fade waits under the grab"
     );
     fix.answer_configure(&mut client, &toplevel);
     fix.ewm().interactive_resize_floating_frame_end(FRAME);
     fix.float("Virtual-1", vec![float(600, sid)]);
     assert!(
-        fix.ewm_ref().surfaces[&sid].owes_buffer(),
+        fix.ewm_ref().surfaces[&sid].fade_pending(),
         "no fade waits after the grab"
     );
 }

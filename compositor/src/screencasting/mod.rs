@@ -25,7 +25,6 @@ use tracing::{debug, info, warn};
 use crate::cursor::CursorTextureCache;
 use crate::dbus::{self, CastTarget, ScreenCastToCompositor};
 use crate::render::{EwmRenderElement, render_cursor_elements};
-use crate::utils::fill_scale;
 use crate::{Ewm, LayoutEntry, LayoutEntryId, State};
 
 fn output_cast_cursor_location(
@@ -387,43 +386,38 @@ impl Ewm {
         output_scale: Scale<f64>,
         entry_size: Size<i32, Physical>,
     ) -> Vec<EwmRenderElement> {
-        if let Some(window) = geometry
+        if let Some(surface) = geometry
             .entry
             .surface_id()
-            .and_then(|surface_id| self.window(surface_id))
-            && let Some(surface) = window.wl_surface()
+            .and_then(|surface_id| self.surfaces.get(&surface_id))
+            && let Some(wl_surface) = surface.window.wl_surface()
+            && let Some((_, scale)) =
+                surface.contents_rect(geometry.entry, geometry.entry_rect.size, Point::default())
         {
             let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
                 render_elements_from_surface_tree(
                     renderer,
-                    &surface,
+                    &wl_surface,
                     Point::default(),
                     output_scale,
                     1.0,
                     Kind::Unspecified,
                 );
-            let source_size = window
-                .geometry()
-                .size
-                .to_physical_precise_round(output_scale);
-            let constrain = Rectangle::from_size(entry_size);
             let mut elements = Vec::new();
-            if let Some(element_scale) = view_scale(geometry.entry, source_size, constrain.size) {
-                crate::render::push_view_elements(
-                    &mut elements,
-                    window,
-                    view_elements,
-                    crate::render::ViewBox {
-                        loc: Point::default(),
-                        element_scale,
-                        output_scale,
-                        clip: constrain,
-                    },
-                    None,
-                    Vec::new(),
-                    self.config.blur,
-                );
-            }
+            crate::render::push_view_elements(
+                &mut elements,
+                &surface.window,
+                view_elements,
+                crate::render::ViewBox {
+                    loc: Point::default(),
+                    element_scale: Scale::from(scale),
+                    output_scale,
+                    clip: Rectangle::from_size(entry_size),
+                },
+                None,
+                Vec::new(),
+                self.config.blur,
+            );
             return elements;
         }
 
@@ -684,19 +678,6 @@ impl Ewm {
         }
 
         self.casting.casts = casts;
-    }
-}
-
-/// A view's scale in `constrain`: native when `entry` is primary, else filling it.
-fn view_scale(
-    entry: &LayoutEntry,
-    source: Size<i32, Physical>,
-    constrain: Size<i32, Physical>,
-) -> Option<Scale<f64>> {
-    if entry.primary() {
-        Some(Scale::from(1.))
-    } else {
-        fill_scale(source, constrain)
     }
 }
 

@@ -1,7 +1,7 @@
 //! What an Emacs frame shows, as Lisp declares it: entries, the surfaces in them, and ids.
 
 use serde::{Deserialize, Serialize};
-use smithay::utils::{Logical, Rectangle, Size};
+use smithay::utils::{Logical, Rectangle};
 
 /// An entry in a per-output declarative layout.
 /// Coordinates are relative to the output's working area (frame-relative).
@@ -104,24 +104,4 @@ impl LayoutEntry {
             surface.fullscreen = fullscreen;
         }
     }
-}
-
-/// Centering offset for a fullscreen surface within an output.
-/// Returns (0, 0) when the surface is at least as large as the output.
-pub fn fullscreen_center_offset(
-    window_size: Size<i32, Logical>,
-    output_size: Size<i32, Logical>,
-) -> (i32, i32) {
-    (
-        if window_size.w < output_size.w {
-            (output_size.w - window_size.w) / 2
-        } else {
-            0
-        },
-        if window_size.h < output_size.h {
-            (output_size.h - window_size.h) / 2
-        } else {
-            0
-        },
-    )
 }

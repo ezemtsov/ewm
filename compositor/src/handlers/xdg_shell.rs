@@ -58,11 +58,15 @@ pub(crate) fn add_toplevel_pre_commit_hook(surface: &WlSurface, id: u64) -> Hook
         let Some(surface) = state.ewm.surfaces.get_mut(&id) else {
             return;
         };
+        if !surface.answers_fade(serial) {
+            return;
+        }
         // The commit carrying the ack applies the configure, buffer or not. Only new contents fade.
         let flips = surface.fullscreen != fullscreen;
-        if let Some(mut pending) = surface.take_answered_resize(serial).filter(|_| attached) {
-            pending.place(&state.ewm.views_of(id));
-            state.start_resize_fade(id, pending, flips);
+        if let Some(fade) = surface.resize.as_mut().filter(|fade| fade.held()) {
+            fade.start(state.ewm.animations_clock.clone(), flips);
+        } else if attached {
+            state.start_resize_fade(id, state.ewm.views_of(id), flips);
         }
     })
 }

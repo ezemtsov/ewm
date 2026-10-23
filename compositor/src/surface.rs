@@ -8,14 +8,14 @@ use smithay::desktop::Window;
 use smithay::output::Output;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgToplevelState;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Logical, Point, Serial, Size};
+use smithay::utils::{Logical, Point, Rectangle, Serial, Size};
 use smithay::wayland::compositor::{HookId, remove_pre_commit_hook, with_states};
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::xdg::{ToplevelCachedState, ToplevelSurface, XdgToplevelSurfaceData};
 
 use crate::animation::Animation;
-use crate::layout::resize_fade::{PendingResize, ResizeFade};
-use crate::{Ewm, LayoutEntry, LayoutEntryId, fullscreen_center_offset, handlers};
+use crate::layout::resize_fade::{ResizeFade, resize_fades};
+use crate::{Ewm, LayoutEntry, LayoutEntryId, handlers};
 
 const OPEN_ANIM_DURATION: Duration = Duration::from_millis(150);
 /// Holds alpha at 0 for one vblank so the empty first buffer some clients ship never shows.
@@ -62,8 +62,8 @@ pub struct SurfaceState {
     pub fullscreen: bool,
     /// Fade-in after the first buffer.
     pub open: Option<Animation>,
-    /// Resizes configured but not yet answered, oldest first.
-    pending_resizes: Vec<(Serial, PendingResize)>,
+    /// The configure whose answer fades, the newest one that resizes.
+    animate: Option<Serial>,
     /// Old contents dissolving into the new.
     pub resize: Option<ResizeFade>,
     /// The view the buffer was made for, which the primary becomes as the client catches up.
@@ -98,7 +98,7 @@ impl SurfaceState {
             pending_fullscreen: false,
             fullscreen: false,
             open: None,
-            pending_resizes: Vec::new(),
+            animate: None,
             resize: None,
             presented: None,
         }
@@ -110,13 +110,13 @@ impl SurfaceState {
             .is_some_and(|granted| granted.elapsed() < handlers::XDG_ACTIVATION_TOKEN_TIMEOUT)
     }
 
-    /// Size the toplevel for a view on `output`, queueing `pending` to fade when the size changes.
+    /// Size the toplevel for a view on `output`, fading the answer to a resize when `fades`.
     pub(crate) fn configure(
         &mut self,
         output: &Output,
         size: Size<i32, Logical>,
         fullscreen: bool,
-        pending: Option<PendingResize>,
+        fades: bool,
     ) {
         crate::utils::set_preferred_scale_transform(&self.window, output);
         let Some(toplevel) = self.window.toplevel() else {
@@ -142,8 +142,8 @@ impl SurfaceState {
             return;
         }
         let serial = toplevel.send_configure();
-        if size_changed && let Some(pending) = pending {
-            self.pending_resizes.push((serial, pending));
+        if size_changed && fades && resize_fades(size, self.window.geometry().size) {
+            self.animate = Some(serial);
         }
     }
 
@@ -152,21 +152,32 @@ impl SurfaceState {
         self.presented == Some(entry.id)
     }
 
+    /// The buffer's rect and scale in a `window` at `loc`: its own when `entry` presents it, else filling.
+    pub(crate) fn contents_rect(
+        &self,
+        entry: &LayoutEntry,
+        window: Size<i32, Logical>,
+        loc: Point<f64, Logical>,
+    ) -> Option<(Rectangle<f64, Logical>, f64)> {
+        let buffer = self.window.geometry().size;
+        let scale = if self.presents(entry) {
+            1.
+        } else if buffer.w > 0 && buffer.h > 0 {
+            f64::max(
+                window.w as f64 / buffer.w as f64,
+                window.h as f64 / buffer.h as f64,
+            )
+        } else {
+            return None;
+        };
+        Some((Rectangle::new(loc, buffer.to_f64().upscale(scale)), scale))
+    }
+
     /// Present `primary` once the client has caught up, or at once while nothing is presented.
     pub(crate) fn present(&mut self, primary: LayoutEntryId) {
         if self.presented.is_none() || self.synced() {
             self.presented = Some(primary);
         }
-    }
-
-    /// Where `entry` draws the buffer in a fullscreen `slot` that size, none unless it presents it.
-    pub(crate) fn fullscreen_offset(
-        &self,
-        entry: &LayoutEntry,
-        slot: Size<i32, Logical>,
-    ) -> Option<Point<i32, Logical>> {
-        self.presents(entry)
-            .then(|| fullscreen_center_offset(self.window.geometry().size, slot).into())
     }
 
     /// Whether the client has committed the last configure, so its views present the primary.
@@ -188,9 +199,9 @@ impl SurfaceState {
         })
     }
 
-    /// Whether a size-changing configure is still unanswered.
-    pub fn owes_buffer(&self) -> bool {
-        !self.pending_resizes.is_empty()
+    /// Whether a configure whose answer fades is still unanswered.
+    pub fn fade_pending(&self) -> bool {
+        self.animate.is_some()
     }
 
     /// The size and fullscreen state last configured, none before the first configure.
@@ -216,23 +227,17 @@ impl SurfaceState {
     /// Backdrop alpha under `entry`: whole at fullscreen rest, fading through a flip.
     pub(crate) fn backdrop_alpha(&self, entry: &LayoutEntry) -> f32 {
         let to = f32::from(u8::from(entry.fullscreen()));
-        match self.resize_fade_for(entry) {
-            Some(fade) if fade.flips() => 1. - to + (2. * to - 1.) * fade.progress(),
+        match &self.resize {
+            Some(fade) if fade.flips => 1. - to + (2. * to - 1.) * fade.progress(),
             _ => to,
         }
     }
 
-    /// The newest resize a commit acking `serial` answers. The ones it skipped are over too.
-    pub(crate) fn take_answered_resize(&mut self, serial: Serial) -> Option<PendingResize> {
-        let answered = self
-            .pending_resizes
-            .iter()
-            .take_while(|(configured, _)| serial.is_no_older_than(configured))
-            .count();
-        self.pending_resizes
-            .drain(..answered)
-            .next_back()
-            .map(|(_, pending)| pending)
+    /// Whether a commit acking `serial` answers the configure whose answer fades.
+    pub(crate) fn answers_fade(&mut self, serial: Serial) -> bool {
+        self.animate
+            .take_if(|animate| serial.is_no_older_than(animate))
+            .is_some()
     }
 
     /// Records a committed buffer, true only for the first one.
@@ -251,7 +256,7 @@ impl SurfaceState {
     }
 
     pub(crate) fn is_animating(&self) -> bool {
-        self.open.is_some() || self.resize.is_some()
+        self.open.is_some() || self.resize.as_ref().is_some_and(|fade| !fade.held())
     }
 
     /// Drop finished animations.
@@ -267,11 +272,6 @@ impl SurfaceState {
     /// Alpha of the open fade, 1 once it is over.
     pub(crate) fn open_alpha(&self) -> f32 {
         self.open.as_ref().map_or(1., |anim| anim.value() as f32)
-    }
-
-    /// The resize fade `entry` still shows, if any.
-    pub(crate) fn resize_fade_for(&self, entry: &LayoutEntry) -> Option<&ResizeFade> {
-        self.resize.as_ref().filter(|fade| fade.shows(entry))
     }
 }
 
@@ -332,4 +332,25 @@ impl Ewm {
         let anim = Animation::ease(self.animations_clock.clone(), 0., 1., OPEN_ANIM_DURATION);
         surface.open = Some(anim.delayed(OPEN_ANIM_DELAY));
     }
+}
+
+/// Where `entry` draws with its frame at `origin`: at its rect, or across the fullscreen `slot`,
+/// centered at the buffer's size once `surface` presents it.
+pub(crate) fn view_box(
+    surface: Option<&SurfaceState>,
+    entry: &LayoutEntry,
+    origin: Point<f64, Logical>,
+    slot: Rectangle<f64, Logical>,
+) -> Rectangle<f64, Logical> {
+    if !entry.fullscreen() {
+        let loc = origin + Point::from((f64::from(entry.x), f64::from(entry.y)));
+        return Rectangle::new(loc, entry.rect().size.to_f64());
+    }
+    let Some(surface) = surface.filter(|surface| surface.presents(entry)) else {
+        return slot;
+    };
+    let size = surface.window.geometry().size;
+    let room = slot.size.to_i32_round() - size;
+    let offset = Point::from((room.w.max(0) / 2, room.h.max(0) / 2));
+    Rectangle::new(slot.loc + offset.to_f64(), size.to_f64())
 }

@@ -13,18 +13,15 @@ use smithay::utils::{Logical, Point, Rectangle, Size};
 use smithay::wayland::seat::WaylandFocus;
 
 use super::overview::{Geometry, Overview};
-use super::resize_fade::{
-    FadingView, PendingResize, RESIZE_FADE_THRESHOLD, ResizeFade, ViewRect, contents_rect,
-    fade_spring, size_change,
-};
+use super::resize_fade::{ResizeFade, ViewRect, fade_animation, resize_fades};
 use super::snapshot::Snapshot;
 use super::transition::Transition;
 use super::{
     ActiveChange, FrameLocation, LayoutEntryLocation, Monitor, Moved, entry_size, floating, strip,
 };
-use crate::animation::Animation;
 use crate::input::{Direction, End, Gesture};
 use crate::render::render_view_snapshot;
+use crate::surface::view_box;
 use crate::{
     Event, Ewm, FocusSource, LayoutEntry, LayoutEntryHit, LayoutEntryId, Notify, State, SurfaceHit,
     module,
@@ -291,22 +288,6 @@ impl Ewm {
         self.entry_origin(location)
     }
 
-    /// Fullscreen `entry` in `slot`: centered at its own size when it presents the buffer, else
-    /// across the slot.
-    pub(crate) fn fullscreen_entry_rect(
-        &self,
-        slot: Rectangle<i32, Logical>,
-        entry: &LayoutEntry,
-    ) -> Rectangle<i32, Logical> {
-        let Some(surface) = entry.surface_id().and_then(|id| self.surfaces.get(&id)) else {
-            return slot;
-        };
-        let Some(offset) = surface.fullscreen_offset(entry, slot.size) else {
-            return slot;
-        };
-        Rectangle::new(slot.loc + offset, surface.window.geometry().size)
-    }
-
     /// Whether the view at `location` is drawn: its float shows and no sibling covers it.
     pub(crate) fn view_visible(&self, location: LayoutEntryLocation<'_>) -> bool {
         (!location.floating || self.float_visible(location.monitor, location.frame))
@@ -335,11 +316,9 @@ impl Ewm {
         origin: Point<i32, Logical>,
     ) -> Rectangle<i32, Logical> {
         let entry = location.entry;
-        if entry.fullscreen() {
-            let slot = Self::fullscreen_slot(location, output_geo);
-            return self.fullscreen_entry_rect(slot, entry);
-        }
-        Rectangle::new(origin + Point::from((entry.x, entry.y)), entry.rect().size)
+        let surface = entry.surface_id().and_then(|id| self.surfaces.get(&id));
+        let slot = Self::fullscreen_slot(location, output_geo).to_f64();
+        view_box(surface, entry, origin.to_f64(), slot).to_i32_round()
     }
 
     /// The output-sized slot of `location`'s frame.
@@ -418,7 +397,6 @@ impl Ewm {
         &self,
         monitor: &'a Monitor,
         output_geo: Rectangle<i32, Logical>,
-        working_area: Rectangle<i32, Logical>,
         pos: Point<f64, Logical>,
         mut predicate: impl FnMut(&LayoutEntry) -> bool,
     ) -> Option<LayoutEntryHit<'a>> {
@@ -431,34 +409,27 @@ impl Ewm {
                 continue;
             }
             let slot = Self::on_output(output_geo, slot);
-            let covered = location.frame.fullscreen_entry().is_some();
             for location in location.entries() {
                 let entry = location.entry;
-                if (covered && !entry.fullscreen()) || !predicate(entry) {
+                if !self.view_visible(location) || !predicate(entry) {
                     continue;
                 }
                 let rect = self.entry_rect_at(location, output_geo, slot.loc);
                 if Self::rect_contains_f64(rect, pos) {
-                    return Some(LayoutEntryHit {
-                        entry,
-                        rect,
-                        output_size: output_geo.size,
-                    });
+                    return Some((entry, rect));
                 }
             }
             if Self::rect_contains_f64(slot, pos) {
                 return None;
             }
         }
-        self.tiled_entry_under_matching(monitor, output_geo, working_area, pos, predicate)
+        self.tiled_entry_under_matching(monitor, pos, predicate)
     }
 
     /// Hit-test `pos` against a monitor's tiled entries only (no floating overlay).
     fn tiled_entry_under_matching<'a>(
         &self,
         monitor: &'a Monitor,
-        output_geo: Rectangle<i32, Logical>,
-        working_area: Rectangle<i32, Logical>,
         pos: Point<f64, Logical>,
         mut predicate: impl FnMut(&LayoutEntry) -> bool,
     ) -> Option<LayoutEntryHit<'a>> {
@@ -468,18 +439,8 @@ impl Ewm {
             // Primary clicks miss in the letterbox.
             .filter(|location| self.view_visible(*location))
             .find_map(|location| {
-                let origin = Self::strip_frame_origin(
-                    output_geo,
-                    working_area,
-                    &monitor.strip,
-                    location.frame_idx,
-                );
-                let rect = self.entry_rect_at(location, output_geo, origin);
-                Self::rect_contains_f64(rect, pos).then_some(LayoutEntryHit {
-                    entry: location.entry,
-                    rect,
-                    output_size: output_geo.size,
-                })
+                let rect = self.drawn_rect(location)?;
+                Self::rect_contains_f64(rect, pos).then_some((location.entry, rect))
             })
     }
 
@@ -496,40 +457,10 @@ impl Ewm {
         let (_, data) = monitor.floating.frame_with_data(floating_frame_id)?;
         let (pos, size) = (data.render_pos(), data.size());
         let center: Point<f64, Logical> = Point::from((pos.x + size.w / 2.0, pos.y + size.h / 2.0));
-        let output = monitor.output();
-        let output_geo = self.layout.output_rect(output)?;
-        let working_area = self.get_working_area(output);
+        let output_geo = self.layout.output_rect(monitor.output())?;
         let center = output_geo.loc.to_f64() + center;
-        self.tiled_entry_under_matching(monitor, output_geo, working_area, center, |_| true)
-            .map(|hit| hit.entry.id)
-    }
-
-    fn pointer_scale_for_entry(
-        entry: &LayoutEntry,
-        fullscreen: bool,
-        window_size: Size<i32, Logical>,
-        output_size: Size<i32, Logical>,
-    ) -> f64 {
-        if fullscreen {
-            if entry.primary() {
-                return 1.0;
-            }
-
-            let uniform = f64::max(
-                output_size.w as f64 / window_size.w as f64,
-                output_size.h as f64 / window_size.h as f64,
-            );
-            return 1.0 / uniform;
-        }
-
-        if entry.primary() || entry.w == 0 || entry.h == 0 {
-            return 1.0;
-        }
-
-        f64::min(
-            window_size.w as f64 / entry.w as f64,
-            window_size.h as f64 / entry.h as f64,
-        )
+        self.tiled_entry_under_matching(monitor, center, |_| true)
+            .map(|(entry, _)| entry.id)
     }
 
     /// Hit-test layout toplevel/subsurfaces under a global position. Falls
@@ -539,7 +470,7 @@ impl Ewm {
     pub fn layout_surface_under(&self, pos: Point<f64, Logical>) -> Option<SurfaceHit> {
         let (monitor, output_geo) = self.monitor_at(pos)?;
         let working_area = self.get_working_area(monitor.output());
-        self.layout_entry_in(monitor, output_geo, working_area, pos, |entry| {
+        self.layout_entry_in(monitor, output_geo, pos, |entry| {
             entry.surface_id().is_some()
         })
         .and_then(|hit| self.surface_under_layout_entry(pos, hit))
@@ -551,24 +482,11 @@ impl Ewm {
         pos: Point<f64, Logical>,
         hit: LayoutEntryHit<'_>,
     ) -> Option<SurfaceHit> {
-        let entry = hit.entry;
-        let window = self.window(entry.surface_id()?)?;
-        let window_geo = window.geometry();
-        let pointer_scale = Self::pointer_scale_for_entry(
-            entry,
-            entry.fullscreen(),
-            window_geo.size,
-            hit.output_size,
-        );
-
-        let pos_in_window = Point::from((
-            (pos.x - hit.rect.loc.x as f64) * pointer_scale,
-            (pos.y - hit.rect.loc.y as f64) * pointer_scale,
-        ));
-        let window_origin: Point<f64, Logical> =
-            Point::from((pos.x - pos_in_window.x, pos.y - pos_in_window.y));
-
-        Self::surface_under_non_popup_window(window, pos_in_window, window_origin)
+        let (entry, rect) = hit;
+        let surface = self.surfaces.get(&entry.surface_id()?)?;
+        let (_, scale) = surface.contents_rect(entry, rect.size, rect.loc.to_f64())?;
+        let pos_in_window = (pos - rect.loc.to_f64()).downscale(scale);
+        Self::surface_under_non_popup_window(&surface.window, pos_in_window, pos - pos_in_window)
     }
 
     /// Find the frame on `monitor` containing `pos`, returning the frame surface itself.
@@ -661,23 +579,18 @@ impl Ewm {
                 let entry = location.entry;
                 let surface = entry.surface_id()?;
                 let state = self.surfaces.get(&surface)?;
-                let output = location.monitor.output().clone();
-                let output_geo = self.layout.output_rect(&output)?;
-                let drawn = self.drawn_rect(location)?;
-                let native = state.presents(entry);
-                let buffer = state.window.geometry().size;
-                let (rect, scale) = contents_rect(native, drawn.size, buffer, drawn.loc.to_f64())?;
-                let mut rect = rect.to_i32_round();
-                rect.loc -= output_geo.loc;
+                let mut window = self.drawn_rect(location)?;
+                window.loc -= location.monitor.rect()?.loc;
+                let (rect, scale) = state.contents_rect(entry, window.size, window.loc.to_f64())?;
                 Some(ViewRect {
                     surface,
                     entry: entry.id,
-                    output,
-                    frame: location.frame.surface_id,
-                    rect,
+                    output: location.monitor.output().clone(),
+                    rect: rect.to_i32_round(),
                     scale,
-                    native,
-                    window: entry.rect(),
+                    native: state.presents(entry),
+                    window,
+                    settles: location.monitor.settles_at_once(location.frame.surface_id),
                 })
             })
             .collect()
@@ -815,9 +728,8 @@ impl Ewm {
     /// Entry id of the layout entry under a point.
     pub fn layout_entry_id_under(&self, pos: Point<f64, Logical>) -> Option<LayoutEntryId> {
         let (monitor, output_geo) = self.monitor_at(pos)?;
-        let working_area = self.get_working_area(monitor.output());
-        self.layout_entry_in(monitor, output_geo, working_area, pos, |_| true)
-            .map(|hit| hit.entry.id)
+        self.layout_entry_in(monitor, output_geo, pos, |_| true)
+            .map(|(entry, _)| entry.id)
     }
 
     /// Whether `id` shows on output `name`, as a view or as an Emacs frame.
@@ -954,7 +866,6 @@ impl Ewm {
             self.queue_redraw(output);
         }
         self.refresh_primary_assignments();
-        self.layout.settle_resized();
         self.focus_pending_activation_surfaces();
     }
 
@@ -1122,19 +1033,20 @@ impl Ewm {
         self.configure_primary_entries();
     }
 
-    /// The size and fullscreen state the surface at `location`, a primary, is configured for.
-    fn primary_configure(&self, location: LayoutEntryLocation<'_>) -> (Size<i32, Logical>, bool) {
-        let fullscreen = location
-            .entry
-            .surface_id()
-            .is_some_and(|id| self.pending_fullscreen(id));
+    /// The size and fullscreen state surface `id`, primary at `location`, is configured for.
+    fn primary_configure(
+        &self,
+        id: u64,
+        location: LayoutEntryLocation<'_>,
+    ) -> (Size<i32, Logical>, bool) {
+        let fullscreen = self.pending_fullscreen(id);
         (
             entry_size(location.monitor.output(), location.entry, fullscreen),
             fullscreen,
         )
     }
 
-    /// Configure every shown primary entry's surface for its slot, noting the resizes to fade.
+    /// Configure every shown primary entry's surface for its slot, fading the answer to a resize.
     fn configure_primary_entries(&mut self) {
         let shown_primaries = self
             .layout
@@ -1145,14 +1057,10 @@ impl Ewm {
                 continue;
             };
             let output = location.monitor.output();
-            let (size, fullscreen) = self.primary_configure(location);
-            let pending = if location.monitor.settles_at_once(location.frame.surface_id) {
-                None
-            } else {
-                self.pending_resize(id, size)
-            };
+            let (size, fullscreen) = self.primary_configure(id, location);
+            let fades = !location.monitor.settles_at_once(location.frame.surface_id);
             if let Some(surface) = self.surfaces.get_mut(&id) {
-                surface.configure(output, size, fullscreen, pending);
+                surface.configure(output, size, fullscreen, fades);
                 surface.present(location.entry.id);
             }
         }
@@ -1202,7 +1110,7 @@ impl Ewm {
             if entry.primary() {
                 assert_eq!(
                     surface.configured(),
-                    Some(self.primary_configure(location)),
+                    Some(self.primary_configure(id, location)),
                     "surface {id} is not configured for its primary view {}",
                     entry.id
                 );
@@ -1596,117 +1504,63 @@ impl Ewm {
     }
 }
 
-impl Ewm {
-    /// The views of `id` as drawn now, with the resolution the old contents need for them.
-    fn fading_views(
-        &self,
-        id: u64,
-        mut keep: impl FnMut(&ViewRect) -> Option<FadingView>,
-    ) -> Option<PendingResize> {
-        let mut views = Vec::new();
-        let mut scale = 0f64;
-        for now in self.view_rects().iter().filter(|now| now.surface == id) {
-            let Some(view) = keep(now) else {
-                continue;
-            };
-            scale = scale.max(view.scale.min(1.) * now.output.current_scale().fractional_scale());
-            views.push(view);
-        }
-        (!views.is_empty()).then_some(PendingResize { views, scale })
-    }
-
-    /// What a configure of `id` to `size` will fade.
-    pub(crate) fn pending_resize(
-        &self,
-        id: u64,
-        size: Size<i32, Logical>,
-    ) -> Option<PendingResize> {
-        if self.animations_clock.should_complete_instantly() {
-            return None;
-        }
-        let old = self.window(id)?.geometry().size;
-        if size_change(size, old) <= RESIZE_FADE_THRESHOLD {
-            return None;
-        }
-        self.fading_views(id, |now| {
-            Some(FadingView {
-                entry: now.entry,
-                window: now.window,
-                scale: now.scale,
-                at: None,
-            })
-        })
-    }
-
-    /// What a layout refitting views of `id` since `before` will fade, nothing for a frame that
-    /// settles at once.
-    fn pending_refit(&self, id: u64, before: &[ViewRect]) -> Option<PendingResize> {
-        if self.animations_clock.should_complete_instantly() {
-            return None;
-        }
-        self.fading_views(id, |now| {
-            if self
-                .layout
-                .monitor_of(&now.output)
-                .is_some_and(|monitor| monitor.settles_at_once(now.frame))
-            {
-                return None;
-            }
-            let was = before
-                .iter()
-                .find(|was| was.entry == now.entry && was.output == now.output)?;
-            (size_change(was.rect.size, now.rect.size) > RESIZE_FADE_THRESHOLD).then_some(
-                FadingView {
-                    entry: now.entry,
-                    window: now.window,
-                    scale: was.scale,
-                    at: Some(was.rect),
-                },
-            )
-        })
-    }
-}
-
 impl State {
-    /// Fade the old contents of surface `id` into the new ones `pending` names, the backdrop
-    /// along if it `flips`.
-    pub(crate) fn start_resize_fade(&mut self, id: u64, pending: PendingResize, flips: bool) {
+    /// Fade the contents of surface `id` as drawn in `before` into what it draws next, the
+    /// backdrop along if it `flips`.
+    pub(crate) fn start_resize_fade(&mut self, id: u64, before: Vec<ViewRect>, flips: bool) {
         let ewm = &mut self.ewm;
         let Some(surface) = ewm.surfaces.get_mut(&id) else {
             return;
         };
-        // An open fade would hide it.
-        if surface.open.as_ref().is_some_and(|open| !open.is_done())
+        // An open fade would hide it, a held one keeps the picture from before the first layout.
+        if before.is_empty()
+            || surface.open.as_ref().is_some_and(|open| !open.is_done())
+            || surface.resize.as_ref().is_some_and(ResizeFade::held)
             || ewm.animations_clock.should_complete_instantly()
         {
             return;
         }
-        let clock = ewm.animations_clock.clone();
+        // The highest resolution any view draws the old contents at, capped at their own.
+        let scale = before
+            .iter()
+            .map(|view| view.scale.min(1.) * view.output.current_scale().fractional_scale())
+            .fold(0., f64::max);
+        let clock = (!surface.fade_pending()).then(|| ewm.animations_clock.clone());
         self.backend.with_renderer(|renderer, _, _| {
-            if let Some(snapshot) =
-                render_view_snapshot(&surface.window, renderer, pending.scale.into())
-            {
-                let anim = Animation::new(clock, 0., 1., 0., fade_spring());
+            if let Some(snapshot) = render_view_snapshot(&surface.window, renderer, scale.into()) {
                 surface.resize = Some(ResizeFade {
                     snapshot,
-                    anim,
-                    views: pending.views,
+                    anim: clock.map(fade_animation),
+                    views: before,
                     flips,
                 });
             }
         });
     }
 
-    /// Apply Emacs's layout, fading every view it refits.
+    /// Apply Emacs's layout, fading every surface it refits a view of or configures with a fade.
     pub(crate) fn apply_layout(&mut self, frames: Vec<strip::Frame>) {
-        let before = self.ewm.view_rects();
+        let mut before = self.ewm.view_rects();
         self.ewm.apply_layout(frames);
-        let ids: Vec<u64> = self.ewm.surfaces.keys().copied().collect();
-        for id in ids {
-            if let Some(pending) = self.ewm.pending_refit(id, &before) {
-                self.start_resize_fade(id, pending, false);
-            }
+        let now = self.ewm.view_rects();
+        let fading: HashSet<u64> = before
+            .iter()
+            .filter(|was| {
+                self.ewm.surfaces[&was.surface].fade_pending()
+                    || now.iter().any(|view| {
+                        view.entry == was.entry
+                            && !view.settles
+                            && resize_fades(was.rect.size, view.rect.size)
+                    })
+            })
+            .map(|was| was.surface)
+            .collect();
+        // The old contents of every view, the ones the layout dropped too.
+        for id in fading {
+            let views = before.extract_if(.., |was| was.surface == id).collect();
+            self.start_resize_fade(id, views, false);
         }
+        self.ewm.layout.settle_resized();
     }
 }
 

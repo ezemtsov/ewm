@@ -669,7 +669,7 @@ fn drawn_views(h: &Harness) -> Vec<DrawnView> {
                     }
                     let Some(view) = fullscreen_views
                         .iter()
-                        .find(|view| view.frame == frame.surface_id && view.entry == fullscreen.id)
+                        .find(|view| view.entry == fullscreen.id)
                     else {
                         continue;
                     };
@@ -679,7 +679,7 @@ fn drawn_views(h: &Harness) -> Vec<DrawnView> {
                         surface: view.surface,
                         rect,
                         output_geo,
-                        native: fullscreen.primary(),
+                        native: view.native,
                     });
                 }
                 None => {
@@ -694,7 +694,10 @@ fn drawn_views(h: &Harness) -> Vec<DrawnView> {
                                 Size::from((entry.w as i32, entry.h as i32)),
                             ),
                             output_geo,
-                            native: entry.primary(),
+                            native: ewm
+                                .surfaces
+                                .get(&surface)
+                                .is_some_and(|state| state.presented == Some(entry.id)),
                         });
                     }
                 }
