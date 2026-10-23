@@ -220,8 +220,9 @@ EXTRA-PARAMS win over the defaults, so a caller can override `visibility'."
       frame)))
 
 (defun ewm--stray-frame-p (frame)
-  "Non-nil when FRAME is a managed frame EWM did not make."
+  "Non-nil when FRAME is a managed toplevel EWM did not make."
   (and (ewm--output-managed-p frame)
+       (null (frame-parent frame))
        (null (frame-parameter frame 'ewm-output))))
 
 (defun ewm--on-make-frame (frame)
