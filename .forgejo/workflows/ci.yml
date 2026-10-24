@@ -5,10 +5,14 @@ on:
     branches: [master]
   pull_request:
 
-# A newer push to the same branch or pull request supersedes the running job.
+# Runs queue, the trees and the cargo target dir below are shared.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+# The runner exports CI_STATE, a directory it keeps between jobs.
+env:
+  CARGO_TARGET_DIR: ${{ env.CI_STATE }}/target
 
 jobs:
   emacs:
@@ -22,13 +26,15 @@ jobs:
     defaults:
       run:
         shell: nix develop .#ci-${{ matrix.variant }} -c bash -e {0}
+        working-directory: ${{ env.CI_STATE }}/${{ matrix.variant }}
     steps:
       - name: checkout
         shell: bash
+        working-directory: ${{ github.workspace }}
         run: |
-          git init -q
+          git init -q "$CI_STATE/${{ matrix.variant }}" && cd "$_"
           git fetch -q --depth 1 "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$GITHUB_SHA"
-          git checkout -q --force FETCH_HEAD
+          git checkout -qfB ci FETCH_HEAD
           git clean -qfdx
       - name: rustfmt
         run: cargo fmt --check --manifest-path compositor/Cargo.toml
