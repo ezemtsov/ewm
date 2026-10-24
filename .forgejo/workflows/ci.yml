@@ -15,24 +15,19 @@ env:
   CARGO_TARGET_DIR: ${{ env.CI_STATE }}/target
 
 jobs:
-  emacs:
-    name: ${{ matrix.variant }}
+  rust:
     runs-on: aasgard
     timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        variant: [pgtk, pwayl]
     defaults:
       run:
-        shell: nix develop .#ci-${{ matrix.variant }} -c bash -e {0}
-        working-directory: ${{ env.CI_STATE }}/${{ matrix.variant }}
+        shell: nix develop .#ci -c bash -e {0}
+        working-directory: ${{ env.CI_STATE }}/rust
     steps:
       - name: checkout
         shell: bash
         working-directory: ${{ github.workspace }}
         run: |
-          git init -q "$CI_STATE/${{ matrix.variant }}" && cd "$_"
+          git init -q "$CI_STATE/rust" && cd "$_"
           git fetch -q --depth 1 "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$GITHUB_SHA"
           git checkout -qfB ci FETCH_HEAD
           git clean -qfdx
@@ -43,10 +38,31 @@ jobs:
           cargo clippy --manifest-path compositor/Cargo.toml --all-targets -- -D warnings
           cargo clippy --manifest-path compositor/Cargo.toml --all-targets --features screencast -- -D warnings
       - name: tests
-        run: cargo nextest run --manifest-path compositor/Cargo.toml --no-fail-fast
+        run: cargo nextest run --manifest-path compositor/Cargo.toml --profile rust
+  emacs:
+    name: ${{ matrix.variant }}
+    runs-on: aasgard
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [pgtk, pwayl]
+    defaults:
+      run:
+        working-directory: ${{ env.CI_STATE }}/${{ matrix.variant }}
+    steps:
+      - name: checkout
+        working-directory: ${{ github.workspace }}
+        run: |
+          git init -q "$CI_STATE/${{ matrix.variant }}" && cd "$_"
+          git fetch -q --depth 1 "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$GITHUB_SHA"
+          git checkout -qfB ci FETCH_HEAD
+          git clean -qfdx
       - name: nix build
-        shell: bash
         run: nix build -L .#checks.x86_64-linux.ewm-${{ matrix.variant }}
       - name: session
-        shell: bash
         run: nix run -L .#session-test-${{ matrix.variant }}
+      # Last, the rust job may still hold the cargo lock.
+      - name: tests
+        shell: nix develop .#ci-${{ matrix.variant }} -c bash -e {0}
+        run: cargo nextest run --manifest-path compositor/Cargo.toml --profile emacs

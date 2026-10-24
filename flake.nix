@@ -40,14 +40,9 @@
         {
           default = shell [ ];
           # rustfmt stays out of shell.nix, where the rustup nightly provides it.
-          ci-pgtk = shell [
-            pkgs.rustfmt
-            pkgs.emacs-pgtk
-          ];
-          ci-pwayl = shell [
-            pkgs.rustfmt
-            pkgs.emacs31-pwayl
-          ];
+          ci = shell [ pkgs.rustfmt ];
+          ci-pgtk = shell [ pkgs.emacs-pgtk ];
+          ci-pwayl = shell [ pkgs.emacs31-pwayl ];
         }
       );
     };

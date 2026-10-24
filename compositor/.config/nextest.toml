@@ -1,0 +1,8 @@
+# The test binaries that start Emacs.
+[profile.emacs]
+fail-fast = false
+default-filter = 'binary(/^elisp_/) | binary(emulation_integration) | binary(gesture_integration)'
+
+[profile.rust]
+fail-fast = false
+default-filter = 'not (binary(/^elisp_/) | binary(emulation_integration) | binary(gesture_integration))'
