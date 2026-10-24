@@ -6,6 +6,7 @@ pkgs.mkShell {
   nativeBuildInputs = with pkgs; [
     pkg-config
     cargo
+    cargo-nextest
     clippy
     rustc
     rust-analyzer

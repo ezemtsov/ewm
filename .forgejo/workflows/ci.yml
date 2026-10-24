@@ -43,7 +43,7 @@ jobs:
           cargo clippy --manifest-path compositor/Cargo.toml --all-targets -- -D warnings
           cargo clippy --manifest-path compositor/Cargo.toml --all-targets --features screencast -- -D warnings
       - name: tests
-        run: cargo test --manifest-path compositor/Cargo.toml --no-fail-fast
+        run: cargo nextest run --manifest-path compositor/Cargo.toml --no-fail-fast
       - name: nix build
         shell: bash
         run: nix build -L .#checks.x86_64-linux.ewm-${{ matrix.variant }}
