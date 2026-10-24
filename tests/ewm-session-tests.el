@@ -210,7 +210,7 @@ OUTPUT, return (HELD FRACTION...)."
                               (format "%.2f red over the output" (cadr covered)))))
 
 (defun ewm-session-tests-views ()
-  "One app surface shows in two windows at once."
+  "One app surface shows in two windows at once, one of them scaled."
   (let* ((window (ewm-session-tests--foot-window))
          (output (ewm--frame-output (window-frame window)))
          (buffer (window-buffer window))
@@ -220,18 +220,30 @@ OUTPUT, return (HELD FRACTION...)."
          (lower-rect (ewm-session-tests--body-rect lower))
          (one `((,upper-rect ewm-session-tests--red-p > 0.95) (,lower-rect ewm-session-tests--red-p < 0.05)))
          (two `((,upper-rect ewm-session-tests--red-p > 0.95) (,lower-rect ewm-session-tests--red-p > 0.95)))
-         split both again)
+         split both scaled again)
     (set-window-buffer lower ewm-session-tests--buffer)
     (setq split (car (ewm-session-tests--wait-pixels output one)))
     (set-window-buffer lower buffer)
     (setq both (ewm-session-tests--wait-pixels output two))
     (ewm-session-tests--shot "two-views" output)
+    ;; A window narrower than the primary shows the view at a smaller scale.
+    (let* ((right (with-selected-window window (split-window-right)))
+           (left-rect (ewm-session-tests--body-rect window))
+           (right-rect (ewm-session-tests--body-rect right)))
+      (set-window-buffer right ewm-session-tests--buffer)
+      (setq scaled (ewm-session-tests--wait-pixels
+                    output `((,left-rect ewm-session-tests--red-p > 0.95)
+                             (,right-rect ewm-session-tests--red-p < 0.05)
+                             (,lower-rect ewm-session-tests--red-p > 0.95))))
+      (ewm-session-tests--shot "scaled-view" output)
+      (delete-window right))
     (set-window-buffer lower ewm-session-tests--buffer)
     (setq again (car (ewm-session-tests--wait-pixels output one)))
     (delete-window lower)
     (ewm-session-tests--close-foot)
-    (ewm-session-tests--check "views" (and split (car both) again)
-                              (format "%.2f and %.2f red" (nth 1 both) (nth 2 both)))))
+    (ewm-session-tests--check "views" (and split (car both) (car scaled) again)
+                              (format "%.2f and %.2f red, %.2f scaled"
+                                      (nth 1 both) (nth 2 both) (nth 1 scaled)))))
 
 (defun ewm-session-tests-move ()
   "The frame moves to the next output and back."
