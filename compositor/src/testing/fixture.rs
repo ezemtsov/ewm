@@ -402,7 +402,7 @@ impl Fixture {
         for _ in 0..32 {
             let _ = client.eq.flush();
             self.event_loop
-                .dispatch(Some(Duration::from_millis(5)), &mut self.state)
+                .dispatch(Some(Duration::from_millis(1)), &mut self.state)
                 .ok();
             self.state.refresh_and_flush_clients();
             if let Some(guard) = client.conn.prepare_read() {
@@ -544,7 +544,7 @@ impl Fixture {
     /// Dispatch the event loop once with a short timeout
     pub fn dispatch(&mut self) {
         self.event_loop
-            .dispatch(Some(Duration::from_millis(10)), &mut self.state)
+            .dispatch(Some(Duration::from_millis(1)), &mut self.state)
             .ok();
         self.state.refresh_and_flush_clients();
     }
