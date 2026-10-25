@@ -5,17 +5,23 @@
 //! and observe actual `WlSurface` / `PopupManager` state.
 
 use std::collections::HashMap;
+use std::io::{Read, Write};
 use std::os::fd::{AsFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
+use std::time::Duration;
 
 use smithay::reexports::wayland_server::backend::ClientId;
 use smithay::utils::{Logical, Rectangle, Size};
 use wayland_client::backend::ObjectId;
+use wayland_client::protocol::wl_data_device_manager::DndAction;
 use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_region, wl_registry, wl_seat,
-    wl_shm, wl_shm_pool, wl_subcompositor, wl_subsurface, wl_surface, wl_touch,
+    wl_buffer, wl_compositor, wl_data_device, wl_data_device_manager, wl_data_offer,
+    wl_data_source, wl_keyboard, wl_output, wl_pointer, wl_region, wl_registry, wl_seat, wl_shm,
+    wl_shm_pool, wl_subcompositor, wl_subsurface, wl_surface, wl_touch,
 };
-use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
+use wayland_client::{
+    Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, event_created_child,
+};
 use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_manager_v1::{
     self, ExtBackgroundEffectManagerV1,
 };
@@ -138,6 +144,22 @@ pub enum ClientEvent {
     },
     InputMethodActivate,
     InputMethodUnavailable,
+    /// A drag entered `surface` offering `mimes`.
+    DndEnter {
+        surface: wl_surface::WlSurface,
+        mimes: Vec<String>,
+    },
+    DndDrop,
+    SourceAction {
+        action: WEnum<DndAction>,
+    },
+    SourceDropPerformed,
+    SourceFinished,
+    SourceCancelled,
+    /// The seat offers a selection, `mimes` empty when it was cleared.
+    SelectionOffered {
+        mimes: Vec<String>,
+    },
     KdeDecorationDefaultMode {
         mode: WEnum<org_kde_kwin_server_decoration_manager::Mode>,
     },
@@ -207,6 +229,19 @@ pub struct ClientState {
     pub input_method_manager: Option<zwp_input_method_manager_v2::ZwpInputMethodManagerV2>,
     pub system_bell: Option<xdg_system_bell_v1::XdgSystemBellV1>,
     pub kde_decoration_manager: Option<OrgKdeKwinServerDecorationManager>,
+    pub data_device_manager: Option<wl_data_device_manager::WlDataDeviceManager>,
+    data_device: Option<wl_data_device::WlDataDevice>,
+    /// Serial of the latest pointer or keyboard enter, what an activation token needs.
+    enter_serial: Option<u32>,
+    /// Serial of the button press still held, what a drag needs.
+    press_serial: Option<u32>,
+    /// Mime type this client takes when a drag drops on it.
+    dnd_accept: Option<String>,
+    /// Bytes our data source writes when asked.
+    source_payload: Vec<u8>,
+    offer_mimes: Vec<String>,
+    dnd_offer: Option<wl_data_offer::WlDataOffer>,
+    selection_offer: Option<wl_data_offer::WlDataOffer>,
     pub background_effect_manager: Option<ExtBackgroundEffectManagerV1>,
     pub session_lock_manager: Option<ext_session_lock_manager_v1::ExtSessionLockManagerV1>,
     pub workspace_manager: Option<ExtWorkspaceManagerV1>,
@@ -539,6 +574,91 @@ impl TestClient {
             .create(surface, &self.qh(), ())
     }
 
+    /// Serial of the button press still held, None once released.
+    pub fn press_serial(&self) -> Option<u32> {
+        self.state.press_serial
+    }
+
+    /// Bind this client's data device, before dragging, dropping or selecting.
+    pub fn data_device(&mut self) -> wl_data_device::WlDataDevice {
+        if let Some(device) = &self.state.data_device {
+            return device.clone();
+        }
+        let seat = self.state.seat.as_ref().expect("wl_seat not bound");
+        let device = self
+            .state
+            .data_device_manager
+            .as_ref()
+            .expect("wl_data_device_manager not bound; roundtrip the registry first")
+            .get_data_device(seat, &self.qh(), ());
+        self.state.data_device = Some(device.clone());
+        device
+    }
+
+    /// Take drags offering `mime` and receive their data on drop.
+    pub fn accept_dnd(&mut self, mime: &str) {
+        self.data_device();
+        self.state.dnd_accept = Some(mime.to_owned());
+    }
+
+    fn data_source(&mut self, mime: &str, payload: &[u8]) -> wl_data_source::WlDataSource {
+        self.data_device();
+        let source = self
+            .state
+            .data_device_manager
+            .as_ref()
+            .unwrap()
+            .create_data_source(&self.qh(), ());
+        source.offer(mime.to_owned());
+        self.state.source_payload = payload.to_vec();
+        source
+    }
+
+    /// Drag `payload` as `mime` from `origin`, `serial` the press the compositor holds a grab for.
+    pub fn start_drag(
+        &mut self,
+        origin: &wl_surface::WlSurface,
+        icon: Option<&wl_surface::WlSurface>,
+        mime: &str,
+        payload: &[u8],
+        serial: u32,
+    ) -> wl_data_source::WlDataSource {
+        let source = self.data_source(mime, payload);
+        source.set_actions(DndAction::Copy | DndAction::Move);
+        self.data_device()
+            .start_drag(Some(&source), origin, icon, serial);
+        source
+    }
+
+    /// Own the seat's selection with `payload` as `mime`.
+    pub fn set_selection(&mut self, mime: &str, payload: &[u8]) -> wl_data_source::WlDataSource {
+        let source = self.data_source(mime, payload);
+        let serial = self.state.enter_serial.unwrap_or(0);
+        self.data_device().set_selection(Some(&source), serial);
+        source
+    }
+
+    /// Ask for the dropped data as `mime`, `received` reads it once the source wrote.
+    pub fn receive_dnd(&self, mime: &str) -> UnixStream {
+        receive(
+            self.state.dnd_offer.as_ref().expect("no drag dropped here"),
+            mime,
+        )
+    }
+
+    /// Ask for the selection as `mime`, None while nobody offers one.
+    pub fn receive_selection(&self, mime: &str) -> Option<UnixStream> {
+        Some(receive(self.state.selection_offer.as_ref()?, mime))
+    }
+
+    /// Tell the source the drop is complete and release the offer.
+    pub fn finish_dnd(&mut self) {
+        if let Some(offer) = self.state.dnd_offer.take() {
+            offer.finish();
+            offer.destroy();
+        }
+    }
+
     pub fn create_region(&self) -> wl_region::WlRegion {
         self.compositor().create_region(&self.qh(), ())
     }
@@ -735,6 +855,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientState {
             state.system_bell = Some(registry.bind(name, version, qh, ()));
         } else if interface == OrgKdeKwinServerDecorationManager::interface().name {
             state.kde_decoration_manager = Some(registry.bind(name, version, qh, ()));
+        } else if interface == wl_data_device_manager::WlDataDeviceManager::interface().name {
+            state.data_device_manager = Some(registry.bind(name, version.min(3), qh, ()));
         } else if interface == ExtBackgroundEffectManagerV1::interface().name {
             state.background_effect_manager = Some(registry.bind(name, version, qh, ()));
         } else if interface
@@ -897,15 +1019,18 @@ impl Dispatch<wl_pointer::WlPointer, ()> for ClientState {
     ) {
         match event {
             wl_pointer::Event::Enter {
+                serial,
                 surface,
                 surface_x,
                 surface_y,
-                ..
-            } => state.events.push(ClientEvent::PointerEnter {
-                surface,
-                x: surface_x,
-                y: surface_y,
-            }),
+            } => {
+                state.enter_serial = Some(serial);
+                state.events.push(ClientEvent::PointerEnter {
+                    surface,
+                    x: surface_x,
+                    y: surface_y,
+                })
+            }
             wl_pointer::Event::Leave { surface, .. } => {
                 state.events.push(ClientEvent::PointerLeave { surface })
             }
@@ -918,13 +1043,17 @@ impl Dispatch<wl_pointer::WlPointer, ()> for ClientState {
                 y: surface_y,
             }),
             wl_pointer::Event::Button {
+                serial,
                 button,
                 state: WEnum::Value(button_state),
                 ..
-            } => state.events.push(ClientEvent::PointerButton {
-                button,
-                pressed: button_state == wl_pointer::ButtonState::Pressed,
-            }),
+            } => {
+                let pressed = button_state == wl_pointer::ButtonState::Pressed;
+                state.press_serial = pressed.then_some(serial);
+                state
+                    .events
+                    .push(ClientEvent::PointerButton { button, pressed })
+            }
             _ => {}
         }
     }
@@ -940,6 +1069,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for ClientState {
         _: &QueueHandle<Self>,
     ) {
         match event {
+            wl_keyboard::Event::Enter { serial, .. } => state.enter_serial = Some(serial),
             wl_keyboard::Event::Key {
                 key,
                 state: WEnum::Value(key_state),
@@ -1091,6 +1221,119 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for ClientState {
     }
 }
 
+/// Ask `offer` for `mime`, the read end of the pipe the source will write.
+fn receive(offer: &wl_data_offer::WlDataOffer, mime: &str) -> UnixStream {
+    let (read_end, write_end) = UnixStream::pair().unwrap();
+    offer.receive(mime.to_owned(), write_end.as_fd());
+    read_end
+}
+
+/// What the source wrote into `stream`, None when it never did.
+pub fn received(mut stream: UnixStream) -> Option<Vec<u8>> {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut data = Vec::new();
+    stream.read_to_end(&mut data).ok()?;
+    Some(data)
+}
+
+impl Dispatch<wl_data_device::WlDataDevice, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &wl_data_device::WlDataDevice,
+        event: wl_data_device::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_data_device::Event::DataOffer { .. } => state.offer_mimes.clear(),
+            wl_data_device::Event::Enter {
+                serial,
+                surface,
+                id: Some(offer),
+                ..
+            } => {
+                let mimes = std::mem::take(&mut state.offer_mimes);
+                match state
+                    .dnd_accept
+                    .as_ref()
+                    .filter(|mime| mimes.contains(mime))
+                {
+                    Some(mime) => {
+                        offer.accept(serial, Some(mime.clone()));
+                        offer.set_actions(DndAction::Copy, DndAction::Copy);
+                    }
+                    None => {
+                        offer.accept(serial, None);
+                        offer.set_actions(DndAction::None, DndAction::None);
+                    }
+                }
+                state.dnd_offer = Some(offer);
+                state.events.push(ClientEvent::DndEnter { surface, mimes });
+            }
+            wl_data_device::Event::Drop => state.events.push(ClientEvent::DndDrop),
+            wl_data_device::Event::Selection { id } => {
+                if let Some(offer) = state.selection_offer.take() {
+                    offer.destroy();
+                }
+                let mimes = std::mem::take(&mut state.offer_mimes);
+                state.selection_offer = id;
+                state.events.push(ClientEvent::SelectionOffered { mimes });
+            }
+            _ => {}
+        }
+    }
+
+    event_created_child!(ClientState, wl_data_device::WlDataDevice, [
+        wl_data_device::EVT_DATA_OFFER_OPCODE => (wl_data_offer::WlDataOffer, ()),
+    ]);
+}
+
+impl Dispatch<wl_data_offer::WlDataOffer, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &wl_data_offer::WlDataOffer,
+        event: wl_data_offer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_data_offer::Event::Offer { mime_type } = event {
+            state.offer_mimes.push(mime_type);
+        }
+    }
+}
+
+impl Dispatch<wl_data_source::WlDataSource, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &wl_data_source::WlDataSource,
+        event: wl_data_source::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_data_source::Event::Send { fd, .. } => {
+                std::fs::File::from(fd)
+                    .write_all(&state.source_payload)
+                    .unwrap();
+            }
+            wl_data_source::Event::Action { dnd_action } => state
+                .events
+                .push(ClientEvent::SourceAction { action: dnd_action }),
+            wl_data_source::Event::DndDropPerformed => {
+                state.events.push(ClientEvent::SourceDropPerformed)
+            }
+            wl_data_source::Event::DndFinished => state.events.push(ClientEvent::SourceFinished),
+            wl_data_source::Event::Cancelled => state.events.push(ClientEvent::SourceCancelled),
+            _ => {}
+        }
+    }
+}
+
 impl Dispatch<OrgKdeKwinServerDecorationManager, ()> for ClientState {
     fn event(
         state: &mut Self,
@@ -1177,6 +1420,7 @@ wayland_client::delegate_noop!(ClientState: ignore xdg_system_bell_v1::XdgSystem
 wayland_client::delegate_noop!(ClientState: ignore wl_region::WlRegion);
 wayland_client::delegate_noop!(ClientState: ignore ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1);
 wayland_client::delegate_noop!(ClientState: ignore ext_session_lock_manager_v1::ExtSessionLockManagerV1);
+wayland_client::delegate_noop!(ClientState: ignore wl_data_device_manager::WlDataDeviceManager);
 
 impl Dispatch<ext_session_lock_surface_v1::ExtSessionLockSurfaceV1, wl_surface::WlSurface>
     for ClientState

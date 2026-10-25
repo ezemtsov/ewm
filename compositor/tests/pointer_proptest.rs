@@ -79,7 +79,7 @@ use proptest::prelude::*;
 use smithay::reexports::wayland_server::Resource as _;
 use smithay::reexports::wayland_server::backend::ClientId;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface as ServerWlSurface;
-use smithay::utils::{Logical, Point, Rectangle, Size};
+use smithay::utils::{Logical, Point, Rectangle, Serial, Size};
 use wayland_client::Proxy as _;
 
 /// `BTN_LEFT` from linux/input-event-codes.h.
@@ -526,10 +526,12 @@ fn apply_op(h: &mut Harness, op: &Op) {
             h.fix.touch_up();
         }
         Op::StartDnd => {
-            // Needs a held button; a second start supersedes the first grab.
-            if h.fix.ewm_ref().pointer.is_grabbed() {
-                h.fix.start_pointer_dnd(h.sid, None);
-                h.dnd_active = true;
+            // The compositor grants a drag for the press it holds a grab for, a second start
+            // supersedes the first grab.
+            if let Some(serial) = h.client.press_serial() {
+                h.dnd_active = h.fix.ewm_ref().pointer.has_grab(Serial::from(serial));
+                h.client
+                    .start_drag(&h.toplevel.surface, None, "text/plain", b"", serial);
             }
         }
         Op::CreatePopup { ax, ay } => {

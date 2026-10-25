@@ -465,35 +465,6 @@ impl Fixture {
         WlSurface::from_id(dh, id).unwrap()
     }
 
-    /// Start a pointer drag from surface SID with ICON. A button must be held.
-    pub fn start_pointer_dnd(&mut self, sid: u64, icon: Option<WlSurface>) {
-        use smithay::input::dnd::GrabType;
-        use smithay::utils::SERIAL_COUNTER;
-        use smithay::wayland::seat::WaylandFocus as _;
-        use smithay::wayland::selection::data_device::WaylandDndGrabHandler as _;
-
-        assert!(
-            self.state.ewm.pointer.is_grabbed(),
-            "start_drag needs a held button"
-        );
-        let source = self
-            .state
-            .ewm
-            .window(sid)
-            .unwrap()
-            .wl_surface()
-            .unwrap()
-            .into_owned();
-        let seat = self.state.ewm.seat.clone();
-        self.state.dnd_requested(
-            source,
-            icon,
-            seat,
-            SERIAL_COUNTER.next_serial(),
-            GrabType::Pointer,
-        );
-    }
-
     /// Add a virtual output with the given name and size
     pub fn add_output(&mut self, name: &str, width: i32, height: i32) {
         let Backend::Headless(headless) = &mut self.state.backend else {

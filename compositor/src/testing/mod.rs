@@ -11,6 +11,7 @@ pub mod lisp;
 pub use client::LayerSurface;
 pub use client::{
     ClientEvent, ClientState as TestClientState, Gesture, Popup, Subsurface, TestClient, Toplevel,
+    received,
 };
 pub use fixture::Fixture;
 use smithay::utils::{Rectangle, Size};
@@ -114,6 +115,25 @@ pub fn frame_with_entry(
 pub fn frame_with_width(surface_id: u64, width: f64) -> strip::Frame {
     let mut frame = strip::Frame::new(surface_id);
     frame.width = width;
+    frame
+}
+
+/// A frame of width 1600 showing `entries` side by side, 800 by 900 each, the first selected.
+pub fn frame_with_entries(id: u64, entries: &[(LayoutEntryId, u64)]) -> strip::Frame {
+    let mut frame = strip::Frame::new(id);
+    frame.width = 1600.0;
+    frame.selected_entry_id = entries.first().map(|(entry, _)| *entry);
+    for (i, &(entry, sid)) in entries.iter().enumerate() {
+        frame.entries.push(LayoutEntry::surface(
+            entry,
+            "app".to_string(),
+            sid,
+            800 * i as i32,
+            0,
+            800,
+            900,
+        ));
+    }
     frame
 }
 
