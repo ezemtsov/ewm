@@ -41,6 +41,10 @@ use wayland_protocols::wp::pointer_gestures::zv1::client::{
 use wayland_protocols::wp::text_input::zv3::client::{
     zwp_text_input_manager_v3, zwp_text_input_v3,
 };
+use wayland_protocols::xdg::activation::v1::client::{xdg_activation_token_v1, xdg_activation_v1};
+use wayland_protocols::xdg::decoration::zv1::client::{
+    zxdg_decoration_manager_v1, zxdg_toplevel_decoration_v1,
+};
 use wayland_protocols::xdg::shell::client::{
     xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
 };
@@ -160,6 +164,12 @@ pub enum ClientEvent {
     SelectionOffered {
         mimes: Vec<String>,
     },
+    ActivationToken {
+        token: String,
+    },
+    XdgDecorationMode {
+        mode: WEnum<zxdg_toplevel_decoration_v1::Mode>,
+    },
     KdeDecorationDefaultMode {
         mode: WEnum<org_kde_kwin_server_decoration_manager::Mode>,
     },
@@ -229,6 +239,8 @@ pub struct ClientState {
     pub input_method_manager: Option<zwp_input_method_manager_v2::ZwpInputMethodManagerV2>,
     pub system_bell: Option<xdg_system_bell_v1::XdgSystemBellV1>,
     pub kde_decoration_manager: Option<OrgKdeKwinServerDecorationManager>,
+    pub xdg_decoration_manager: Option<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1>,
+    pub activation: Option<xdg_activation_v1::XdgActivationV1>,
     pub data_device_manager: Option<wl_data_device_manager::WlDataDeviceManager>,
     data_device: Option<wl_data_device::WlDataDevice>,
     /// Serial of the latest pointer or keyboard enter, what an activation token needs.
@@ -574,6 +586,50 @@ impl TestClient {
             .create(surface, &self.qh(), ())
     }
 
+    pub fn create_xdg_decoration(
+        &self,
+        toplevel: &xdg_toplevel::XdgToplevel,
+    ) -> zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1 {
+        self.state
+            .xdg_decoration_manager
+            .as_ref()
+            .expect("xdg decoration manager not bound; roundtrip the registry first")
+            .get_toplevel_decoration(toplevel, &self.qh(), ())
+    }
+
+    /// Ask for an activation token, it arrives as `ActivationToken` after a roundtrip.
+    pub fn request_activation_token(
+        &self,
+        surface: Option<&wl_surface::WlSurface>,
+        serial: Option<u32>,
+    ) {
+        let token = self
+            .state
+            .activation
+            .as_ref()
+            .expect("xdg_activation not bound; roundtrip the registry first")
+            .get_activation_token(&self.qh(), ());
+        if let Some(serial) = serial {
+            token.set_serial(serial, self.state.seat.as_ref().expect("wl_seat not bound"));
+        }
+        if let Some(surface) = surface {
+            token.set_surface(surface);
+        }
+        token.commit();
+    }
+
+    pub fn activate(&self, token: &str, surface: &wl_surface::WlSurface) {
+        self.state
+            .activation
+            .as_ref()
+            .unwrap()
+            .activate(token.to_owned(), surface);
+    }
+
+    pub fn enter_serial(&self) -> Option<u32> {
+        self.state.enter_serial
+    }
+
     /// Serial of the button press still held, None once released.
     pub fn press_serial(&self) -> Option<u32> {
         self.state.press_serial
@@ -855,6 +911,11 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientState {
             state.system_bell = Some(registry.bind(name, version, qh, ()));
         } else if interface == OrgKdeKwinServerDecorationManager::interface().name {
             state.kde_decoration_manager = Some(registry.bind(name, version, qh, ()));
+        } else if interface == zxdg_decoration_manager_v1::ZxdgDecorationManagerV1::interface().name
+        {
+            state.xdg_decoration_manager = Some(registry.bind(name, version, qh, ()));
+        } else if interface == xdg_activation_v1::XdgActivationV1::interface().name {
+            state.activation = Some(registry.bind(name, version, qh, ()));
         } else if interface == wl_data_device_manager::WlDataDeviceManager::interface().name {
             state.data_device_manager = Some(registry.bind(name, version.min(3), qh, ()));
         } else if interface == ExtBackgroundEffectManagerV1::interface().name {
@@ -1334,6 +1395,39 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for ClientState {
     }
 }
 
+impl Dispatch<xdg_activation_token_v1::XdgActivationTokenV1, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        token: &xdg_activation_token_v1::XdgActivationTokenV1,
+        event: xdg_activation_token_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_activation_token_v1::Event::Done { token: value } = event {
+            token.destroy();
+            state
+                .events
+                .push(ClientEvent::ActivationToken { token: value });
+        }
+    }
+}
+
+impl Dispatch<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1,
+        event: zxdg_toplevel_decoration_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zxdg_toplevel_decoration_v1::Event::Configure { mode } = event {
+            state.events.push(ClientEvent::XdgDecorationMode { mode });
+        }
+    }
+}
+
 impl Dispatch<OrgKdeKwinServerDecorationManager, ()> for ClientState {
     fn event(
         state: &mut Self,
@@ -1421,6 +1515,8 @@ wayland_client::delegate_noop!(ClientState: ignore wl_region::WlRegion);
 wayland_client::delegate_noop!(ClientState: ignore ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1);
 wayland_client::delegate_noop!(ClientState: ignore ext_session_lock_manager_v1::ExtSessionLockManagerV1);
 wayland_client::delegate_noop!(ClientState: ignore wl_data_device_manager::WlDataDeviceManager);
+wayland_client::delegate_noop!(ClientState: ignore xdg_activation_v1::XdgActivationV1);
+wayland_client::delegate_noop!(ClientState: ignore zxdg_decoration_manager_v1::ZxdgDecorationManagerV1);
 
 impl Dispatch<ext_session_lock_surface_v1::ExtSessionLockSurfaceV1, wl_surface::WlSurface>
     for ClientState

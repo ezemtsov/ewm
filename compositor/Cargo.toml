@@ -93,7 +93,7 @@ features = ["client"]
 # xdg-shell client bindings for in-process TestClient (testing module).
 [dependencies.wayland-protocols]
 version = "0.32"
-features = ["client", "staging"]
+features = ["client", "staging", "unstable"]
 
 [dependencies.wayland-protocols-wlr]
 version = "0.3"
