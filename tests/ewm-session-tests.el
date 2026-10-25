@@ -58,7 +58,7 @@
 
 (defun ewm-session-tests--fractions (output checks)
   "The fraction of each (RECT COLOR . _) in CHECKS on one grim capture of OUTPUT.
-RECT is (X Y WIDTH HEIGHT), nil for the bottom eight rows."
+RECT is (X Y WIDTH HEIGHT), nil for the whole output, bottom for its last eight rows."
   (with-temp-buffer
     (set-buffer-multibyte nil)
     (let ((coding-system-for-read 'binary))
@@ -71,7 +71,10 @@ RECT is (X Y WIDTH HEIGHT), nil for the bottom eight rows."
           (height (string-to-number (match-string 2)))
           (start (match-end 0)))
       (mapcar (pcase-lambda (`(,rect ,color . ,_))
-                (pcase-let ((`(,x0 ,y0 ,w ,h) (or rect (list 0 (- height 8) width 8)))
+                (pcase-let ((`(,x0 ,y0 ,w ,h) (pcase rect
+                                                ('nil (list 0 0 width height))
+                                                ('bottom (list 0 (- height 8) width 8))
+                                                (_ rect)))
                             (hits 0)
                             (total 0))
                   (cl-loop for y from y0 below (+ y0 h) by 4
@@ -197,7 +200,7 @@ OUTPUT, return (HELD FRACTION...)."
   "An app goes fullscreen over its output and back."
   (let* ((window (ewm-session-tests--foot-window))
          (output (ewm--frame-output (window-frame window)))
-         (tiled '((nil ewm-session-tests--red-p < 0.5)))
+         (tiled '((bottom ewm-session-tests--red-p < 0.5)))
          (full '((nil ewm-session-tests--red-p > 0.99)))
          (before (car (ewm-session-tests--wait-pixels output tiled)))
          covered after)
@@ -269,13 +272,19 @@ OUTPUT, return (HELD FRACTION...)."
       (ewm-session-tests--check "move" (and there back) (format "away from %s and back" home)))))
 
 (defun ewm-session-tests-lock ()
-  "swaylock covers the output."
-  (let ((output (ewm-session-tests--focus)))
-    (setq ewm-session-tests--locker
-          (make-process :name "ewm-session-tests-swaylock" :noquery t
-                        :command '("swaylock" "-c" "333333")))
-    (let ((covered (ewm-session-tests--wait-pixels output '((nil ewm-session-tests--gray-p > 0.99)))))
-      (ewm-session-tests--check "lock" (car covered) (format "%.2f gray over the output" (cadr covered))))))
+  "swaylock covers every output."
+  (ewm-session-tests--focus)
+  (setq ewm-session-tests--locker
+        (make-process :name "ewm-session-tests-swaylock" :noquery t
+                      :command '("swaylock" "-c" "333333")))
+  (let ((covered (mapcar (lambda (info)
+                           (cons (car info)
+                                 (ewm-session-tests--wait-pixels (car info) '((nil ewm-session-tests--gray-p > 0.99)))))
+                         ewm--output-info)))
+    (ewm-session-tests--check "lock" (cl-every #'cadr covered)
+                              (mapconcat (pcase-lambda (`(,output ,_ ,fraction))
+                                           (format "%.2f gray on %s" fraction output))
+                                         covered ", "))))
 
 (defun ewm-session-tests-unlocked (text)
   "The locker is gone and TEXT, the password typed, never reached the frame."

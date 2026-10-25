@@ -123,7 +123,7 @@ let
       with subtest("the focused frame moves to the other output and back"):
           check("(ewm-session-tests-move)")
 
-      with subtest("the session locks, swallows input and unlocks with the password"):
+      with subtest("the session locks every output, swallows input and unlocks with the password"):
           check("(ewm-session-tests-lock)")
           machine.send_chars("alice\n")
           check('(ewm-session-tests-unlocked "alice")')
@@ -138,6 +138,10 @@ let
           machine.wait_until_fails(f"kill -0 {pid}", timeout=60)
           machine.fail("journalctl -b --no-pager | grep -qE 'dumped core|ewm.service.*(Failed with result|code=(killed|dumped))'")
           machine.wait_until_succeeds(READY, timeout=180)
+
+      with subtest("the compositor logged no error"):
+          errors = machine.succeed("journalctl -q -b --no-pager -p err _SYSTEMD_USER_UNIT=ewm.service").strip()
+          assert not errors, f"the compositor logged:\n{errors}"
     '';
   };
 in
