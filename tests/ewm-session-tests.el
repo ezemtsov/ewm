@@ -63,9 +63,15 @@
 
 ;;;; pixels
 
+(defun ewm-session-tests--grid (from count)
+  "Every fourth coordinate from FROM over COUNT, and the last one."
+  (let ((last (+ from count -1)))
+    (delete-dups (append (number-sequence from last 4) (list last)))))
+
 (defun ewm-session-tests--fractions (output checks)
   "The fraction of each (RECT COLOR . _) in CHECKS on one grim capture of OUTPUT.
-RECT is (X Y WIDTH HEIGHT), nil for the whole output, bottom for its last eight rows."
+RECT is (X Y WIDTH HEIGHT), nil for the whole output, bottom for its last eight
+rows, edges for its outermost two rows and columns."
   (with-temp-buffer
     (set-buffer-multibyte nil)
     (let ((coding-system-for-read 'binary))
@@ -78,18 +84,21 @@ RECT is (X Y WIDTH HEIGHT), nil for the whole output, bottom for its last eight 
           (height (string-to-number (match-string 2)))
           (start (match-end 0)))
       (mapcar (pcase-lambda (`(,rect ,color . ,_))
-                (pcase-let ((`(,x0 ,y0 ,w ,h) (pcase rect
-                                                ('nil (list 0 0 width height))
-                                                ('bottom (list 0 (- height 8) width 8))
-                                                (_ rect)))
-                            (hits 0)
-                            (total 0))
-                  (cl-loop for y from y0 below (+ y0 h) by 4
-                           do (cl-loop for x from x0 below (+ x0 w) by 4
-                                       for i = (+ start (* 3 (+ (* y width) x)))
-                                       do (cl-incf total)
-                                       when (funcall color (get-byte i) (get-byte (1+ i)) (get-byte (+ i 2)))
-                                       do (cl-incf hits)))
+                (let ((hits 0)
+                      (total 0))
+                  (pcase-dolist (`(,x0 ,y0 ,w ,h)
+                                 (pcase rect
+                                   ('nil `((0 0 ,width ,height)))
+                                   ('bottom `((0 ,(- height 8) ,width 8)))
+                                   ('edges `((0 0 ,width 2) (0 ,(- height 2) ,width 2)
+                                             (0 0 2 ,height) (,(- width 2) 0 2 ,height)))
+                                   (_ (list rect))))
+                    (dolist (y (ewm-session-tests--grid y0 h))
+                      (dolist (x (ewm-session-tests--grid x0 w))
+                        (let ((i (+ start (* 3 (+ (* y width) x)))))
+                          (cl-incf total)
+                          (when (funcall color (get-byte i) (get-byte (1+ i)) (get-byte (+ i 2)))
+                            (cl-incf hits))))))
                   (/ (float hits) total)))
               checks))))
 
@@ -110,6 +119,10 @@ OUTPUT, return (HELD FRACTION...)."
 
 (defun ewm-session-tests--gray-p (r g b)
   (and (< (abs (- r #x33)) 8) (< (abs (- g #x33)) 8) (< (abs (- b #x33)) 8)))
+
+(defun ewm-session-tests--covered (color)
+  "Checks for COLOR filling an output to its edges."
+  `((nil ,color > 0.99) (edges ,color = 1.0)))
 
 (defun ewm-session-tests--shot (name output)
   (when ewm-session-tests-dir
@@ -170,14 +183,15 @@ OUTPUT, return (HELD FRACTION...)."
          (seq-find (lambda (b) (eq (buffer-local-value 'ewm-surface-pid b) pid)) (buffer-list)))))
 
 (defun ewm-session-tests--foot-window ()
-  "Select and return the window of the red foot, started on the frame if needed."
+  "Select and return the window of the red foot, started on the frame if needed.
+It echoes nothing, hides its cursor and paints four cells white near its top right."
   (unless (ewm-session-tests--foot-buffer)
     (ewm-session-tests--focus)
     (setq ewm-session-tests--foot
           (make-process :name "ewm-session-tests-foot" :noquery t
                         :command (list "foot" "-o" "colors-dark.background=ff0000"
                                        "-o" "colors-light.background=ff0000"
-                                       "sh" "-c" "while read line; do touch \"$0/$line\"; done"
+                                       "sh" "-c" "stty -echo; printf '\\033[?25l\\033[2;9999H\\033[7D\\033[48;2;255;255;255m    \\033[0m'; while read line; do touch \"$0/$line\"; done"
                                        temporary-file-directory))))
   (let ((window (ewm-session-tests--wait
                  (lambda ()
@@ -237,8 +251,8 @@ OUTPUT, return (HELD FRACTION...)."
   "Wait for the app to cover its output when ON, else to sit tiled."
   (let ((output (ewm--frame-output (window-frame (get-buffer-window (ewm-session-tests--foot-buffer) t)))))
     (ewm-session-tests--wait-pixels output (if on
-                                               '((nil ewm-session-tests--red-p > 0.99))
-                                             '((bottom ewm-session-tests--red-p < 0.5))))))
+                                               (ewm-session-tests--covered 'ewm-session-tests--red-p)
+                                             '((bottom ewm-session-tests--red-p < 0.01))))))
 
 (defun ewm-session-tests-foot-fullscreen (on)
   "The app covers its output when ON, else its frame shows below it."
@@ -263,7 +277,7 @@ OUTPUT, return (HELD FRACTION...)."
          rect red)
     (set-window-buffer (frame-root-window child) (ewm-session-tests--red-buffer "*ewm-session-tests-child*"))
     (setq rect (ewm-session-tests--body-at output (frame-root-window child) (cons (/ 60 scale) (/ 40 scale))))
-    (setq red (ewm-session-tests--wait-pixels output `((,rect ewm-session-tests--red-p > 0.95))))
+    (setq red (ewm-session-tests--wait-pixels output `((,rect ewm-session-tests--red-p > 0.99))))
     (ewm-session-tests--shot "child-frame" output)
     (delete-frame child)
     (ewm-session-tests--check "child frame" (car red) (format "%.2f red at %s" (cadr red) rect))))
@@ -281,7 +295,7 @@ OUTPUT, return (HELD FRACTION...)."
          (pos (and at (cons (- (car at) (car origin)) (- (cdr at) (cdr origin)))))
          (body (ewm--window-body-logical-rect window))
          (rect (ewm-session-tests--body-at output window pos))
-         (red (ewm-session-tests--wait-pixels output `((,rect ewm-session-tests--red-p > 0.95)))))
+         (red (ewm-session-tests--wait-pixels output `((,rect ewm-session-tests--red-p > 0.99)))))
     (ewm-session-tests--shot "float" output)
     (delete-frame frame)
     (ewm-session-tests--check "float" (and (equal pos '(100 . 80)) (equal (cddr body) '(400 300)) (car red))
@@ -310,23 +324,26 @@ OUTPUT, return (HELD FRACTION...)."
          (lower (with-selected-window window (split-window-below 10)))
          (upper-rect (ewm-session-tests--body-rect window))
          (lower-rect (ewm-session-tests--body-rect lower))
-         (one `((,upper-rect ewm-session-tests--red-p > 0.95) (,lower-rect ewm-session-tests--red-p < 0.05)))
-         (two `((,upper-rect ewm-session-tests--red-p > 0.95) (,lower-rect ewm-session-tests--red-p > 0.95)))
+         (one `((,upper-rect ewm-session-tests--red-p > 0.99) (,lower-rect ewm-session-tests--red-p < 0.01)))
+         (two `((,upper-rect ewm-session-tests--red-p > 0.99) (,lower-rect ewm-session-tests--red-p > 0.99)))
          split both scaled again)
     (set-window-buffer lower ewm-session-tests--buffer)
     (setq split (car (ewm-session-tests--wait-pixels output one)))
     (set-window-buffer lower buffer)
     (setq both (ewm-session-tests--wait-pixels output two))
     (ewm-session-tests--shot "two-views" output)
-    ;; A window narrower than the primary shows the view at a smaller scale.
+    ;; A window narrower than the primary shows the view at a smaller scale, the white cells
+    ;; near the right of the app land in its top right corner, a crop would cut them off.
     (let* ((right (with-selected-window window (split-window-right)))
            (left-rect (ewm-session-tests--body-rect window))
-           (right-rect (ewm-session-tests--body-rect right)))
+           (right-rect (ewm-session-tests--body-rect right))
+           (corner (pcase-let ((`(,x ,y ,w ,_) left-rect)) (list (+ x w -64) y 64 64))))
       (set-window-buffer right ewm-session-tests--buffer)
       (setq scaled (ewm-session-tests--wait-pixels
-                    output `((,left-rect ewm-session-tests--red-p > 0.95)
-                             (,right-rect ewm-session-tests--red-p < 0.05)
-                             (,lower-rect ewm-session-tests--red-p > 0.95))))
+                    output `((,left-rect ewm-session-tests--red-p > 0.99)
+                             (,corner ewm-session-tests--red-p < 1.0)
+                             (,right-rect ewm-session-tests--red-p < 0.01)
+                             (,lower-rect ewm-session-tests--red-p > 0.99))))
       (ewm-session-tests--shot "scaled-view" output)
       (delete-window right))
     (set-window-buffer lower ewm-session-tests--buffer)
@@ -406,7 +423,8 @@ OUTPUT, return (HELD FRACTION...)."
                       :command '("swaylock" "-c" "333333")))
   (let ((covered (mapcar (lambda (info)
                            (cons (car info)
-                                 (ewm-session-tests--wait-pixels (car info) '((nil ewm-session-tests--gray-p > 0.99)))))
+                                 (ewm-session-tests--wait-pixels
+                                  (car info) (ewm-session-tests--covered 'ewm-session-tests--gray-p))))
                          ewm--output-info)))
     (ewm-session-tests--check "lock" (cl-every #'cadr covered)
                               (mapconcat (pcase-lambda (`(,output ,_ ,fraction))
