@@ -810,7 +810,8 @@ impl Layout {
         moved
     }
 
-    /// Move frame `id` to `dst` on purpose, after its active frame, homing it and its floats.
+    /// Move frame `id` to `dst` on purpose, after its active frame, homing it and its floats
+    /// there even when it already sits on `dst`.
     pub(crate) fn move_frame_to_output(&mut self, id: u64, dst: &Output) -> Moved {
         let src = self
             .frame_location(id)
@@ -824,7 +825,7 @@ impl Layout {
         if let Some(monitor) = self.monitor_of_mut(dst) {
             for frame in monitor
                 .frames_mut()
-                .filter(|frame| moved.ids.contains(&frame.surface_id))
+                .filter(|frame| frame.surface_id == id || moved.ids.contains(&frame.surface_id))
             {
                 frame.home = home.clone();
             }

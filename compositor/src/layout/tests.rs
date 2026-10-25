@@ -693,9 +693,9 @@ fn apply_layout_op(
         LayoutOp::MoveFrameToOutput { id, dst } => {
             let dst = &outputs[dst];
             let moved = layout.move_frame_to_output(id, dst);
+            check_homed(layout, dst, &[id])?;
             if !moved.ids.is_empty() {
                 check_landed(layout, dst, &moved, focused, remembered)?;
-                check_homed(layout, dst, &[id])?;
                 if let Some(strip) = layout.strip(dst)
                     && let Some(idx) = strip.index_of(id)
                 {
@@ -768,8 +768,9 @@ fn apply_layout_op(
             if let (Some(moved), Some(id)) = (&moved, dragged)
                 && layout.monitor_of(dst).is_some()
             {
-                // The drag carries the frame onto the output under the pointer.
+                // The drag carries the frame onto the output under the pointer and homes it there.
                 prop_assert_eq!(layout.frame_output(id), Some(PROP_HEADS[output]));
+                check_homed(layout, dst, &[id])?;
                 if !moved.ids.is_empty() {
                     check_landed(layout, dst, moved, focused, remembered)?;
                 }
@@ -788,14 +789,12 @@ fn apply_layout_op(
                     .interactive_move
                     .is_none_or(|move_| move_.frame_id != id)
             );
-            // A float dropped on an output stays there, under the pointer that dropped it, and
-            // that output becomes its home.
+            // A float dropped on an output stays there, under the pointer that dropped it.
             if dragged == Some(id)
                 && let Some((output, point, inside)) = drag.take()
                 && let Some(monitor) = layout.monitor_of(&outputs[output])
                 && let Some((_, data)) = monitor.floating.frame_with_data(id)
             {
-                check_homed(layout, &outputs[output], &[id])?;
                 let rect = Rectangle::new(data.logical_pos(), data.size());
                 prop_assert!(
                     !inside || rect.contains(point),
