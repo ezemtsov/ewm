@@ -106,6 +106,22 @@ struct InteractiveMove {
     pointer_ratio: (f64, f64),
 }
 
+/// The output a frame belongs to, by display identity and connector.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Home {
+    pub identity: String,
+    pub connector: String,
+}
+
+impl Home {
+    pub fn of(output: &Output) -> Self {
+        Self {
+            identity: crate::utils::output_identity(output),
+            connector: output.name(),
+        }
+    }
+}
+
 /// Where a new frame goes on its output.
 #[derive(Debug, Clone, Copy)]
 pub enum Placement {
@@ -630,7 +646,7 @@ impl Layout {
 
     /// Replace `output`'s strip wholesale, homing its frames there.
     pub fn install_strip(&mut self, output: &Output, strip: strip::Strip) {
-        let home = crate::utils::output_identity(output);
+        let home = Home::of(output);
         let Some(monitor) = self.monitor_of_mut(output) else {
             return;
         };
@@ -647,7 +663,7 @@ impl Layout {
             return;
         };
         let mut frame = strip::Frame::new(id);
-        frame.home = crate::utils::output_identity(output);
+        frame.home = Home::of(output);
         match placement {
             Placement::Tiled { after } => {
                 let at = monitor.strip.slot_after(after);
@@ -821,7 +837,7 @@ impl Layout {
         };
         let after = self.strip(dst).and_then(strip::Strip::active_frame_id);
         let moved = self.move_frames(&src, dst, &[id], after);
-        let home = crate::utils::output_identity(dst);
+        let home = Home::of(dst);
         if let Some(monitor) = self.monitor_of_mut(dst) {
             for frame in monitor
                 .frames_mut()
@@ -842,16 +858,25 @@ impl Layout {
         self.place_frames(idx, None, frames)
     }
 
-    /// Unpinned frames homed at `dst`'s display, grouped by the other output holding them.
+    /// Unpinned frames homed at `dst`, grouped by the other output holding them. While a twin of
+    /// `dst` is connected, only the connector tells their frames apart.
     pub(crate) fn homed_elsewhere(&self, dst: &Output) -> Vec<(Output, Vec<u64>)> {
-        let identity = crate::utils::output_identity(dst);
+        let home = Home::of(dst);
+        let twin = self.monitors.iter().any(|monitor| {
+            monitor.output != *dst
+                && crate::utils::output_identity(&monitor.output) == home.identity
+        });
         self.monitors
             .iter()
             .filter(|monitor| &monitor.output != dst)
             .filter_map(|monitor| {
                 let ids: Vec<u64> = monitor
                     .frames()
-                    .filter(|frame| frame.pinned_to.is_none() && frame.home == identity)
+                    .filter(|frame| {
+                        frame.pinned_to.is_none()
+                            && frame.home.identity == home.identity
+                            && (!twin || frame.home.connector == home.connector)
+                    })
                     .map(|frame| frame.surface_id)
                     .collect();
                 (!ids.is_empty()).then(|| (monitor.output.clone(), ids))

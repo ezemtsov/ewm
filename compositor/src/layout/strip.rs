@@ -10,6 +10,7 @@ use std::time::Duration;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use crate::animation::{Animation, Clock};
+use crate::layout::Home;
 use crate::layout::closing_frame::Closing;
 use crate::layout::floating::SizeFracPoint;
 use crate::layout::snapshot::Snapshot;
@@ -213,9 +214,9 @@ pub struct Frame {
     /// The strip frame a fullscreen float belongs to, showing, sliding and moving with it.
     #[serde(skip)]
     pub pinned_to: Option<u64>,
-    /// Identity of the display this frame belongs to, which reclaims it on return.
+    /// The output this frame belongs to, which reclaims it on return.
     #[serde(skip)]
-    pub home: String,
+    pub home: Home,
     #[serde(skip)]
     pub close_snapshot: Option<Snapshot>,
     /// Views fading out where they were drawn.
@@ -250,7 +251,7 @@ impl Frame {
             move_anim: None,
             floating_pos: None,
             pinned_to: None,
-            home: String::new(),
+            home: Home::default(),
             close_snapshot: None,
             closing_views: Vec::new(),
         }

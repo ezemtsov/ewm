@@ -559,7 +559,8 @@ fn disabling_output_reassigns_primary_entry_to_mapped_entry() {
 // A physical display, identified by a stable EDID serial. Its connector name
 // is re-minted on every (re)connect to model DRM re-enumerating the panel on a
 // different port after a replug -- the case the connector-name-keyed home logic
-// used to mishandle.
+// used to mishandle. Without a serial it keeps its connector, as twins are told
+// apart by nothing else.
 struct Display {
     serial: String,
     frames: Vec<u64>,
@@ -649,18 +650,21 @@ proptest! {
     ) {
         let mut fixture = Fixture::new().unwrap();
         let mut connector_seq = 0u32;
-        let mut mint = |serial: &str| {
+        let mut mint = |i: usize, serial: &str| {
+            if serial.is_empty() {
+                return format!("twin-{i}");
+            }
             connector_seq += 1;
             format!("conn-{serial}-{connector_seq}")
         };
 
-        // Three displays, each with two frames whose home is set by the initial
-        // layout while every display is connected.
+        // Three displays, the first two twins without a serial, each with two frames whose home
+        // is set by the initial layout while every display is connected.
         let mut displays: Vec<Display> = (0..3)
             .map(|i| {
-                let serial = format!("SER{i}");
+                let serial = if i < 2 { String::new() } else { format!("SER{i}") };
                 let frames = vec![(i as u64 + 1) * 10, (i as u64 + 1) * 10 + 1];
-                let connector = mint(&serial);
+                let connector = mint(i, &serial);
                 fixture.add_output_with_identity(&connector, 1280, 720, "Acme", "Panel", &serial);
                 fixture.tile(&connector, frames.iter().copied().map(Frame::new).collect());
                 Display { serial, frames, connector: Some(connector) }
@@ -672,7 +676,7 @@ proptest! {
             match op {
                 HotplugOp::Connect(i) => {
                     if displays[i].connector.is_none() {
-                        let connector = mint(&displays[i].serial);
+                        let connector = mint(i, &displays[i].serial);
                         fixture.add_output_with_identity(
                             &connector, 1280, 720, "Acme", "Panel", &displays[i].serial,
                         );

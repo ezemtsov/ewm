@@ -543,10 +543,10 @@ fn check_landed(
 
 /// Every frame of `ids` sitting on `dst` is homed there.
 fn check_homed(layout: &Layout, dst: &Output, ids: &[u64]) -> Result<(), TestCaseError> {
-    let identity = crate::utils::output_identity(dst);
+    let home = Home::of(dst);
     for location in ids.iter().filter_map(|&id| layout.frame_location(id)) {
         if location.monitor.output() == dst {
-            prop_assert_eq!(&location.frame.home, &identity);
+            prop_assert_eq!(&location.frame.home, &home);
         }
     }
     Ok(())

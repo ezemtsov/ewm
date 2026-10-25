@@ -361,7 +361,7 @@ OUTPUT, return (HELD FRACTION...)."
       (ewm-session-tests--check "move" (and there back) (format "away from %s and back" home)))))
 
 (defun ewm-session-tests-reconfigure ()
-  "A head switched off hands its frame over and gets one back when on."
+  "A head switched off closes its empty frame, gets one back when on and takes no other."
   (if (< (length ewm--output-info) 2)
       "SKIP reconfigure — one output"
     (let* ((home (ewm-session-tests--focus))
@@ -371,15 +371,16 @@ OUTPUT, return (HELD FRACTION...)."
       (ewm-configure-output other :enabled nil)
       (setq off (ewm-session-tests--wait
                  (lambda () (and (not (member other (ewm-get-active-outputs)))
-                                 (or (not (frame-live-p orphan)) (equal (ewm--frame-output orphan) home))))))
+                                 (not (frame-live-p orphan))))))
       (ewm-configure-output other :enabled t)
       (setq on (ewm-session-tests--wait
                 (lambda () (and (member other (ewm-get-active-outputs))
-                                (frame-live-p (ewm-output-active-frame other))))
+                                (frame-live-p (ewm-output-active-frame other))
+                                (equal (ewm--frame-output ewm-session-tests--frame) home)))
                 60))
       (ewm-session-tests--check "reconfigure" (and off on)
-                                (format "%s off, its frame %s, and on with a frame" other
-                                        (if (frame-live-p orphan) "moved" "closed"))))))
+                                (format "%s off, its frame closed, on with a frame, %s kept its own"
+                                        other home)))))
 
 (defun ewm-session-tests-rescale ()
   "The frame follows its output to another scale and back."
