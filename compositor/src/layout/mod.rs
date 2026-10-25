@@ -385,8 +385,6 @@ pub struct Layout {
     active_output: Option<Output>,
     /// Frames of the last output to go, adopted by the next output to map.
     homeless: Frames,
-    /// Home display identity per frame, so a replugged display reclaims its frames.
-    home_outputs: HashMap<u64, String>,
     /// Last active frame per unplugged display, handed to its monitor when it returns.
     last_active: HashMap<String, u64>,
     /// Floating frame the pointer is dragging.
@@ -401,7 +399,6 @@ impl Layout {
             monitors: Vec::new(),
             active_output: None,
             homeless: Frames::default(),
-            home_outputs: HashMap::new(),
             last_active: HashMap::new(),
             interactive_move: None,
             clock,
@@ -594,9 +591,6 @@ impl Layout {
                 .map(|frame| frame.surface_id)
                 .collect()
         };
-        for id in &retired {
-            self.home_outputs.remove(id);
-        }
         self.interactive_move = self
             .interactive_move
             .filter(|move_| !retired.contains(&move_.frame_id));
@@ -641,20 +635,19 @@ impl Layout {
             return;
         };
         monitor.strip = strip;
-        let ids: Vec<u64> = monitor.strip.frame_ids().collect();
-        for id in ids {
-            self.remember_home_if_missing(id, &home);
+        for frame in monitor.strip.frames_mut() {
+            frame.home = home.clone();
         }
         self.settle_focus();
     }
 
     /// Put new frame `id` on `output` as `placement` says.
     pub fn add_frame(&mut self, id: u64, output: &Output, placement: Placement) {
-        let home = crate::utils::output_identity(output);
         let Some(monitor) = self.monitor_of_mut(output) else {
             return;
         };
         let mut frame = strip::Frame::new(id);
+        frame.home = crate::utils::output_identity(output);
         match placement {
             Placement::Tiled { after } => {
                 let at = monitor.strip.slot_after(after);
@@ -672,7 +665,6 @@ impl Layout {
         }
         // A fullscreen float pins to the first strip frame as it appears.
         monitor.settle_pins();
-        self.remember_home_if_missing(id, &home);
         self.settle_focus();
     }
 
@@ -734,7 +726,6 @@ impl Layout {
     /// Drop frame `id` from wherever it is. For a placed frame, returns its
     /// output and the frame its strip had active.
     pub(crate) fn remove_frame(&mut self, id: u64, active_close: bool) -> Option<ActiveChange> {
-        self.home_outputs.remove(&id);
         self.interactive_move = self.interactive_move.filter(|move_| move_.frame_id != id);
         self.homeless.tiled.retain(|frame| frame.surface_id != id);
         self.homeless
@@ -830,8 +821,13 @@ impl Layout {
         let after = self.strip(dst).and_then(strip::Strip::active_frame_id);
         let moved = self.move_frames(&src, dst, &[id], after);
         let home = crate::utils::output_identity(dst);
-        for id in &moved.ids {
-            self.home_outputs.insert(*id, home.clone());
+        if let Some(monitor) = self.monitor_of_mut(dst) {
+            for frame in monitor
+                .frames_mut()
+                .filter(|frame| moved.ids.contains(&frame.surface_id))
+            {
+                frame.home = home.clone();
+            }
         }
         moved
     }
@@ -845,12 +841,6 @@ impl Layout {
         self.place_frames(idx, None, frames)
     }
 
-    fn remember_home_if_missing(&mut self, frame_id: u64, home: &str) {
-        self.home_outputs
-            .entry(frame_id)
-            .or_insert_with(|| home.to_string());
-    }
-
     /// Unpinned frames homed at `dst`'s display, grouped by the other output holding them.
     pub(crate) fn homed_elsewhere(&self, dst: &Output) -> Vec<(Output, Vec<u64>)> {
         let identity = crate::utils::output_identity(dst);
@@ -860,10 +850,7 @@ impl Layout {
             .filter_map(|monitor| {
                 let ids: Vec<u64> = monitor
                     .frames()
-                    .filter(|frame| {
-                        frame.pinned_to.is_none()
-                            && self.home_outputs.get(&frame.surface_id) == Some(&identity)
-                    })
+                    .filter(|frame| frame.pinned_to.is_none() && frame.home == identity)
                     .map(|frame| frame.surface_id)
                     .collect();
                 (!ids.is_empty()).then(|| (monitor.output.clone(), ids))
@@ -1281,9 +1268,6 @@ impl Layout {
                     monitor.name
                 );
             }
-        }
-        for &id in self.home_outputs.keys() {
-            assert!(self.has_frame(id), "home remembered for gone frame {id}");
         }
         assert_eq!(
             self.active_output.is_some(),

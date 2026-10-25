@@ -541,6 +541,17 @@ fn check_landed(
     Ok(())
 }
 
+/// Every frame of `ids` sitting on `dst` is homed there.
+fn check_homed(layout: &Layout, dst: &Output, ids: &[u64]) -> Result<(), TestCaseError> {
+    let identity = crate::utils::output_identity(dst);
+    for location in ids.iter().filter_map(|&id| layout.frame_location(id)) {
+        if location.monitor.output() == dst {
+            prop_assert_eq!(&location.frame.home, &identity);
+        }
+    }
+    Ok(())
+}
+
 /// A live drag: the output and point of its last update, and whether the grab was inside a float.
 type Drag = Option<(usize, Point<f64, Logical>, bool)>;
 
@@ -684,11 +695,7 @@ fn apply_layout_op(
             let moved = layout.move_frame_to_output(id, dst);
             if !moved.ids.is_empty() {
                 check_landed(layout, dst, &moved, focused, remembered)?;
-                prop_assert_eq!(
-                    layout.home_outputs.get(&id),
-                    Some(&crate::utils::output_identity(dst)),
-                    "a deliberate move rehomes the frame"
-                );
+                check_homed(layout, dst, &[id])?;
                 if let Some(strip) = layout.strip(dst)
                     && let Some(idx) = strip.index_of(id)
                 {
@@ -788,11 +795,7 @@ fn apply_layout_op(
                 && let Some(monitor) = layout.monitor_of(&outputs[output])
                 && let Some((_, data)) = monitor.floating.frame_with_data(id)
             {
-                prop_assert_eq!(
-                    layout.home_outputs.get(&id),
-                    Some(&crate::utils::output_identity(&outputs[output])),
-                    "a deliberate drag rehomes the frame"
-                );
+                check_homed(layout, &outputs[output], &[id])?;
                 let rect = Rectangle::new(data.logical_pos(), data.size());
                 prop_assert!(
                     !inside || rect.contains(point),

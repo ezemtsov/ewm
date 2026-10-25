@@ -213,6 +213,9 @@ pub struct Frame {
     /// The strip frame a fullscreen float belongs to, showing, sliding and moving with it.
     #[serde(skip)]
     pub pinned_to: Option<u64>,
+    /// Identity of the display this frame belongs to, which reclaims it on return.
+    #[serde(skip)]
+    pub home: String,
     #[serde(skip)]
     pub close_snapshot: Option<Snapshot>,
     /// Views fading out where they were drawn.
@@ -247,6 +250,7 @@ impl Frame {
             move_anim: None,
             floating_pos: None,
             pinned_to: None,
+            home: String::new(),
             close_snapshot: None,
             closing_views: Vec::new(),
         }
@@ -321,6 +325,7 @@ impl Frame {
         new.closing_views = mem::take(&mut self.closing_views);
         new.floating_pos = self.floating_pos;
         new.pinned_to = self.pinned_to;
+        new.home = mem::take(&mut self.home);
         *self = new;
     }
 
