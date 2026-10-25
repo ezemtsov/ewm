@@ -38,6 +38,8 @@ jobs:
           cargo clippy --manifest-path compositor/Cargo.toml --all-targets -- -D warnings
           cargo clippy --manifest-path compositor/Cargo.toml --all-targets --features screencast -- -D warnings
       - name: tests
+        env:
+          PROPTEST_CASES: 256
         run: cargo nextest run --manifest-path compositor/Cargo.toml --profile rust
   emacs:
     name: ${{ matrix.variant }}
