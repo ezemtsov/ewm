@@ -4,7 +4,7 @@ use std::sync::Mutex;
 
 use ewm_core::input::KeyboardAction;
 use ewm_core::layout::strip::Frame;
-use ewm_core::testing::{ClientEvent, Fixture, TestClient, nz};
+use ewm_core::testing::{ClientEvent, Fixture, TestClient, nz, proptest_cases};
 use ewm_core::{Event, FocusSource, LayoutEntry, Notify};
 use proptest::prelude::*;
 use smithay::utils::Size;
@@ -324,7 +324,7 @@ fn check_typed(ops: &[Typed]) -> Result<(), TestCaseError> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(ProptestConfig::with_cases(proptest_cases(32)))]
 
     #[test]
     fn keys_for_emacs_wait_until_emacs_reads_the_focus(

@@ -73,7 +73,7 @@ use std::collections::HashSet;
 
 use ewm_core::layout::strip::Frame;
 use ewm_core::render::collect_popup_placements;
-use ewm_core::testing::{ClientEvent, Fixture, Popup, TestClient, Toplevel, nz};
+use ewm_core::testing::{ClientEvent, Fixture, Popup, TestClient, Toplevel, nz, proptest_cases};
 use ewm_core::{LayoutEntry, LayoutEntryId};
 use proptest::prelude::*;
 use smithay::reexports::wayland_server::Resource as _;
@@ -1233,10 +1233,7 @@ fn check_ops(ops: &[Op]) -> Result<(), TestCaseError> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig {
-        cases: 16,
-        ..ProptestConfig::default()
-    })]
+    #![proptest_config(ProptestConfig::with_cases(proptest_cases(16)))]
 
     #[test]
     fn pointer_invariants_hold(ops in prop::collection::vec(op_strategy(), 1..10)) {

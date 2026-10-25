@@ -44,6 +44,7 @@ mod tests {
     use smithay::reexports::calloop::EventLoop;
 
     use super::*;
+    use crate::testing::proptest_cases;
 
     #[derive(Clone, Debug)]
     enum OwnerSeed {
@@ -148,7 +149,7 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(64))]
+        #![proptest_config(ProptestConfig::with_cases(proptest_cases(64)))]
 
         #[test]
         fn held_owner_lifecycle_matches_model(ops in prop::collection::vec(op_strategy(), 0..80)) {

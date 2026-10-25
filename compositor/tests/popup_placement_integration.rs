@@ -3,7 +3,7 @@
 
 use ewm_core::layout::strip::Frame;
 use ewm_core::render::collect_popup_placements;
-use ewm_core::testing::{Fixture, Popup, TestClient, Toplevel};
+use ewm_core::testing::{Fixture, Popup, TestClient, Toplevel, proptest_cases};
 use proptest::prelude::*;
 use smithay::reexports::wayland_server::Resource as _;
 use smithay::utils::{Logical, Point, Rectangle, Size};
@@ -46,7 +46,7 @@ fn placement(fix: &Fixture, popup: &Popup) -> Point<i32, Logical> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(ProptestConfig::with_cases(proptest_cases(24)))]
 
     /// The popup hangs below its anchor in the right frame and slides back only as far as the
     /// working area asks, over the neighbouring frame when that is where it lands.

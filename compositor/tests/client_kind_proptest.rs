@@ -4,7 +4,9 @@
 //! Own binary: the pending-frame queue is a process-wide static.
 
 use ewm_core::event::Event;
-use ewm_core::testing::{Fixture, TestClient, Toplevel, clear_pending_frames, prepare_frame};
+use ewm_core::testing::{
+    Fixture, TestClient, Toplevel, clear_pending_frames, prepare_frame, proptest_cases,
+};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use smithay::utils::{Logical, Size};
@@ -179,10 +181,7 @@ impl Harness {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig {
-        cases: 32,
-        ..ProptestConfig::default()
-    })]
+    #![proptest_config(ProptestConfig::with_cases(proptest_cases(32)))]
 
     #[test]
     fn toplevel_kind_invariants_hold(arrivals in prop::collection::vec(arrival(), 1..8)) {

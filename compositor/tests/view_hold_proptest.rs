@@ -8,7 +8,7 @@
 
 use ewm_core::layout::resize_fade::ViewRect;
 use ewm_core::layout::strip::Frame;
-use ewm_core::testing::{Fixture, Subsurface, TestClient, Toplevel, nz};
+use ewm_core::testing::{Fixture, Subsurface, TestClient, Toplevel, nz, proptest_cases};
 use ewm_core::{LayoutEntry, LayoutEntryId};
 use proptest::prelude::*;
 use smithay::utils::{Logical, Size};
@@ -302,10 +302,7 @@ fn check_ops(ops: &[Op]) -> Result<(), TestCaseError> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig {
-        cases: 48,
-        ..ProptestConfig::default()
-    })]
+    #![proptest_config(ProptestConfig::with_cases(proptest_cases(48)))]
 
     #[test]
     fn views_present_the_buffer_they_were_made_for(

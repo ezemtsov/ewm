@@ -7,7 +7,7 @@ use smithay::utils::Size;
 use super::*;
 use crate::testing::{
     self, HEAD_A, HEAD_B, HEAD_C, PROP_HEADS, add_prop_outputs, frame_with_entry, frame_with_width,
-    nz, order_from_keys, set_sorted_output_order, strip_with_frame_ids,
+    nz, order_from_keys, proptest_cases, set_sorted_output_order, strip_with_frame_ids,
 };
 use crate::{Action, FocusSource, Notify};
 
@@ -203,7 +203,7 @@ fn floats_survive_losing_every_output() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(ProptestConfig::with_cases(proptest_cases(64)))]
 
     #[test]
     fn keyboard_fallback_follows_sorted_output_order(
@@ -329,7 +329,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(ProptestConfig::with_cases(proptest_cases(64)))]
 
     // Mid-slide, popups and hits round each strip frame's position like the renderer, and a
     // float sits where it floats whatever the strip does.
@@ -363,7 +363,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(ProptestConfig::with_cases(proptest_cases(64)))]
 
     // A swap moves one frame past one neighbour and the focused frame stays active.
 
@@ -849,7 +849,7 @@ fn check_layout_ops(ops: &[LayoutOp]) -> Result<(), TestCaseError> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(ProptestConfig::with_cases(proptest_cases(256)))]
 
     #[test]
     fn layout_invariants_hold_under_any_op_sequence(

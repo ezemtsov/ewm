@@ -14,7 +14,7 @@ use ewm_core::event::Event;
 use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{
     ClientEvent, Fixture, TestClient, Toplevel, clear_pending_frames, mark_active_frame_close, nz,
-    prepare_frame, strip_with_frame_ids,
+    prepare_frame, proptest_cases, strip_with_frame_ids,
 };
 use ewm_core::{
     Action, FocusSource, LayoutEntry, LayoutEntryId, Notify, OutputConfig, OverviewAction,
@@ -728,10 +728,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig {
-        cases: 64,
-        ..ProptestConfig::default()
-    })]
+    #![proptest_config(ProptestConfig::with_cases(proptest_cases(64)))]
 
     #[test]
     fn frame_show_hide_tracks_active_slot(
@@ -809,7 +806,7 @@ const APP_ENTRY_SIDS: [u64; 2] = [1001, 1002];
 
 proptest! {
     #![proptest_config(ProptestConfig {
-        cases: 64,
+        cases: proptest_cases(64),
         failure_persistence: None,
         ..ProptestConfig::default()
     })]

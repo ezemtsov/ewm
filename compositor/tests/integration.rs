@@ -5,15 +5,13 @@
 use ewm_core::backend::{closest_representable_scale, int_to_transform, transform_to_int};
 use ewm_core::layout::floating::{ResizeEdge, SizeFracPoint};
 use ewm_core::layout::strip::Frame;
-use ewm_core::testing::{ClientEvent, Fixture, TestClient, WL_FIXED_TOLERANCE, nz};
+use ewm_core::testing::{ClientEvent, Fixture, TestClient, WL_FIXED_TOLERANCE, nz, proptest_cases};
 use ewm_core::utils::output_size;
 use ewm_core::{Event, FocusSource, LayoutEntry, LayoutEntryId, Notify, OutputConfig};
 use proptest::prelude::*;
 use smithay::output::Output;
 use smithay::utils::{Logical, Point, Rectangle, Size, Transform};
 use wayland_client::Proxy as _;
-
-const CASES: u32 = 24;
 
 fn frame_with_entry(frame_id: u64, entry_id: LayoutEntryId, surface_id: u64) -> Frame {
     frame_with_entry_at(frame_id, entry_id, surface_id, 0, 0)
@@ -161,10 +159,7 @@ fn assert_preferred_scale(fixture: &Fixture, surface_id: u64, expected: f64) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig {
-        cases: CASES,
-        ..ProptestConfig::default()
-    })]
+    #![proptest_config(ProptestConfig::with_cases(proptest_cases(24)))]
 
     #[test]
     fn output_config_matches_output_state_and_report(
@@ -635,7 +630,7 @@ fn assert_hotplug_invariants(fixture: &Fixture, displays: &[Display]) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 128, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig::with_cases(proptest_cases(128)))]
 
     /// Workspaces return to their home display across any sequence of output
     /// disconnects/reconnects, even though every reconnect re-enumerates the

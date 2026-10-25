@@ -5,7 +5,7 @@ use crate::idle::SEPIA_FADE_DURATION;
 use crate::layout::strip;
 use crate::testing::{
     HEAD_A, HEAD_B, PROP_HEADS, add_prop_outputs, frame_with_entry, frame_with_width, nz,
-    order_from_keys, set_sorted_output_order,
+    order_from_keys, proptest_cases, set_sorted_output_order,
 };
 use crate::{FocusSource, Notify};
 
@@ -271,7 +271,7 @@ fn cursor_config_change_queues_pointer_output_redraw() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(ProptestConfig::with_cases(proptest_cases(64)))]
 
     #[test]
     fn surface_output_name_prefers_focus_then_sorted_output_order(
@@ -394,7 +394,7 @@ fn step() -> impl Strategy<Value = Step> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(ProptestConfig::with_cases(proptest_cases(64)))]
 
     #[test]
     fn activation_asks_emacs_only_for_a_hidden_surface(
@@ -621,7 +621,7 @@ fn title_updates_wait_for_a_flush_unless_focused_or_closing() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(ProptestConfig::with_cases(proptest_cases(64)))]
 
     /// The sepia tint fades from wherever it is toward the latest target, never past it, and
     /// rests on it once the fade has had its full duration.

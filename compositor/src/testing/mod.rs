@@ -21,6 +21,14 @@ use crate::{Layout, LayoutEntry, LayoutEntryId, animation};
 /// Two wl_fixed steps of 1/256 px.
 pub const WL_FIXED_TOLERANCE: f64 = 1.0 / 128.0;
 
+/// PROPTEST_CASES when set, else DEFAULT, the dosage a suite picks for itself.
+pub fn proptest_cases(default: u32) -> u32 {
+    std::env::var("PROPTEST_CASES")
+        .ok()
+        .and_then(|cases| cases.parse().ok())
+        .unwrap_or(default)
+}
+
 /// Record that `id` was the active frame when a close began.
 ///
 /// Integration tests use this to simulate the pgtk race where focus moves to
