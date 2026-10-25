@@ -84,7 +84,9 @@ let
       };
 
     testScript = ''
+      import datetime as dt
       import shlex
+      import shutil
 
       SOCKET = "/run/user/1000/emacs/server"
 
@@ -95,49 +97,54 @@ let
 
       def check(form):
           """Evaluate FORM, a check that returns its PASS line or signals."""
-          print(machine.succeed(eval_cmd(form)))
+          print(machine.succeed(eval_cmd(form), timeout=dt.timedelta(minutes=2)))
 
       READY = f"{eval_cmd('ewm--compositor-ready')} | grep -qx t"
 
       with subtest("greetd logs alice into an EWM session"):
-          machine.wait_until_succeeds(READY, timeout=180)
+          machine.wait_until_succeeds(READY, timeout=dt.timedelta(minutes=3))
           machine.succeed(eval_cmd('(progn (load "${../tests/ewm-session-tests.el}") (setq ewm-session-tests-dir "/tmp/session"))'))
 
-      with subtest("both outputs come up with their configured scales"):
-          check('(ewm-session-tests-outputs \'(("Virtual-1" . 1.5) ("Virtual-2" . 1.0)))')
-          check("(ewm-session-tests-setup)")
+      # The screenshots leave the machine whatever happens to the checks.
+      try:
+          with subtest("both outputs come up with their configured scales"):
+              check('(ewm-session-tests-outputs \'(("Virtual-1" . 1.5) ("Virtual-2" . 1.0)))')
+              check("(ewm-session-tests-setup)")
 
-      with subtest("keyboard input reaches the focused frame"):
-          machine.send_chars("typed in the vm")
-          print(machine.wait_until_succeeds(eval_cmd('(ewm-session-tests-typed "typed in the vm")'), timeout=30))
+          with subtest("keyboard input reaches the focused frame"):
+              machine.send_chars("typed in the vm")
+              print(machine.wait_until_succeeds(eval_cmd('(ewm-session-tests-typed "typed in the vm")'), timeout=dt.timedelta(seconds=30)))
 
-      with subtest("a child frame survives"):
-          check("(ewm-session-tests-child-frame)")
+          with subtest("a child frame survives"):
+              check("(ewm-session-tests-child-frame)")
 
-      with subtest("an app goes fullscreen over its output and back"):
-          check("(ewm-session-tests-fullscreen)")
+          with subtest("an app goes fullscreen over its output and back"):
+              check("(ewm-session-tests-fullscreen)")
 
-      with subtest("one app surface shows in two windows at once"):
-          check("(ewm-session-tests-views)")
+          with subtest("one app surface shows in two windows at once"):
+              check("(ewm-session-tests-views)")
 
-      with subtest("the focused frame moves to the other output and back"):
-          check("(ewm-session-tests-move)")
+          with subtest("the focused frame moves to the other output and back"):
+              check("(ewm-session-tests-move)")
 
-      with subtest("the session locks every output, swallows input and unlocks with the password"):
-          check("(ewm-session-tests-lock)")
-          machine.send_chars("alice\n")
-          check('(ewm-session-tests-unlocked "alice")')
+          with subtest("the session locks every output, swallows input and unlocks with the password"):
+              check("(ewm-session-tests-lock)")
+              machine.send_chars("alice\n")
+              check('(ewm-session-tests-unlocked "alice")')
 
-      check("(ewm-session-tests-teardown)")
-      machine.copy_from_machine("/tmp/session")
+          check("(ewm-session-tests-teardown)")
+      finally:
+          machine.execute("mkdir -p /tmp/session")
+          shutil.rmtree(driver.out_dir / "session", ignore_errors=True)
+          machine.copy_from_machine("/tmp/session")
 
       with subtest("logout ends the session cleanly and greetd logs in again"):
           # greetd logs in again at once, watch the pid.
           pid = machine.succeed(eval_cmd("(emacs-pid)")).strip()
           machine.execute(eval_cmd("(kill-emacs)"))
-          machine.wait_until_fails(f"kill -0 {pid}", timeout=60)
+          machine.wait_until_fails(f"kill -0 {pid}", timeout=dt.timedelta(minutes=1))
           machine.fail("journalctl -b --no-pager | grep -qE 'dumped core|ewm.service.*(Failed with result|code=(killed|dumped))'")
-          machine.wait_until_succeeds(READY, timeout=180)
+          machine.wait_until_succeeds(READY, timeout=dt.timedelta(minutes=3))
 
       with subtest("the compositor logged no error"):
           errors = machine.succeed("journalctl -q -b --no-pager -p err _SYSTEMD_USER_UNIT=ewm.service").strip()
@@ -147,13 +154,14 @@ let
 in
 # Without a display variable the driver passes -nographic. It keys its sockets
 # and machine state by fixed names under XDG_RUNTIME_DIR or TMPDIR, a directory
-# per run keeps two drivers apart.
+# per run keeps two drivers apart. A dev shell's LD_LIBRARY_PATH would load host
+# libraries into the pinned QEMU.
 writeShellApplication {
   name = "nixos-test-driver";
   text = ''
     tmp=$(mktemp -d)
     trap 'rm -rf "$tmp"' EXIT
-    env -u XDG_RUNTIME_DIR TMPDIR="$tmp" WAYLAND_DISPLAY="''${WAYLAND_DISPLAY-egl-headless}" \
+    env -u XDG_RUNTIME_DIR -u LD_LIBRARY_PATH TMPDIR="$tmp" WAYLAND_DISPLAY="''${WAYLAND_DISPLAY-egl-headless}" \
       ${test.driver}/bin/nixos-test-driver "$@"
   '';
 }
