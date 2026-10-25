@@ -115,8 +115,20 @@ let
               machine.send_chars("typed in the vm")
               print(machine.wait_until_succeeds(eval_cmd('(ewm-session-tests-typed "typed in the vm")'), timeout=dt.timedelta(seconds=30)))
 
-          with subtest("a child frame survives"):
-              check("(ewm-session-tests-child-frame)")
+          with subtest("keys reach the app and Super bindings run over it, fullscreen too"):
+              check("(ewm-session-tests-foot)")
+              machine.send_chars("typed-in-foot\n")
+              check('(ewm-session-tests-foot-typed "typed-in-foot")')
+              machine.send_key("meta_l-f")
+              check("(ewm-session-tests-foot-fullscreen t)")
+              # Over a fullscreen app a plain binding is forwarded, foot types the letter.
+              machine.send_key("meta_l-t")
+              machine.send_chars("\n")
+              check('(ewm-session-tests-foot-typed "t")')
+              machine.send_key("meta_l-f")
+              check("(ewm-session-tests-foot-fullscreen nil)")
+              machine.send_key("meta_l-t")
+              check("(ewm-session-tests-new-frame)")
 
           with subtest("an app goes fullscreen over its output and back"):
               check("(ewm-session-tests-fullscreen)")
@@ -124,8 +136,16 @@ let
           with subtest("one app surface shows in two windows at once"):
               check("(ewm-session-tests-views)")
 
+          with subtest("a child frame and a float show where they were put"):
+              check("(ewm-session-tests-child-frame)")
+              check("(ewm-session-tests-float)")
+
           with subtest("the focused frame moves to the other output and back"):
               check("(ewm-session-tests-move)")
+
+          with subtest("a head goes off and on under the session, the other changes scale"):
+              check("(ewm-session-tests-reconfigure)")
+              check("(ewm-session-tests-rescale)")
 
           with subtest("the session locks every output, swallows input and unlocks with the password"):
               check("(ewm-session-tests-lock)")

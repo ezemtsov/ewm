@@ -21,12 +21,19 @@
 (declare-function ewm--current-frame "ewm-frame")
 (declare-function ewm--frame-output "ewm-frame" (frame))
 (declare-function ewm--window-body-logical-rect "ewm-layout" (window &optional scale))
+(declare-function ewm--frame-scale "ewm-layout" (frame &optional monitors))
+(declare-function ewm--float-buffer "ewm-frame" (buffer size pos))
+(declare-function ewm--get-frame-origin "ewm-frame" (frame))
+(declare-function ewm--get-output-origin "ewm-frame" (output-name))
+(declare-function ewm-configure-output "ewm-frame" (name &rest args))
+(declare-function ewm-get-active-outputs "ewm-core")
 (defvar ewm--output-info)
 
 (defvar ewm-session-tests-dir nil
   "Directory for a screenshot per check, nil for none.")
 
 (defvar ewm-session-tests--frame nil)
+(defvar ewm-session-tests--frames nil)
 (defvar ewm-session-tests--foot nil)
 (defvar ewm-session-tests--locker nil)
 (defconst ewm-session-tests--buffer "*ewm-session-tests*")
@@ -125,11 +132,37 @@ OUTPUT, return (HELD FRACTION...)."
     (switch-to-buffer ewm-session-tests--buffer))
   (ewm--frame-output ewm-session-tests--frame))
 
+(defun ewm-session-tests--scale (output)
+  (alist-get 'scale (alist-get output ewm--output-info nil nil #'string=)))
+
+(defun ewm-session-tests--device-rect (output rect)
+  "RECT, logical pixels of OUTPUT, in its device pixels, two in from each edge."
+  (pcase-let ((`(,x ,y ,w ,h) (mapcar (lambda (v) (round (* v (ewm-session-tests--scale output)))) rect)))
+    (list (+ x 2) (+ y 2) (- w 4) (- h 4))))
+
+(defun ewm-session-tests--body-at (output window pos)
+  "The text area of WINDOW at POS, logical (X . Y) on OUTPUT, in its device pixels."
+  (pcase-let ((`(,x ,y ,w ,h) (ewm--window-body-logical-rect window)))
+    (ewm-session-tests--device-rect output (list (+ (car pos) x) (+ (cdr pos) y) w h))))
+
 (defun ewm-session-tests--body-rect (window)
   "The text area of WINDOW in device pixels of its output, (X Y WIDTH HEIGHT)."
-  (let ((scale (alist-get 'scale (alist-get (ewm--frame-output (window-frame window))
-                                            ewm--output-info nil nil #'string=))))
-    (mapcar (lambda (v) (round (* v scale))) (ewm--window-body-logical-rect window))))
+  (ewm-session-tests--body-at (ewm--frame-output (window-frame window)) window '(0 . 0)))
+
+(defun ewm-session-tests--monitor (frame)
+  "Geometry and scale of the monitor under FRAME, pgtk names every head alike."
+  (let ((m (frame-monitor-attributes frame)))
+    (list (alist-get 'geometry m) (alist-get 'scale-factor m))))
+
+(defun ewm-session-tests--red-buffer (name)
+  "The buffer NAME, drawing nothing but red."
+  (with-current-buffer (get-buffer-create name)
+    (setq-local cursor-type nil)
+    (face-remap-add-relative 'default :background "red")
+    (current-buffer)))
+
+(defun ewm-session-tests--marker (text)
+  (expand-file-name text temporary-file-directory))
 
 (defun ewm-session-tests--foot-buffer ()
   (and ewm-session-tests--foot
@@ -142,8 +175,10 @@ OUTPUT, return (HELD FRACTION...)."
     (ewm-session-tests--focus)
     (setq ewm-session-tests--foot
           (make-process :name "ewm-session-tests-foot" :noquery t
-                        :command '("foot" "-o" "colors-dark.background=ff0000"
-                                   "-o" "colors-light.background=ff0000" "sh" "-c" "sleep infinity"))))
+                        :command (list "foot" "-o" "colors-dark.background=ff0000"
+                                       "-o" "colors-light.background=ff0000"
+                                       "sh" "-c" "while read line; do touch \"$0/$line\"; done"
+                                       temporary-file-directory))))
   (let ((window (ewm-session-tests--wait
                  (lambda ()
                    (let ((buffer (ewm-session-tests--foot-buffer)))
@@ -187,28 +222,86 @@ OUTPUT, return (HELD FRACTION...)."
       (ewm-session-tests--shot "typed" (ewm--frame-output ewm-session-tests--frame)))
     (ewm-session-tests--check "typed" ok text)))
 
+(defun ewm-session-tests-foot ()
+  "Focus the app, the keyboard goes to it from here."
+  (let ((window (ewm-session-tests--foot-window)))
+    (setq ewm-session-tests--frames (frame-list))
+    (ewm-session-tests--check "foot" t (format "focused on %s" (ewm--frame-output (window-frame window))))))
+
+(defun ewm-session-tests-foot-typed (text)
+  "TEXT typed on the keyboard reached the app."
+  (let ((ok (ewm-session-tests--wait (lambda () (file-exists-p (ewm-session-tests--marker text))))))
+    (ewm-session-tests--check "foot typed" ok text)))
+
+(defun ewm-session-tests--foot-covered (on)
+  "Wait for the app to cover its output when ON, else to sit tiled."
+  (let ((output (ewm--frame-output (window-frame (get-buffer-window (ewm-session-tests--foot-buffer) t)))))
+    (ewm-session-tests--wait-pixels output (if on
+                                               '((nil ewm-session-tests--red-p > 0.99))
+                                             '((bottom ewm-session-tests--red-p < 0.5))))))
+
+(defun ewm-session-tests-foot-fullscreen (on)
+  "The app covers its output when ON, else its frame shows below it."
+  (let ((held (ewm-session-tests--foot-covered on)))
+    (ewm-session-tests--check (if on "key fullscreen" "key tiled") (car held)
+                              (format "%.2f red over the output" (cadr held)))))
+
+(defun ewm-session-tests-new-frame ()
+  "A frame opened since `ewm-session-tests-foot', closed again here."
+  (let* ((known ewm-session-tests--frames)
+         (new (ewm-session-tests--wait (lambda () (seq-difference (frame-list) known)))))
+    (mapc #'delete-frame new)
+    (ewm-session-tests--check "bound key" new (format "%d new frame" (length new)))))
+
 (defun ewm-session-tests-child-frame ()
-  "A child frame of the frame survives."
-  (let ((child (make-frame `((parent-frame . ,ewm-session-tests--frame)
-                             (width . 20) (height . 4) (visibility . t)))))
-    (ewm-session-tests--sit-for 1)
-    (let ((live (frame-live-p child)))
-      (when live (delete-frame child))
-      (ewm-session-tests--check "child frame" live "lives a second later"))))
+  "A child frame shows where its parent put it."
+  (let* ((output (ewm-session-tests--focus))
+         (child (make-frame `((parent-frame . ,ewm-session-tests--frame) (left . 60) (top . 40)
+                              (width . 20) (height . 4) (minibuffer . nil) (visibility . t))))
+         ;; Where the parent was told to put it, its pixels to logical ones.
+         (scale (ewm--frame-scale ewm-session-tests--frame))
+         rect red)
+    (set-window-buffer (frame-root-window child) (ewm-session-tests--red-buffer "*ewm-session-tests-child*"))
+    (setq rect (ewm-session-tests--body-at output (frame-root-window child) (cons (/ 60 scale) (/ 40 scale))))
+    (setq red (ewm-session-tests--wait-pixels output `((,rect ewm-session-tests--red-p > 0.95))))
+    (ewm-session-tests--shot "child-frame" output)
+    (delete-frame child)
+    (ewm-session-tests--check "child frame" (car red) (format "%.2f red at %s" (cadr red) rect))))
+
+(defun ewm-session-tests-float ()
+  "A float opens with its body at the place and size asked for."
+  (let* ((output (ewm-session-tests--focus))
+         (origin (ewm--get-output-origin output))
+         (buffer (ewm-session-tests--red-buffer "*ewm-session-tests-float*"))
+         (window (progn (ewm--float-buffer buffer '(400 . 300) '(100 . 80))
+                        (get-buffer-window buffer t)))
+         (frame (window-frame window))
+         (at (ewm-session-tests--wait
+              (lambda () (and (frame-parameter frame 'ewm-surface-id) (ewm--get-frame-origin frame)))))
+         (pos (and at (cons (- (car at) (car origin)) (- (cdr at) (cdr origin)))))
+         (body (ewm--window-body-logical-rect window))
+         (rect (ewm-session-tests--body-at output window pos))
+         (red (ewm-session-tests--wait-pixels output `((,rect ewm-session-tests--red-p > 0.95)))))
+    (ewm-session-tests--shot "float" output)
+    (delete-frame frame)
+    ;; Emacs rounds a frame to whole lines unless `frame-resize-pixelwise' says otherwise.
+    (ewm-session-tests--check "float" (and (equal pos '(100 . 80))
+                                           (< (abs (- (nth 2 body) 400)) (frame-char-width frame))
+                                           (< (abs (- (nth 3 body) 300)) (frame-char-height frame))
+                                           (car red))
+                              (format "at %s, body %sx%s, %.2f red" pos (nth 2 body) (nth 3 body) (cadr red)))))
 
 (defun ewm-session-tests-fullscreen ()
   "An app goes fullscreen over its output and back."
   (let* ((window (ewm-session-tests--foot-window))
          (output (ewm--frame-output (window-frame window)))
-         (tiled '((bottom ewm-session-tests--red-p < 0.5)))
-         (full '((nil ewm-session-tests--red-p > 0.99)))
-         (before (car (ewm-session-tests--wait-pixels output tiled)))
+         (before (car (ewm-session-tests--foot-covered nil)))
          covered after)
     (with-selected-window window (ewm-toggle-fullscreen))
-    (setq covered (ewm-session-tests--wait-pixels output full))
+    (setq covered (ewm-session-tests--foot-covered t))
     (ewm-session-tests--shot "fullscreen" output)
     (with-selected-window window (ewm-toggle-fullscreen))
-    (setq after (car (ewm-session-tests--wait-pixels output tiled)))
+    (setq after (car (ewm-session-tests--foot-covered nil)))
     (ewm-session-tests--check "fullscreen" (and before (car covered) after)
                               (format "%.2f red over the output" (cadr covered)))))
 
@@ -254,22 +347,59 @@ OUTPUT, return (HELD FRACTION...)."
       "SKIP move — one output"
     (let* ((frame ewm-session-tests--frame)
            (home (ewm-session-tests--focus))
-           ;; pgtk calls every head "QEMU Monitor".
-           (monitor (lambda ()
-                      (let ((m (frame-monitor-attributes frame)))
-                        (list (alist-get 'geometry m) (alist-get 'scale-factor m)))))
-           (start (funcall monitor))
+           (start (ewm-session-tests--monitor frame))
            there back)
       (ewm-frame-move-to-next-output)
       (setq there (ewm-session-tests--wait
                    (lambda () (and (not (equal (ewm--frame-output frame) home))
-                                   (not (equal (funcall monitor) start))))))
+                                   (not (equal (ewm-session-tests--monitor frame) start))))))
       (ewm-session-tests--shot "moved" (ewm--frame-output frame))
       (ewm-frame-move-to-next-output)
       (setq back (ewm-session-tests--wait
                   (lambda () (and (equal (ewm--frame-output frame) home)
-                                  (equal (funcall monitor) start)))))
+                                  (equal (ewm-session-tests--monitor frame) start)))))
       (ewm-session-tests--check "move" (and there back) (format "away from %s and back" home)))))
+
+(defun ewm-session-tests-reconfigure ()
+  "A head switched off hands its frame over and gets one back when on."
+  (if (< (length ewm--output-info) 2)
+      "SKIP reconfigure — one output"
+    (let* ((home (ewm-session-tests--focus))
+           (other (car (remove home (mapcar #'car ewm--output-info))))
+           (orphan (ewm-output-active-frame other))
+           off on)
+      (ewm-configure-output other :enabled nil)
+      (setq off (ewm-session-tests--wait
+                 (lambda () (and (not (member other (ewm-get-active-outputs)))
+                                 (or (not (frame-live-p orphan)) (equal (ewm--frame-output orphan) home))))))
+      (ewm-configure-output other :enabled t)
+      (setq on (ewm-session-tests--wait
+                (lambda () (and (member other (ewm-get-active-outputs))
+                                (frame-live-p (ewm-output-active-frame other))))
+                60))
+      (ewm-session-tests--check "reconfigure" (and off on)
+                                (format "%s off, its frame %s, and on with a frame" other
+                                        (if (frame-live-p orphan) "moved" "closed"))))))
+
+(defun ewm-session-tests-rescale ()
+  "The frame follows its output to another scale and back."
+  (let* ((frame ewm-session-tests--frame)
+         (output (ewm-session-tests--focus))
+         (scale (ewm-session-tests--scale output))
+         (other (if (= scale 1.0) 2.0 1.0))
+         (start (ewm-session-tests--monitor frame))
+         changed restored)
+    (ewm-configure-output output :scale other)
+    (setq changed (ewm-session-tests--wait
+                   (lambda () (and (= (ewm-session-tests--scale output) other)
+                                   (not (equal (ewm-session-tests--monitor frame) start))))))
+    (ewm-session-tests--shot "rescaled" output)
+    (ewm-configure-output output :scale scale)
+    (setq restored (ewm-session-tests--wait
+                    (lambda () (and (= (ewm-session-tests--scale output) scale)
+                                    (equal (ewm-session-tests--monitor frame) start)))))
+    (ewm-session-tests--check "rescale" (and changed restored)
+                              (format "%s at %s and back at %s" output other scale))))
 
 (defun ewm-session-tests-lock ()
   "swaylock covers every output."
@@ -311,8 +441,9 @@ OUTPUT, return (HELD FRACTION...)."
                (condition-case err
                    (funcall check)
                  (error (error-message-string err))))
-             '(ewm-session-tests-outputs ewm-session-tests-setup ewm-session-tests-child-frame
-               ewm-session-tests-fullscreen ewm-session-tests-views ewm-session-tests-move
+             '(ewm-session-tests-outputs ewm-session-tests-setup ewm-session-tests-fullscreen
+               ewm-session-tests-views ewm-session-tests-child-frame ewm-session-tests-float
+               ewm-session-tests-move ewm-session-tests-reconfigure ewm-session-tests-rescale
                ewm-session-tests-teardown)
              "\n"))
 
