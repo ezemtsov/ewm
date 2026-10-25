@@ -270,10 +270,12 @@ EXTRA-PARAMS win over the defaults, so a caller can override `visibility'."
         (scale (ewm--frame-scale frame)))
     (cl-flet ((axis (want limit text body)
                 (round (+ (min (* want scale) limit) (- text body)))))
-      (set-frame-size frame
-                      (axis width (nth 2 area) (frame-text-width frame) (nth 2 rect))
-                      (axis height (nth 3 area) (frame-text-height frame) (nth 3 rect))
-                      t))))
+      ;; Emacs rounds the frame to whole lines and columns otherwise.
+      (let ((frame-resize-pixelwise t))
+        (set-frame-size frame
+                        (axis width (nth 2 area) (frame-text-width frame) (nth 2 rect))
+                        (axis height (nth 3 area) (frame-text-height frame) (nth 3 rect))
+                        t)))))
 
 (defun ewm--make-floating-frame (alist)
   "Make a floating frame from ALIST and `pop-up-frame-alist', or nil."

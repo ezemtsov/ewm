@@ -284,11 +284,7 @@ OUTPUT, return (HELD FRACTION...)."
          (red (ewm-session-tests--wait-pixels output `((,rect ewm-session-tests--red-p > 0.95)))))
     (ewm-session-tests--shot "float" output)
     (delete-frame frame)
-    ;; Emacs rounds a frame to whole lines unless `frame-resize-pixelwise' says otherwise.
-    (ewm-session-tests--check "float" (and (equal pos '(100 . 80))
-                                           (< (abs (- (nth 2 body) 400)) (frame-char-width frame))
-                                           (< (abs (- (nth 3 body) 300)) (frame-char-height frame))
-                                           (car red))
+    (ewm-session-tests--check "float" (and (equal pos '(100 . 80)) (equal (cddr body) '(400 300)) (car red))
                               (format "at %s, body %sx%s, %.2f red" pos (nth 2 body) (nth 3 body) (cadr red)))))
 
 (defun ewm-session-tests-fullscreen ()
