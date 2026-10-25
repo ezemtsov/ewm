@@ -186,40 +186,6 @@ impl Fixture {
         sizes
     }
 
-    /// Deliver the configures, ack the last one with an empty commit and return the sizes asked.
-    pub fn ack_configure(
-        &mut self,
-        client: &mut TestClient,
-        toplevel: &crate::testing::Toplevel,
-    ) -> Vec<(i32, i32)> {
-        let sizes = self.configured(client);
-        if sizes.iter().any(|&(w, h)| w > 0 && h > 0) {
-            toplevel.surface.commit();
-            self.roundtrip(client);
-        }
-        sizes
-    }
-
-    /// Deliver the configures, answer the last one drawing into `below` and return the sizes asked.
-    pub fn answer_configure_below(
-        &mut self,
-        client: &mut TestClient,
-        toplevel: &crate::testing::Toplevel,
-        below: &crate::testing::Subsurface,
-    ) -> Vec<(i32, i32)> {
-        let sizes = self.configured(client);
-        if let Some(&(w, h)) = sizes.iter().rev().find(|&&(w, h)| w > 0 && h > 0) {
-            let size = client.answer_size(toplevel, Size::from((w, h)));
-            toplevel
-                .xdg_surface
-                .set_window_geometry(0, 0, size.w, size.h);
-            toplevel.surface.commit();
-            client.paint(&below.surface, size);
-            self.roundtrip(client);
-        }
-        sizes
-    }
-
     /// Drive a full xdg toplevel lifecycle.
     pub fn open_toplevel(
         &mut self,

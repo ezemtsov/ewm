@@ -1,16 +1,22 @@
-//! Fullscreen is a per-surface bit set by requests and commands alone, shown once its client has
-//! committed it. Layouts, output changes and migrations place the bit but never change it. Each
-//! strip frame shows one fullscreen view, a float counting for the frame it is over, and a float
-//! showing fullscreen pins to that frame and keeps the pin while parked.
+//! The views of surfaces through layouts, fullscreen requests and client answers. Fullscreen is a
+//! per-surface bit set by requests and commands alone, shown once its client has committed it.
+//! Each strip frame shows one fullscreen view, a float counting for the frame it is over, and a
+//! float showing fullscreen pins to that frame and keeps the pin while parked. Until a client
+//! commits the buffer a layout asked for, the views of its surface keep presenting the one it has,
+//! the view that buffer was made for at its own size and the others covering their windows with it.
+//!
+//! Ported from niri's src/layout/tests.rs: the hints, the forced size and the answer op.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use ewm_core::layout::floating::SizeFracPoint;
 use ewm_core::layout::strip::{Frame, Strip};
-use ewm_core::testing::{ClientEvent, Fixture, TestClient, Toplevel, nz, proptest_cases};
-use ewm_core::{LayoutEntry, LayoutEntryId};
+use ewm_core::testing::{
+    ClientEvent, Fixture, Subsurface, TestClient, Toplevel, nz, proptest_cases,
+};
+use ewm_core::{Ewm, LayoutEntry, LayoutEntryId};
 use proptest::prelude::*;
-use smithay::utils::Size;
+use smithay::utils::{Logical, Size};
 use wayland_client::Proxy as _;
 
 const OUTPUTS: [&str; 2] = ["HEAD-A", "HEAD-B"];
@@ -25,6 +31,11 @@ const FLOAT_AT: [SizeFracPoint; 2] = [
     SizeFracPoint { x: 0.05, y: 0.05 },
     SizeFracPoint { x: 0.45, y: 0.45 },
 ];
+/// Hints and forced sizes reach this far, past the largest window.
+const SIDE: i32 = 1200;
+
+/// A width and height, or a min and max of one side.
+type Pair = (i32, i32);
 
 fn frame_id(frame_idx: usize) -> u64 {
     100 + frame_idx as u64
@@ -36,6 +47,14 @@ fn entry_id(frame_idx: usize, entry_slot: usize) -> LayoutEntryId {
 
 fn floating(frame_idx: usize) -> bool {
     frame_idx >= FIRST_FLOAT
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RectSpec {
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -56,15 +75,31 @@ enum Op {
         surface: usize,
         on: bool,
     },
-    /// The client answers everything configured so far with a buffer.
-    Commit(usize),
+    /// The client's min and max size, zero for none.
+    Hints {
+        surface: usize,
+        min: Pair,
+        max: Pair,
+    },
+    /// A size the client commits whatever it is asked, or none to answer within its hints again.
+    Force {
+        surface: usize,
+        size: Option<Pair>,
+    },
+    /// The client answers its last configure with a buffer on its surface.
+    Answer(usize),
+    /// The client acks its last configure and draws nothing.
+    Ack(usize),
+    /// The client acks its last configure on its surface and draws into a subsurface.
+    AnswerBelow(usize),
     DestroySurface(usize),
 }
 
 #[derive(Debug, Clone)]
 struct FrameSpec {
     frame_idx: usize,
-    entries: Vec<(usize, usize)>,
+    /// Slot, surface and window of each entry.
+    entries: Vec<(usize, usize, RectSpec)>,
     selected: Option<usize>,
 }
 
@@ -101,6 +136,14 @@ fn expected_mark(frame: &Frame, committed: &BTreeSet<u64>) -> Option<LayoutEntry
         .find(|entry| Some(entry.id) == frame.selected_entry_id && shows(entry))
         .or_else(|| frame.entries.iter().find(shows))
         .map(|entry| entry.id)
+}
+
+/// The primary view of `sid`.
+fn primary(ewm: &Ewm, sid: u64) -> Option<&LayoutEntry> {
+    ewm.layout
+        .all_frames()
+        .flat_map(|frame| &frame.entries)
+        .find(|entry| entry.surface_id() == Some(sid) && entry.primary())
 }
 
 impl Model {
@@ -169,6 +212,28 @@ struct Clients {
     configured: BTreeMap<u64, (i32, i32, bool)>,
     /// The surfaces configured during the last op.
     answered: BTreeSet<u64>,
+    below: Vec<Option<Subsurface>>,
+    /// The view each surface presented before the op.
+    presented: Vec<Option<LayoutEntryId>>,
+}
+
+impl Clients {
+    /// The size `surface` was last asked for, none before its first real configure.
+    fn asked(&self, surface: usize) -> Option<Pair> {
+        self.configured
+            .get(&self.sids[surface])
+            .map(|&(w, h, _)| (w, h))
+            .filter(|&(w, h)| w > 0 && h > 0)
+    }
+
+    fn snapshot(&mut self, ewm: &Ewm) {
+        for (index, sid) in self.sids.iter().enumerate() {
+            let Some(surface) = ewm.surfaces.get(sid) else {
+                continue;
+            };
+            self.presented[index] = surface.presented;
+        }
+    }
 }
 
 /// Deliver the op's configures and note what each surface was told.
@@ -199,10 +264,20 @@ fn drain(fix: &mut Fixture, clients: &mut Clients) {
     }
 }
 
+fn rect_strategy() -> impl Strategy<Value = RectSpec> {
+    (
+        prop::sample::select(vec![0, 8, 20, 400]),
+        prop::sample::select(vec![0, 6, 30]),
+        prop::sample::select(vec![300u32, 400, 800]),
+        prop::sample::select(vec![200u32, 300, 600]),
+    )
+        .prop_map(|(x, y, w, h)| RectSpec { x, y, w, h })
+}
+
 fn layout_strategy() -> impl Strategy<Value = Vec<FrameSpec>> {
     let frame = (
         any::<bool>(),
-        prop::collection::vec((any::<bool>(), 0..SURFACES), ENTRY_SLOTS),
+        prop::collection::vec((any::<bool>(), 0..SURFACES, rect_strategy()), ENTRY_SLOTS),
         0..ENTRY_SLOTS,
     );
     prop::collection::vec(frame, FRAME_COUNT).prop_map(|seeds| {
@@ -211,15 +286,15 @@ fn layout_strategy() -> impl Strategy<Value = Vec<FrameSpec>> {
             .enumerate()
             .filter(|(_, (present, _, _))| *present)
             .map(|(frame_idx, (_, slots, selected))| {
-                let entries: Vec<(usize, usize)> = slots
+                let entries: Vec<(usize, usize, RectSpec)> = slots
                     .into_iter()
                     .enumerate()
-                    .filter(|(_, (present, _))| *present)
-                    .map(|(slot, (_, surface))| (slot, surface))
+                    .filter(|(_, (present, _, _))| *present)
+                    .map(|(slot, (_, surface, rect))| (slot, surface, rect))
                     .collect();
                 let selected = entries
                     .iter()
-                    .any(|(slot, _)| *slot == selected)
+                    .any(|(slot, _, _)| *slot == selected)
                     .then_some(selected);
                 FrameSpec {
                     frame_idx,
@@ -229,6 +304,32 @@ fn layout_strategy() -> impl Strategy<Value = Vec<FrameSpec>> {
             })
             .collect()
     })
+}
+
+/// A min and max for one side, zero meaning none.
+fn min_max_strategy() -> impl Strategy<Value = Pair> {
+    prop_oneof![
+        Just((0, 0)),
+        (1..SIDE).prop_map(|n| (n, n)),
+        (1..SIDE).prop_map(|min| (min, 0)),
+        (1..SIDE).prop_map(|max| (0, max)),
+        (1..SIDE, 1..SIDE).prop_map(|(min, max)| (min, max.max(min))),
+    ]
+}
+
+/// Hints for both sides, now and then a fixed size.
+fn hints_strategy() -> impl Strategy<Value = Op> {
+    prop_oneof![
+        5 => (0..SURFACES, min_max_strategy(), min_max_strategy()).prop_map(
+            |(surface, (min_w, max_w), (min_h, max_h))| Op::Hints {
+                surface,
+                min: (min_w, min_h),
+                max: (max_w, max_h),
+            }
+        ),
+        1 => (0..SURFACES, min_max_strategy())
+            .prop_map(|(surface, size)| Op::Hints { surface, min: size, max: size }),
+    ]
 }
 
 fn op_strategy() -> impl Strategy<Value = Op> {
@@ -246,7 +347,12 @@ fn op_strategy() -> impl Strategy<Value = Op> {
         ),
         4 => (0..SURFACES, any::<bool>())
             .prop_map(|(surface, on)| Op::RequestFullscreen { surface, on }),
-        4 => (0..SURFACES).prop_map(Op::Commit),
+        1 => hints_strategy(),
+        1 => (0..SURFACES, prop::option::of((1..SIDE, 1..SIDE)))
+            .prop_map(|(surface, size)| Op::Force { surface, size }),
+        4 => (0..SURFACES).prop_map(Op::Answer),
+        1 => (0..SURFACES).prop_map(Op::Ack),
+        1 => (0..SURFACES).prop_map(Op::AnswerBelow),
         1 => (0..SURFACES).prop_map(Op::DestroySurface),
     ]
 }
@@ -261,15 +367,15 @@ fn to_frame(spec: &FrameSpec, sids: &[u64]) -> Frame {
     frame.entries = spec
         .entries
         .iter()
-        .map(|&(slot, surface)| {
+        .map(|&(slot, surface, rect)| {
             LayoutEntry::surface(
                 entry_id(spec.frame_idx, slot),
                 "entry".into(),
                 sids[surface],
-                0,
-                0,
-                VIEW.0 as u32,
-                VIEW.1 as u32,
+                rect.x,
+                rect.y,
+                rect.w,
+                rect.h,
             )
         })
         .collect();
@@ -367,7 +473,7 @@ fn check(fix: &Fixture, model: &mut Model, clients: &Clients) -> Result<(), Test
     }
     model.pins = pins;
 
-    for &sid in &clients.sids {
+    for (index, &sid) in clients.sids.iter().enumerate() {
         let requested = model.requested.contains(&sid);
         prop_assert_eq!(ewm.pending_fullscreen(sid), requested, "{} requested", sid);
         prop_assert_eq!(ewm.layout.is_surface_fullscreen(sid), shown.contains(&sid));
@@ -382,16 +488,8 @@ fn check(fix: &Fixture, model: &mut Model, clients: &Clients) -> Result<(), Test
         if model.gone.contains(&sid) {
             continue;
         }
+        let primary = primary(ewm, sid);
         // Once a shown view is primary, the last configure follows the bit: output or view size.
-        let primary = ewm.layout.monitors().iter().find_map(|monitor| {
-            monitor
-                .strip
-                .frames()
-                .iter()
-                .chain(monitor.floating.frames())
-                .flat_map(|frame| frame.entries.iter())
-                .find(|entry| entry.surface_id() == Some(sid) && entry.primary())
-        });
         if let Some(primary) = primary {
             let Some(&(width, height, fullscreen)) = clients.configured.get(&sid) else {
                 return Err(TestCaseError::fail(format!(
@@ -410,6 +508,54 @@ fn check(fix: &Fixture, model: &mut Model, clients: &Clients) -> Result<(), Test
                 sid
             );
         }
+        // The primary view presents the buffer at its size once the client has caught up, until
+        // then the view presented before the op does, even gone from the layout, and nothing else
+        // ever does. The other views cover their windows with the buffer.
+        let surface = &ewm.surfaces[&sid];
+        let primary = primary.map(|entry| entry.id);
+        let presented = surface.presented;
+        prop_assert!(
+            primary.is_none()
+                || presented == primary
+                || (!surface.synced() && presented == clients.presented[index]),
+            "{} presents {:?} with primary {:?}, {:?} before the op",
+            sid,
+            presented,
+            primary,
+            clients.presented[index]
+        );
+        let buffer = surface.window.geometry().size;
+        for view in ewm.views_of(sid) {
+            prop_assert_eq!(
+                view.native,
+                Some(view.entry) == presented,
+                "view {} of {} presents the wrong contents",
+                view.entry,
+                sid
+            );
+            let scale = if view.native {
+                1.
+            } else {
+                f64::max(
+                    view.window.size.w as f64 / buffer.w as f64,
+                    view.window.size.h as f64 / buffer.h as f64,
+                )
+            };
+            prop_assert_eq!(
+                view.scale,
+                scale,
+                "view {} of {} draws at the wrong scale",
+                view.entry,
+                sid
+            );
+            prop_assert_eq!(
+                view.rect.size,
+                buffer.to_f64().upscale(scale).to_i32_round(),
+                "view {} of {} draws the wrong size",
+                view.entry,
+                sid
+            );
+        }
     }
     Ok(())
 }
@@ -420,6 +566,9 @@ fn apply_op(
     model: &mut Model,
     op: &Op,
 ) -> Result<(), TestCaseError> {
+    clients.snapshot(fix.ewm_ref());
+    // The surface that answered, what it was asked and the size it committed.
+    let mut answered: Option<(u64, Pair, Size<i32, Logical>)> = None;
     match op {
         Op::AddOutput(output) => {
             let name = OUTPUTS[*output];
@@ -466,24 +615,56 @@ fn apply_op(
                 } else {
                     toplevel.unset_fullscreen();
                 }
-                fix.roundtrip(&mut clients.client);
                 model.request(fix, sid, *on);
             }
         }
-        Op::Commit(surface) => {
+        Op::Hints { surface, min, max } => clients.client.set_size_hints(
+            &clients.toplevels[*surface],
+            Size::from(*min),
+            Size::from(*max),
+        ),
+        Op::Force { surface, size } => clients
+            .client
+            .set_forced_size(&clients.toplevels[*surface], size.map(Size::from)),
+        Op::Answer(surface) | Op::Ack(surface) | Op::AnswerBelow(surface) => {
             let sid = clients.sids[*surface];
-            if !model.gone.contains(&sid) {
-                fix.roundtrip(&mut clients.client);
-                fix.map_toplevel(
-                    &mut clients.client,
-                    &clients.toplevels[*surface],
-                    Size::from(VIEW),
-                );
+            if let Some(asked) = clients
+                .asked(*surface)
+                .filter(|_| !model.gone.contains(&sid))
+            {
+                let toplevel = &clients.toplevels[*surface];
+                let size = clients.client.answer_size(toplevel, Size::from(asked));
+                let kept = fix.ewm_ref().surfaces[&sid].window.geometry().size;
+                let committed = match op {
+                    Op::Ack(_) => {
+                        toplevel.surface.commit();
+                        kept
+                    }
+                    Op::Answer(_) => {
+                        toplevel
+                            .xdg_surface
+                            .set_window_geometry(0, 0, size.w, size.h);
+                        clients.client.paint(&toplevel.surface, size);
+                        size
+                    }
+                    _ => {
+                        let below = clients.below[*surface].get_or_insert_with(|| {
+                            clients.client.create_subsurface(&toplevel.surface)
+                        });
+                        toplevel
+                            .xdg_surface
+                            .set_window_geometry(0, 0, size.w, size.h);
+                        toplevel.surface.commit();
+                        clients.client.paint(&below.surface, size);
+                        size
+                    }
+                };
                 if model.requested.contains(&sid) {
                     model.committed.insert(sid);
                 } else {
                     model.committed.remove(&sid);
                 }
+                answered = Some((sid, asked, committed));
             }
         }
         Op::DestroySurface(surface) => {
@@ -509,6 +690,17 @@ fn apply_op(
             );
         }
     }
+    if let Some((sid, asked, committed)) = answered {
+        let now = &fix.ewm_ref().surfaces[&sid];
+        prop_assert_eq!(
+            now.window.geometry().size,
+            committed,
+            "the size {} committed for {:?}",
+            sid,
+            asked
+        );
+        prop_assert!(now.synced(), "answering {:?} left {} behind", asked, sid);
+    }
     check(fix, model, clients)
 }
 
@@ -528,6 +720,8 @@ fn check_ops(ops: &[Op]) -> Result<(), TestCaseError> {
         sids,
         configured: BTreeMap::new(),
         answered: BTreeSet::new(),
+        below: std::iter::repeat_with(|| None).take(SURFACES).collect(),
+        presented: vec![None; SURFACES],
     };
     let mut model = Model::default();
     drain(&mut fix, &mut clients);
@@ -542,12 +736,30 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(proptest_cases(48)))]
 
     #[test]
-    fn fullscreen_lifecycle_invariants_hold(ops in prop::collection::vec(op_strategy(), 1..40)) {
+    fn view_invariants_hold(ops in prop::collection::vec(op_strategy(), 1..40)) {
         check_ops(&ops)?;
     }
 }
 
 // Sequences the randomised test once found failing.
+
+const fn rect(w: u32, h: u32) -> RectSpec {
+    RectSpec { x: 0, y: 0, w, h }
+}
+
+const VIEW_RECT: RectSpec = rect(VIEW.0 as u32, VIEW.1 as u32);
+
+fn frame(
+    frame_idx: usize,
+    entries: &[(usize, usize, RectSpec)],
+    selected: Option<usize>,
+) -> FrameSpec {
+    FrameSpec {
+        frame_idx,
+        entries: entries.to_vec(),
+        selected,
+    }
+}
 
 #[test]
 fn two_requests_land_in_one_frame() {
@@ -562,11 +774,7 @@ fn two_requests_land_in_one_frame() {
         },
         Op::ApplyLayout {
             output: 0,
-            frames: vec![FrameSpec {
-                frame_idx: 2,
-                entries: vec![(0, 0), (2, 2)],
-                selected: Some(0),
-            }],
+            frames: vec![frame(2, &[(0, 0, VIEW_RECT), (2, 2, VIEW_RECT)], Some(0))],
         },
         Op::RequestFullscreen {
             surface: 0,
@@ -581,32 +789,17 @@ fn a_fullscreen_view_survives_losing_every_output() {
     check_ops(&[
         Op::ApplyLayout {
             output: 1,
-            frames: vec![FrameSpec {
-                frame_idx: 0,
-                entries: vec![],
-                selected: None,
-            }],
+            frames: vec![frame(0, &[], None)],
         },
         Op::ApplyLayout {
             output: 0,
-            frames: vec![
-                FrameSpec {
-                    frame_idx: 1,
-                    entries: vec![],
-                    selected: None,
-                },
-                FrameSpec {
-                    frame_idx: 3,
-                    entries: vec![(2, 1)],
-                    selected: None,
-                },
-            ],
+            frames: vec![frame(1, &[], None), frame(3, &[(2, 1, VIEW_RECT)], None)],
         },
         Op::RequestFullscreen {
             surface: 1,
             on: true,
         },
-        Op::Commit(1),
+        Op::Answer(1),
         Op::RemoveOutput(0),
         Op::RemoveOutput(1),
         Op::AddOutput(0),
@@ -623,27 +816,86 @@ fn a_layout_drops_the_fullscreen_view() {
         },
         Op::ApplyLayout {
             output: 1,
-            frames: vec![FrameSpec {
-                frame_idx: 3,
-                entries: vec![(1, 1)],
-                selected: None,
-            }],
+            frames: vec![frame(3, &[(1, 1, VIEW_RECT)], None)],
         },
-        Op::Commit(1),
+        Op::Answer(1),
         Op::ApplyLayout {
             output: 1,
-            frames: vec![
-                FrameSpec {
-                    frame_idx: 1,
-                    entries: vec![],
-                    selected: None,
-                },
-                FrameSpec {
-                    frame_idx: 3,
-                    entries: vec![],
-                    selected: None,
-                },
-            ],
+            frames: vec![frame(1, &[], None), frame(3, &[], None)],
+        },
+    ])
+    .unwrap();
+}
+
+#[test]
+fn an_answer_before_the_first_layout() {
+    check_ops(&[
+        Op::Answer(0),
+        Op::ApplyLayout {
+            output: 0,
+            frames: vec![frame(0, &[(1, 0, rect(300, 200))], Some(1))],
+        },
+        Op::ApplyLayout {
+            output: 0,
+            frames: vec![frame(
+                0,
+                &[(0, 0, rect(300, 300)), (1, 0, rect(300, 200))],
+                Some(0),
+            )],
+        },
+    ])
+    .unwrap();
+}
+
+#[test]
+fn fullscreen_on_and_off_answered_each_time() {
+    check_ops(&[
+        Op::ApplyLayout {
+            output: 0,
+            frames: vec![frame(
+                0,
+                &[(0, 0, rect(300, 200)), (1, 0, rect(300, 300))],
+                Some(0),
+            )],
+        },
+        Op::SetEntryFullscreen {
+            frame_idx: 0,
+            entry_slot: 0,
+            on: true,
+        },
+        Op::Answer(0),
+        Op::SetEntryFullscreen {
+            frame_idx: 0,
+            entry_slot: 0,
+            on: false,
+        },
+        Op::Answer(0),
+    ])
+    .unwrap();
+}
+
+#[test]
+fn an_ack_without_a_buffer_between_fullscreen_requests() {
+    check_ops(&[
+        Op::ApplyLayout {
+            output: 0,
+            frames: vec![frame(
+                0,
+                &[(0, 0, rect(300, 200)), (1, 0, rect(300, 300))],
+                Some(0),
+            )],
+        },
+        Op::Answer(0),
+        Op::SetEntryFullscreen {
+            frame_idx: 0,
+            entry_slot: 0,
+            on: true,
+        },
+        Op::Ack(0),
+        Op::SetEntryFullscreen {
+            frame_idx: 0,
+            entry_slot: 0,
+            on: false,
         },
     ])
     .unwrap();
