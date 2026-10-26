@@ -57,6 +57,10 @@ use wayland_protocols_misc::zwp_input_method_v2::client::{
     zwp_input_method_manager_v2, zwp_input_method_v2,
 };
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
+use wayland_protocols_wlr::output_management::v1::client::{
+    zwlr_output_configuration_head_v1, zwlr_output_configuration_v1, zwlr_output_head_v1,
+    zwlr_output_manager_v1, zwlr_output_mode_v1,
+};
 
 use crate::utils::ensure_min_max_size;
 
@@ -211,6 +215,9 @@ pub enum ClientEvent {
     },
     SessionLocked,
     SessionLockFinished,
+    OutputConfigurationSucceeded,
+    OutputConfigurationFailed,
+    OutputConfigurationCancelled,
     LayerClosed {
         layer_surface: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
     },
@@ -260,6 +267,13 @@ pub struct ClientState {
     /// Name and version of the `ext_workspace_manager_v1` global, bound on demand.
     pub(crate) workspace_manager_global: Option<(u32, u32)>,
     pub layer_shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
+    pub output_manager: Option<zwlr_output_manager_v1::ZwlrOutputManagerV1>,
+    /// Name and version of the `zwlr_output_manager_v1` global, bound on demand.
+    pub(crate) output_manager_global: Option<(u32, u32)>,
+    /// Output heads by server-advertised name.
+    pub output_heads: HashMap<String, zwlr_output_head_v1::ZwlrOutputHeadV1>,
+    /// Serial of the latest `zwlr_output_manager_v1.done`.
+    output_serial: Option<u32>,
     /// `wl_output` protocol id -> server-advertised name.
     pub output_names: HashMap<u32, String>,
     /// `wl_output` proxies by server-advertised name.
@@ -400,6 +414,39 @@ impl TestClient {
             .expect("server advertises ext_workspace_manager_v1");
         let qh = self.eq.handle();
         self.state.workspace_manager = Some(self.registry.bind(name, version, &qh, ()));
+    }
+
+    /// Bind `zwlr_output_manager_v1`, as wdisplays does.
+    pub fn bind_output_manager(&mut self) {
+        let (name, version) = self
+            .state
+            .output_manager_global
+            .expect("server advertises zwlr_output_manager_v1");
+        let qh = self.eq.handle();
+        self.state.output_manager = Some(self.registry.bind(name, version, &qh, ()));
+    }
+
+    /// A configuration against the latest `done` serial. The answer arrives as an
+    /// `OutputConfiguration*` event.
+    pub fn new_output_configuration(
+        &self,
+    ) -> zwlr_output_configuration_v1::ZwlrOutputConfigurationV1 {
+        let serial = self
+            .state
+            .output_serial
+            .expect("zwlr_output_manager_v1.done; roundtrip after binding");
+        self.state
+            .output_manager
+            .as_ref()
+            .expect("zwlr_output_manager_v1 not bound")
+            .create_configuration(serial, &self.eq.handle(), ())
+    }
+
+    pub fn output_head(&self, name: &str) -> &zwlr_output_head_v1::ZwlrOutputHeadV1 {
+        self.state
+            .output_heads
+            .get(name)
+            .unwrap_or_else(|| panic!("a head named {name:?}"))
     }
 
     /// Request the session lock. The answer arrives as `SessionLocked` or
@@ -926,6 +973,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientState {
             state.session_lock_manager = Some(registry.bind(name, version, qh, ()));
         } else if interface == ExtWorkspaceManagerV1::interface().name {
             state.workspace_manager_global = Some((name, version));
+        } else if interface == zwlr_output_manager_v1::ZwlrOutputManagerV1::interface().name {
+            state.output_manager_global = Some((name, version));
         }
         if interface == zwlr_layer_shell_v1::ZwlrLayerShellV1::interface().name {
             state.layer_shell = Some(registry.bind(name, version, qh, ()));
@@ -1678,3 +1727,69 @@ impl Dispatch<ExtWorkspaceHandleV1, ()> for ClientState {
 }
 
 wayland_client::delegate_noop!(ClientState: ignore zwlr_layer_shell_v1::ZwlrLayerShellV1);
+
+impl Dispatch<zwlr_output_manager_v1::ZwlrOutputManagerV1, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &zwlr_output_manager_v1::ZwlrOutputManagerV1,
+        event: zwlr_output_manager_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zwlr_output_manager_v1::Event::Done { serial } = event {
+            state.output_serial = Some(serial);
+        }
+    }
+
+    event_created_child!(ClientState, zwlr_output_manager_v1::ZwlrOutputManagerV1, [
+        zwlr_output_manager_v1::EVT_HEAD_OPCODE => (zwlr_output_head_v1::ZwlrOutputHeadV1, ()),
+    ]);
+}
+
+impl Dispatch<zwlr_output_head_v1::ZwlrOutputHeadV1, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        head: &zwlr_output_head_v1::ZwlrOutputHeadV1,
+        event: zwlr_output_head_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwlr_output_head_v1::Event::Name { name } => {
+                state.output_heads.insert(name, head.clone());
+            }
+            zwlr_output_head_v1::Event::Finished => {
+                state.output_heads.retain(|_, h| h != head);
+            }
+            _ => {}
+        }
+    }
+
+    event_created_child!(ClientState, zwlr_output_head_v1::ZwlrOutputHeadV1, [
+        zwlr_output_head_v1::EVT_MODE_OPCODE => (zwlr_output_mode_v1::ZwlrOutputModeV1, ()),
+    ]);
+}
+
+impl Dispatch<zwlr_output_configuration_v1::ZwlrOutputConfigurationV1, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &zwlr_output_configuration_v1::ZwlrOutputConfigurationV1,
+        event: zwlr_output_configuration_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        use zwlr_output_configuration_v1::Event;
+        state.events.push(match event {
+            Event::Succeeded => ClientEvent::OutputConfigurationSucceeded,
+            Event::Failed => ClientEvent::OutputConfigurationFailed,
+            Event::Cancelled => ClientEvent::OutputConfigurationCancelled,
+            _ => return,
+        });
+    }
+}
+
+wayland_client::delegate_noop!(ClientState: ignore zwlr_output_mode_v1::ZwlrOutputModeV1);
+wayland_client::delegate_noop!(ClientState: ignore zwlr_output_configuration_head_v1::ZwlrOutputConfigurationHeadV1);
