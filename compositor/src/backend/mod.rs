@@ -57,16 +57,13 @@ impl OutputInfos {
         self.infos.lock().unwrap().retain(|info| info.name != name);
     }
 
-    pub(crate) fn update_from_output(&self, output: &Output, loc: Point<i32, Logical>) {
-        let name = output.name();
-
-        if let Some(info) = self
-            .infos
-            .lock()
-            .unwrap()
-            .iter_mut()
-            .find(|info| info.name == name)
-        {
+    /// Refresh scale, transform, position and current mode from the live outputs.
+    pub(crate) fn sync(&self, ewm: &Ewm) {
+        for info in self.infos.lock().unwrap().iter_mut() {
+            let Some(output) = ewm.connected_output(&info.name) else {
+                continue;
+            };
+            let loc = ewm.layout.output_rect(&output).unwrap_or_default().loc;
             info.scale = output.current_scale().fractional_scale();
             info.transform = transform_to_int(output.current_transform());
             info.x = loc.x;
@@ -137,26 +134,6 @@ fn sync_output_info_mode(modes: &mut Vec<OutputMode>, current_mode: Mode) {
     }
 }
 
-/// Map a configured output. If it was disabled and has no explicit
-/// position, append it after the currently mapped output bounds.
-/// Returns whether the output went from unmapped to mapped.
-pub(crate) fn map_output_for_config(
-    ewm: &mut Ewm,
-    output: &Output,
-    position: Option<(i32, i32)>,
-) -> bool {
-    let was_mapped = ewm.output_mapped(output);
-    let position = position
-        .map(Point::from)
-        .or_else(|| (!was_mapped).then(|| Point::from((ewm.output_size.w, 0))));
-
-    if let Some(position) = position {
-        ewm.map_output(output, position);
-        ewm.reconcile_output_entries(output);
-    }
-    !was_mapped && ewm.output_mapped(output)
-}
-
 pub(crate) fn apply_initial_output_config(
     output: &Output,
     mode: Mode,
@@ -178,22 +155,17 @@ pub(crate) fn map_initial_output(
     output: &Output,
     config: Option<&OutputConfig>,
 ) -> (Point<i32, Logical>, bool) {
-    let position = config
-        .and_then(|config| config.position)
-        .map(Point::from)
-        .unwrap_or_else(|| Point::from((ewm.output_size.w, 0)));
     let enabled = config.map(|config| config.enabled).unwrap_or(true);
-
     if enabled {
-        ewm.map_output(output, position);
+        ewm.map_output(output);
     }
+    let position = ewm.layout.output_rect(output).unwrap_or_default().loc;
 
     (position, enabled)
 }
 
 pub(crate) fn apply_enabled_output_config(
     ewm: &mut Ewm,
-    output_infos: &OutputInfos,
     output: &Output,
     config: &OutputConfig,
     mode: Option<Mode>,
@@ -201,21 +173,17 @@ pub(crate) fn apply_enabled_output_config(
     let scale = config
         .scale
         .map(|s| Scale::Fractional(closest_representable_scale(s)));
-    let position = config.position.map(Point::from);
 
-    output.change_current_state(mode, config.transform, scale, position);
+    output.change_current_state(mode, config.transform, scale, None);
     if let Some(mode) = mode {
         output.set_preferred(mode);
     }
 
-    let became_mapped = map_output_for_config(ewm, output, config.position);
-    output_infos.update_from_output(
-        output,
-        ewm.space
-            .output_geometry(output)
-            .map(|geo| geo.loc)
-            .unwrap_or_default(),
-    );
+    let became_mapped = !ewm.output_mapped(output);
+    if became_mapped {
+        ewm.map_output(output);
+        ewm.reconcile_output_entries(output);
+    }
     ewm.output_config_changed(output, became_mapped);
 }
 
@@ -260,8 +228,10 @@ impl Backend {
         }
     }
 
-    pub(crate) fn output_info_list(&self, sorted_outputs: &[Output]) -> Vec<OutputInfo> {
-        self.output_infos().list_in_output_order(sorted_outputs)
+    pub(crate) fn output_info_list(&self, ewm: &Ewm) -> Vec<OutputInfo> {
+        let infos = self.output_infos();
+        infos.sync(ewm);
+        infos.list_in_output_order(&ewm.sorted_outputs)
     }
 
     #[cfg(feature = "screencast")]

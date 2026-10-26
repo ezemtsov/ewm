@@ -9,9 +9,7 @@ use smithay::output::Output;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::utils::{Logical, Point, Rectangle, Size};
-use tracing::info;
-#[cfg(feature = "screencast")]
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::handlers::configure_lock_surface;
 use crate::{
@@ -363,17 +361,112 @@ impl Ewm {
         }
     }
 
-    /// Recalculate total output size from current space geometry
-    pub fn recalculate_output_size(&mut self) {
-        let (total_width, total_height) =
-            self.space.outputs().fold((0i32, 0i32), |(w, h), output| {
-                if let Some(geo) = self.layout.output_rect(output) {
-                    (w.max(geo.loc.x + geo.size.w), h.max(geo.loc.y + geo.size.h))
-                } else {
-                    (w, h)
+    /// Pack the mapped outputs: configured positions first, the rest left to right by identity.
+    /// `reported` is the output whose new geometry the caller announces itself.
+    pub(crate) fn reposition_outputs(&mut self, reported: Option<&Output>) {
+        struct Data {
+            output: Output,
+            config: Option<Point<i32, Logical>>,
+        }
+
+        let mut outputs: Vec<Data> = self
+            .space
+            .outputs()
+            .map(|output| Data {
+                config: self
+                    .output_config
+                    .get(&output.name())
+                    .and_then(|config| config.position)
+                    .map(Point::from),
+                output: output.clone(),
+            })
+            .collect();
+
+        // Configured outputs first, then by identity so the order never depends on connector
+        // enumeration, displays without an identity last.
+        outputs.sort_by_cached_key(|data| {
+            let fields = crate::utils::output_identity_fields(&data.output);
+            (
+                data.config.is_none(),
+                fields.iter().all(Option::is_none),
+                fields,
+                data.output.name(),
+            )
+        });
+
+        let mut placed: Vec<(Output, Rectangle<i32, Logical>)> = Vec::with_capacity(outputs.len());
+        let (mut right, mut bottom) = (0, 0);
+        for data in outputs {
+            let size = self
+                .layout
+                .output_rect(&data.output)
+                .unwrap_or_default()
+                .size;
+            let position = data
+                .config
+                .filter(|&loc| {
+                    let Some((_, overlap)) = placed
+                        .iter()
+                        .find(|(_, geo)| geo.overlaps(Rectangle::new(loc, size)))
+                    else {
+                        return true;
+                    };
+                    warn!(
+                        "output {} at x={} y={} sized {}x{} \
+                         overlaps an existing output at x={} y={} sized {}x{}, \
+                         falling back to automatic placement",
+                        data.output.name(),
+                        loc.x,
+                        loc.y,
+                        size.w,
+                        size.h,
+                        overlap.loc.x,
+                        overlap.loc.y,
+                        overlap.size.w,
+                        overlap.size.h,
+                    );
+                    false
+                })
+                .unwrap_or_else(|| Point::from((right, 0)));
+            right = right.max(position.x + size.w);
+            bottom = bottom.max(position.y + size.h);
+            if data.output.current_location() != position {
+                self.space.map_output(&data.output, position);
+                data.output
+                    .change_current_state(None, None, None, Some(position));
+                self.output_management_state.output_heads_changed = true;
+                if reported != Some(&data.output) {
+                    let event = self.output_config_event(&data.output);
+                    self.queue_event(event);
+                    self.queue_redraw(&data.output);
                 }
-            });
-        self.output_size = Size::from((total_width, total_height));
+            }
+            placed.push((data.output, Rectangle::new(position, size)));
+        }
+
+        placed.sort_by_cached_key(|(output, geo)| (geo.loc.x, geo.loc.y, output.name()));
+        self.sorted_outputs = placed.into_iter().map(|(output, _)| output).collect();
+        self.layout.sort_monitors(&self.sorted_outputs);
+        self.output_size = Size::from((right, bottom));
+    }
+
+    /// The geometry Emacs is told when `output` changes or moves.
+    fn output_config_event(&self, output: &Output) -> Event {
+        let mode = output.current_mode().unwrap_or(smithay::output::Mode {
+            size: (0, 0).into(),
+            refresh: 0,
+        });
+        let geo = self.layout.output_rect(output).unwrap_or_default();
+        Event::OutputConfigChanged {
+            name: output.name(),
+            width: mode.size.w,
+            height: mode.size.h,
+            refresh: mode.refresh,
+            x: geo.loc.x,
+            y: geo.loc.y,
+            scale: output.current_scale().fractional_scale(),
+            transform: backend::transform_to_int(output.current_transform()),
+        }
     }
 
     pub(crate) fn active_outputs_snapshot(&self) -> Vec<module::ActiveOutput> {
@@ -392,12 +485,12 @@ impl Ewm {
             .collect()
     }
 
-    /// Map `output` at `position`, give it a monitor and advertise it to clients.
-    pub(crate) fn map_output(&mut self, output: &Output, position: Point<i32, Logical>) {
-        self.space.map_output(output, position);
-        output.change_current_state(None, None, None, Some(position));
+    /// Map `output`, pack the layout around it, give it a monitor and advertise it to clients.
+    pub(crate) fn map_output(&mut self, output: &Output) {
+        self.space.map_output(output, output.current_location());
         let working_area = self.get_working_area(output);
         self.layout.add_output(output.clone(), working_area);
+        self.reposition_outputs(Some(output));
         self.output_state
             .get_mut(output)
             .unwrap()
@@ -405,26 +498,11 @@ impl Ewm {
             .get_or_insert_with(|| output.create_global::<State>(&self.display_handle));
     }
 
-    pub(crate) fn sync_sorted_outputs(&mut self) {
-        let mut outputs = self.space.outputs().cloned().collect::<Vec<_>>();
-
-        let space = &self.space;
-        outputs.sort_by(|a, b| {
-            let a_geo = space.output_geometry(a).unwrap();
-            let b_geo = space.output_geometry(b).unwrap();
-            (a_geo.loc.x, a_geo.loc.y, a.name()).cmp(&(b_geo.loc.x, b_geo.loc.y, b.name()))
-        });
-        self.sorted_outputs = outputs;
-        self.layout.sort_monitors(&self.sorted_outputs);
-    }
-
     /// Register an output the backend has set up and mapped: order, size, working area, Emacs.
     pub fn add_output(&mut self, output: &Output, info: OutputInfo) {
         let output_name = info.name.clone();
 
-        self.sync_sorted_outputs();
         self.refresh_cursor_outputs();
-        self.recalculate_output_size();
 
         self.queue_event(Event::OutputDetected(info));
 
@@ -447,15 +525,8 @@ impl Ewm {
 
     /// Follow a new mode, scale, transform or position the backend applied to `output`.
     pub fn output_config_changed(&mut self, output: &Output, became_mapped: bool) {
-        let output_name = output.name();
-        let current_mode = output.current_mode().unwrap_or(smithay::output::Mode {
-            size: (0, 0).into(),
-            refresh: 0,
-        });
         let current_scale = output.current_scale().fractional_scale();
-        let current_transform = output.current_transform();
-        let current_geo = self.layout.output_rect(output).unwrap_or_default();
-        self.sync_sorted_outputs();
+        self.reposition_outputs(Some(output));
         if let Some(strip) = self.layout.strip_mut(output) {
             strip.update_config(current_scale);
         }
@@ -477,11 +548,11 @@ impl Ewm {
 
         // Notify output screen casts of size change
         #[cfg(feature = "screencast")]
-        {
+        if let Some(current_mode) = output.current_mode() {
             let physical_size = Size::from((current_mode.size.w, current_mode.size.h));
             let refresh = (current_mode.refresh / 1000) as u32;
             let target = dbus::CastTarget::Output {
-                name: output_name.to_string(),
+                name: output.name(),
             };
             for cast in self.casting.casts.iter_mut() {
                 if cast.target == target {
@@ -495,8 +566,6 @@ impl Ewm {
             }
         }
 
-        // Recalculate total output size, working areas, and queue redraw
-        self.recalculate_output_size();
         let working_area_changed = self.check_working_area_change(output);
         if !working_area_changed {
             // Always refresh Emacs frames: the output position may have changed
@@ -509,17 +578,8 @@ impl Ewm {
             self.attach_output(output);
         }
 
-        // Notify Emacs of the applied config
-        self.queue_event(Event::OutputConfigChanged {
-            name: output_name.to_string(),
-            width: current_mode.size.w,
-            height: current_mode.size.h,
-            refresh: current_mode.refresh,
-            x: current_geo.loc.x,
-            y: current_geo.loc.y,
-            scale: current_scale,
-            transform: backend::transform_to_int(current_transform),
-        });
+        let event = self.output_config_event(output);
+        self.queue_event(event);
         // Enabled by config, nothing else asks Emacs for the frames it lacks.
         if became_mapped {
             self.queue_event(Event::OutputsComplete);

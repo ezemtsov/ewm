@@ -1391,7 +1391,7 @@ impl DrmBackendState {
         }
 
         let smithay_mode = new_drm_mode.map(Mode::from);
-        apply_enabled_output_config(ewm, &self.output_infos, &output, &config, smithay_mode);
+        apply_enabled_output_config(ewm, &output, &config, smithay_mode);
 
         // Update frame clock refresh interval
         if let Some(drm_mode) = new_drm_mode

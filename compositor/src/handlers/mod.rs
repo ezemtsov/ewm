@@ -491,12 +491,14 @@ impl OutputManagementHandler for State {
     }
 
     fn apply_output_config(&mut self, configs: HashMap<String, OutputConfig>) {
+        // Store every config first so the first apply packs the heads into their final slots.
         // The backend sets output_heads_changed = true. The deferred
         // refresh_output_management() call (before next render) will
         // send protocol updates to clients, after the Dispatch handler
         // has already sent succeeded().
-        for (name, config) in configs {
-            self.ewm.output_config.insert(name.clone(), config);
+        let names: Vec<String> = configs.keys().cloned().collect();
+        self.ewm.output_config.extend(configs);
+        for name in names {
             self.apply_output_config_for(&name);
         }
     }

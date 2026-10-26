@@ -72,24 +72,19 @@ pub fn output_size(output: &Output) -> Size<f64, Logical> {
 /// replug. Prefers EDID make/model/serial and only falls back to the connector
 /// name when the display advertises none of them.
 pub fn output_identity(output: &Output) -> String {
-    let props = output.physical_properties();
-    let present = |s: &str| !s.is_empty() && s != "Unknown";
-    if !present(&props.make) && !present(&props.model) && !present(&props.serial_number) {
+    let fields = output_identity_fields(output);
+    if fields.iter().all(Option::is_none) {
         return output.name();
     }
-    let field = |s: String| {
-        if present(&s) {
-            s
-        } else {
-            "Unknown".to_string()
-        }
-    };
-    format!(
-        "{} {} {}",
-        field(props.make),
-        field(props.model),
-        field(props.serial_number),
-    )
+    let [make, model, serial] = fields.map(|field| field.unwrap_or_else(|| "Unknown".to_string()));
+    format!("{make} {model} {serial}")
+}
+
+/// EDID make, model and serial, each `None` when the display does not advertise it.
+pub fn output_identity_fields(output: &Output) -> [Option<String>; 3] {
+    let props = output.physical_properties();
+    [props.make, props.model, props.serial_number]
+        .map(|field| (!field.is_empty() && field != "Unknown").then_some(field))
 }
 
 pub fn is_mapped(surface: &WlSurface) -> bool {

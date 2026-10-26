@@ -607,7 +607,7 @@ impl State {
                 });
             }
             ModuleCommand::GetDebugState(reply) => {
-                let outputs = self.backend.output_info_list(&self.ewm.sorted_outputs);
+                let outputs = self.backend.output_info_list(&self.ewm);
                 let state = elisp::serde::to_value(self.ewm.debug_state(&outputs))
                     .unwrap_or(elisp::Value::NIL);
                 let _ = reply.send(state);

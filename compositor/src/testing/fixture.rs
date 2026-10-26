@@ -526,9 +526,7 @@ impl Fixture {
     }
 
     pub fn output_info_list(&self) -> Vec<OutputInfo> {
-        self.state
-            .backend
-            .output_info_list(&self.state.ewm.sorted_outputs)
+        self.state.backend.output_info_list(&self.state.ewm)
     }
 
     /// Headless renders of OUTPUT so far.

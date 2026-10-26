@@ -39,6 +39,34 @@ fn new_toplevel_is_configured_to_its_output() {
 }
 
 #[test]
+fn reenabled_output_returns_to_its_slot() {
+    let mut fix = testing::Fixture::new().unwrap();
+    fix.add_output(HEAD_A, 1280, 720);
+    fix.add_output(HEAD_B, 1920, 1080);
+    let slots = |fix: &testing::Fixture| {
+        let ewm = fix.ewm_ref();
+        [HEAD_A, HEAD_B].map(|name| {
+            ewm.connected_output(name)
+                .and_then(|output| ewm.layout.output_rect(&output))
+                .map(|geo| geo.loc.x)
+        })
+    };
+    assert_eq!(slots(&fix), [Some(0), Some(1280)]);
+
+    for (enabled, expected) in [(false, [None, Some(0)]), (true, [Some(0), Some(1280)])] {
+        fix.ewm().output_config.insert(
+            HEAD_A.to_string(),
+            OutputConfig {
+                enabled,
+                ..Default::default()
+            },
+        );
+        fix.apply_output_config(HEAD_A);
+        assert_eq!(slots(&fix), expected);
+    }
+}
+
+#[test]
 fn new_toplevel_skips_focused_floating_frame_for_tiled_host() {
     let mut fix = testing::Fixture::new().unwrap();
     fix.add_output(HEAD_A, 1600, 900);

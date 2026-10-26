@@ -1457,7 +1457,7 @@ impl Ewm {
         // Refresh protocol state before rendering
         self.refresh_foreign_toplevel();
         if self.output_management_state.output_heads_changed {
-            let output_infos = backend.output_info_list(&self.sorted_outputs);
+            let output_infos = backend.output_info_list(self);
             self.refresh_output_management(&output_infos);
         }
 

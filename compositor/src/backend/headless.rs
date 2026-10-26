@@ -214,6 +214,6 @@ impl HeadlessBackend {
             return;
         }
 
-        apply_enabled_output_config(ewm, &self.output_infos, &output, &config, None);
+        apply_enabled_output_config(ewm, &output, &config, None);
     }
 }

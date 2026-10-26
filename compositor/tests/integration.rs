@@ -584,6 +584,20 @@ fn frame_is_homeless(fixture: &Fixture, id: u64) -> bool {
     fixture.ewm_ref().layout.is_homeless(id)
 }
 
+/// Mapped outputs form one packed row from the origin.
+fn assert_outputs_packed(fixture: &Fixture) {
+    let ewm = fixture.ewm_ref();
+    let mut edge = 0;
+    for geo in ewm
+        .sorted_outputs
+        .iter()
+        .filter_map(|output| ewm.layout.output_rect(output))
+    {
+        assert_eq!(geo.loc, Point::from((edge, 0)), "output off the packed row");
+        edge += geo.size.w;
+    }
+}
+
 /// Invariants that must hold after every hotplug op:
 /// - conservation: each frame appears exactly once across all strips + pool;
 /// - home-return: a connected display holds all of its own frames, in their canonical relative
@@ -593,6 +607,7 @@ fn frame_is_homeless(fixture: &Fixture, id: u64) -> bool {
 fn assert_hotplug_invariants(fixture: &Fixture, displays: &[Display]) {
     let any_mapped = fixture.ewm_ref().space.outputs().next().is_some();
     fixture.ewm_ref().verify_invariants();
+    assert_outputs_packed(fixture);
 
     for display in displays {
         for &id in &display.frames {

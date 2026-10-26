@@ -43,6 +43,9 @@ Each entry is (OUTPUT-NAME . PLIST) where PLIST can contain:
                4=Flipped 5=Flipped90 6=Flipped180 7=Flipped270
   :enabled   - whether output is enabled (default t)
 
+Outputs without :x and :y line up left to right after the positioned ones,
+in Make-Model-Serial order rather than plug-in order.
+
 Custom modes are not guaranteed to work: the compositor asks the display to
 run a mode its manufacturer did not advertise, and the kernel may reject it.
 
