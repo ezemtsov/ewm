@@ -44,6 +44,8 @@ mod config;
 pub(crate) mod floating_move_grab;
 pub(crate) mod floating_resize_grab;
 pub(crate) mod frame_click_grab;
+#[cfg(test)]
+mod routing_tests;
 mod scroll_tracker;
 
 use std::any::Any;
@@ -2091,6 +2093,19 @@ fn decode_vt_switch(modified_raw: u32) -> Option<i32> {
 /// Pure classification of a keyboard event. Reads no compositor state. The
 /// caller resolves the `KeyRouting` upstream and applies side effects
 /// downstream. Releases always Forward.
+///
+/// The precedence, each step overriding the ones below it:
+/// 1. A release always forwards.
+/// 2. An `XF86Switch_VT` keysym is a VT switch, ahead of any matching binding.
+/// 3. The first in-scope matching binding fires, subject to the fullscreen gate
+///    (`runs_under`): over a fullscreen surface a binding fires only when
+///    `allow_fullscreen`, otherwise the key forwards to the client.
+/// 4. An action runs wherever focus is. A keyboard or command binding reaches
+///    Emacs only off Emacs, otherwise it forwards.
+/// 5. With no binding, a key forwards to Emacs text input when an input is active,
+///    focus is off Emacs, and the key is itself no modifier. `TextInput` reaches
+///    Emacs by mechanism and the application by destination.
+/// 6. Otherwise the key forwards to the focused client.
 pub fn classify_key(
     intercepted_keys: &[InterceptedKey],
     routing: KeyRouting,
