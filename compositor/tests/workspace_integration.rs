@@ -224,7 +224,7 @@ fn an_urgent_workspace_is_flagged_until_focused() {
 
     fix.ewm().set_surface_urgent(noisy, true);
     assert!(fix.ewm().mark_workspace_urgent(Some(marked)));
-    assert!(!fix.ewm().mark_workspace_urgent(Some(101)));
+    fix.ewm().mark_workspace_urgent(Some(101));
     fix.roundtrip(&mut bar);
     let events = bar.drain_events();
     assert_eq!(urgent(&events, &first), Some(true));

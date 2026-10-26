@@ -91,16 +91,17 @@ impl Ewm {
         if urgent && self.layout.has_frame(surface_id) {
             return false;
         }
-        if urgent && self.focused_surface_id() == Some(surface_id) {
-            return false;
-        }
 
         self.surfaces
             .get_mut(&surface_id)
             .is_some_and(|surface| std::mem::replace(&mut surface.urgent, urgent) != urgent)
     }
 
-    pub(crate) fn clear_focused_urgency(&mut self) {
+    /// Outside the overview, whatever holds focus has been seen.
+    pub fn refresh_urgency(&mut self) {
+        if self.overview.is_open() {
+            return;
+        }
         for id in [self.focused_surface_id(), self.focused_frame_id()]
             .into_iter()
             .flatten()
@@ -116,9 +117,6 @@ impl Ewm {
             return false;
         };
         if !self.layout.has_frame(frame_surface_id) {
-            return false;
-        }
-        if self.focused_frame_id() == Some(frame_surface_id) {
             return false;
         }
 
@@ -177,7 +175,6 @@ impl Ewm {
         }
         let shown = self.layout.activate_frame(frame_id, entry_id);
         self.settle_shown(shown);
-        self.clear_focused_urgency();
         let (x, y, pointer) = match notify {
             Notify::None => return focus_id,
             Notify::Emacs => (None, None, false),

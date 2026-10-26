@@ -51,6 +51,8 @@ enum Op {
     DestroyFrame(u64),
     DestroySurface(u64),
     ActivateSurface(u64),
+    /// A bell marks the frame.
+    MarkUrgent(u64),
     /// A compositor action, as a key or `ewm-action-module` runs it.
     Action(Action),
 }
@@ -178,6 +180,7 @@ fn op_strategy() -> impl Strategy<Value = Op> {
         FRAME_SID_RANGE.prop_map(Op::DestroyFrame),
         ENTRY_SID_RANGE.prop_map(Op::DestroySurface),
         ENTRY_SID_RANGE.prop_map(Op::ActivateSurface),
+        FRAME_SID_RANGE.prop_map(Op::MarkUrgent),
     ]
 }
 
@@ -424,6 +427,9 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
             if focused && let Some(frame) = prev.0 {
                 assert_focused_frame_view(fix, id, frame);
             }
+        }
+        Op::MarkUrgent(f) => {
+            fix.ewm().mark_workspace_urgent(Some(frames.real(f)));
         }
         Op::DestroySurface(id) => {
             let was_present = layout_surface_ids(fix).contains(&id);
@@ -720,10 +726,65 @@ fn check_show_hide_ops(ops: Vec<Op>) -> Result<(), TestCaseError> {
     Ok(())
 }
 
+/// Inside the overview no op clears a mark. Outside it, once refreshed, whatever holds focus is
+/// not urgent (invariant 20).
+fn check_urgency_ops(ops: Vec<Op>) -> Result<(), TestCaseError> {
+    let _serial = SERIAL.lock().unwrap();
+    let mut fix = Fixture::new().unwrap();
+    for name in OUTPUTS {
+        fix.add_output(name, 1920, 1080);
+    }
+    let mut frames = Frames::new(&mut fix);
+    for op in ops {
+        let was_open = fix.ewm_ref().overview.is_open();
+        let marked: Vec<u64> = fix
+            .ewm_ref()
+            .surfaces
+            .iter()
+            .filter(|(_, surface)| surface.urgent)
+            .map(|(id, _)| *id)
+            .collect();
+        apply_op(&mut fix, &mut frames, op);
+        fix.dispatch();
+        let ewm = fix.ewm_ref();
+        if ewm.overview.is_open() {
+            for id in marked
+                .iter()
+                .filter(|id| was_open && ewm.surfaces.contains_key(id))
+            {
+                prop_assert!(
+                    ewm.surfaces[id].urgent,
+                    "frame {id} unmarked inside the overview"
+                );
+            }
+        } else {
+            for id in [ewm.focused_surface_id(), ewm.focused_frame_id()]
+                .into_iter()
+                .flatten()
+            {
+                prop_assert!(
+                    ewm.surfaces.get(&id).is_none_or(|surface| !surface.urgent),
+                    "focused {id} is urgent outside the overview"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 proptest! {
     #[test]
     fn focus_invariants_hold(ops in prop::collection::vec(op_strategy(), 1..30)) {
         check_focus_ops(ops)?;
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(proptest_cases(64)))]
+
+    #[test]
+    fn urgency_survives_the_overview(ops in prop::collection::vec(op_strategy(), 1..30)) {
+        check_urgency_ops(ops)?;
     }
 }
 

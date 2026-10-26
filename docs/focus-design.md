@@ -306,6 +306,10 @@ After specific operations:
     keyboard to the next shown float, else to the strip, and an output whose
     strip emptied gives it to its topmost float.  Checked by
     `Layout::verify_invariants`.
+20. **A mark outlives focus inside the overview.**  A bell marks a frame,
+    the mark survives every focus change while the overview is open, and
+    once it is closed the next refresh clears the frame and surface that
+    hold focus.  Checked by `check_urgency_ops`.
 
 ## Why two threads make this hard
 

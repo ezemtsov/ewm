@@ -157,8 +157,8 @@ the workspace name."
 
 (defun ewm-workspace-mark-urgent (&optional frame)
   "Mark FRAME's workspace as urgent.
-When FRAME is nil, use the selected frame.  The compositor ignores
-the request when the workspace is already focused."
+When FRAME is nil, use the selected frame.  Focusing the workspace
+clears the mark, except while the overview is open."
   (interactive)
   (ewm-workspace-mark-urgent-module
    (or (frame-parameter frame 'ewm-surface-id)

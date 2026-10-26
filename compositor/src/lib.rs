@@ -2930,6 +2930,7 @@ impl State {
         self.ewm.refresh_idle_inhibit();
         self.ewm.refresh_cursor_outputs();
         self.ewm.refresh_suspended();
+        self.ewm.refresh_urgency();
 
         // Refresh workspace protocol state (pull model: diff source of truth vs mirrors).
         crate::protocols::workspace::refresh::<State>(

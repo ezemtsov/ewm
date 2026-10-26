@@ -841,12 +841,11 @@ impl Ewm {
     /// Settle on the focused frame's selected window once a merge changed it.
     fn sync_focus_after_merge(&mut self, before: (Option<u64>, Option<LayoutEntryId>)) {
         let after = (self.focused_surface_id(), self.focused_entry_id());
-        if after != before {
-            self.clear_focused_urgency();
-            if let Some(id) = after.0 {
-                self.flush_pending_title_event(id);
-                module::record_focus(id, FocusSource::LayoutSelected);
-            }
+        if after != before
+            && let Some(id) = after.0
+        {
+            self.flush_pending_title_event(id);
+            module::record_focus(id, FocusSource::LayoutSelected);
         }
     }
 
