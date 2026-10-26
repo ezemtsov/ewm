@@ -570,6 +570,7 @@ impl Ewm {
                 let changed = toplevel.with_pending_state(|state| {
                     let changed = state.size != new_size;
                     state.size = new_size;
+                    state.bounds = new_size;
                     changed
                 });
                 if changed {

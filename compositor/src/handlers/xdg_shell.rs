@@ -331,13 +331,17 @@ impl Ewm {
             pending.placement
         });
         let frame_is_floating = matches!(placement, Placement::Floating { .. });
+        let working_area = target_output
+            .as_ref()
+            .map(|output| self.get_working_area(output).size);
 
         surface.with_pending_state(|state| {
+            state.bounds = working_area;
             if is_emacs && frame_is_floating {
                 // Let Emacs drive the size. The frame fits itself to its content.
                 state.size = None;
             } else {
-                state.size = Some(self.output_size);
+                state.size = working_area;
                 state.states.set(XdgToplevelState::Maximized);
             }
             state.states.set(XdgToplevelState::Activated);
@@ -368,19 +372,6 @@ impl Ewm {
             // Scale and enter before the first commit, bypassing SpaceElement::output_enter
             // which would leave uncommitted surfaces.
             enter_output_for_window(&window, output);
-        }
-
-        // Resize Emacs frames to fill their working area
-        if is_emacs
-            && !frame_is_floating
-            && let Some(output) = &target_output
-            && let Some(t) = window.toplevel()
-        {
-            let working_area = self.get_working_area(output);
-            t.with_pending_state(|state| {
-                state.size = Some(working_area.size);
-            });
-            t.send_configure();
         }
 
         // App surfaces resolve their host frame at map. `New` only creates the buffer.

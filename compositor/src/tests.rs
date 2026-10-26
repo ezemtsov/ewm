@@ -26,6 +26,19 @@ fn layout_entry_window_title_uses_workspace_and_entry_name() {
 }
 
 #[test]
+fn new_toplevel_is_configured_to_its_output() {
+    let mut fix = testing::Fixture::new().unwrap();
+    fix.add_output(HEAD_A, 1280, 720);
+    fix.add_output(HEAD_B, 1920, 1080);
+
+    let mut client = fix.new_client().unwrap();
+    fix.roundtrip(&mut client);
+    fix.open_toplevel_unmapped(&mut client, "settings", None);
+
+    assert_eq!(fix.configured(&mut client), vec![(1280, 720)]);
+}
+
+#[test]
 fn new_toplevel_skips_focused_floating_frame_for_tiled_host() {
     let mut fix = testing::Fixture::new().unwrap();
     fix.add_output(HEAD_A, 1600, 900);
