@@ -532,7 +532,9 @@ impl State {
 
         Some(match owner {
             HeldKeyOwner::KeyboardRedirect => KeyboardAction::RedirectToEmacs,
-            HeldKeyOwner::Command | HeldKeyOwner::Action => KeyboardAction::Bound,
+            HeldKeyOwner::Command | HeldKeyOwner::Action | HeldKeyOwner::Emulate => {
+                KeyboardAction::Bound
+            }
             HeldKeyOwner::TextInput => KeyboardAction::TextInputIntercepted,
         })
     }
@@ -594,6 +596,7 @@ impl State {
             Bound::Command { key } => self
                 .ewm
                 .queue_event(crate::Event::InterceptedCommand { key }),
+            Bound::Emulate { keys } => self.send_keys(None, keys),
         }
     }
 
@@ -2133,6 +2136,10 @@ pub fn classify_key(
                 repeat: ik.repeat,
             },
             _ if focus_on_emacs => KeyAction::Forward,
+            InterceptDispatch::Emulate(keys) => KeyAction::Bound {
+                bound: Bound::Emulate { keys: keys.clone() },
+                repeat: ik.repeat,
+            },
             InterceptDispatch::Keyboard => KeyAction::KeyboardRedirect(keysym_raw),
             InterceptDispatch::Command => KeyAction::Bound {
                 bound: Bound::Command {
@@ -2468,6 +2475,7 @@ impl State {
                     .keysym()
                     .and_then(|k| self.ewm.keyboard.keycode_for_keysym(k))
                 else {
+                    warn!(keysym = ?key.key.keysym(), "no keycode for emulate key in layout");
                     continue;
                 };
                 let mods = (key.ctrl, key.alt, key.shift, key.logo);

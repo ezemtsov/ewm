@@ -22,6 +22,7 @@ pub(crate) enum HeldKeyOwner {
     KeyboardRedirect,
     Command,
     Action,
+    Emulate,
     TextInput,
 }
 
@@ -31,6 +32,7 @@ impl HeldKeyOwner {
             Self::KeyboardRedirect => "keyboard_redirect",
             Self::Command => "command",
             Self::Action => "action",
+            Self::Emulate => "emulate",
             Self::TextInput => "text_input",
         }
     }
@@ -44,12 +46,14 @@ mod tests {
     use smithay::reexports::calloop::EventLoop;
 
     use super::*;
+    use crate::module::{ChordSpec, KeyName};
     use crate::testing::proptest_cases;
 
     #[derive(Clone, Debug)]
     enum OwnerSeed {
         KeyboardRedirect,
         Command,
+        Emulate,
         TextInput,
     }
 
@@ -58,6 +62,7 @@ mod tests {
             match self {
                 Self::KeyboardRedirect => HeldKeyOwner::KeyboardRedirect,
                 Self::Command => HeldKeyOwner::Command,
+                Self::Emulate => HeldKeyOwner::Emulate,
                 Self::TextInput => HeldKeyOwner::TextInput,
             }
         }
@@ -66,6 +71,7 @@ mod tests {
     #[derive(Clone, Debug)]
     enum RepeatModel {
         Command(u32),
+        Emulate(u32),
         TextInput(u32),
     }
 
@@ -74,6 +80,7 @@ mod tests {
         Begin(u32, OwnerSeed),
         End(u32),
         StartCommandRepeat(u32),
+        StartEmulateRepeat(u32),
         StartTextRepeat(u32),
         CancelCommandRepeat,
         DisableRepeat,
@@ -88,6 +95,7 @@ mod tests {
         prop_oneof![
             Just(OwnerSeed::KeyboardRedirect),
             Just(OwnerSeed::Command),
+            Just(OwnerSeed::Emulate),
             Just(OwnerSeed::TextInput),
         ]
     }
@@ -97,11 +105,24 @@ mod tests {
             (key_strategy(), owner_strategy()).prop_map(|(key, owner)| Op::Begin(key, owner)),
             key_strategy().prop_map(Op::End),
             key_strategy().prop_map(Op::StartCommandRepeat),
+            key_strategy().prop_map(Op::StartEmulateRepeat),
             key_strategy().prop_map(Op::StartTextRepeat),
             Just(Op::CancelCommandRepeat),
             Just(Op::DisableRepeat),
             Just(Op::EnableRepeat),
         ]
+    }
+
+    /// The chords an `Emulate` repeat for `key` carries, one per key and offset past the
+    /// modeled 1..=4 keycode range.
+    fn emulate_keys(key: u32) -> Vec<ChordSpec> {
+        vec![ChordSpec {
+            key: KeyName::Code(200 + key),
+            ctrl: false,
+            alt: false,
+            shift: false,
+            logo: false,
+        }]
     }
 
     fn assert_matches_model(
@@ -142,6 +163,17 @@ mod tests {
                 assert_eq!(surface_id, &(1000 + u64::from(*k)));
                 assert_eq!(held.get(k), Some(&HeldKeyOwner::TextInput));
             }
+            (
+                Some(InterceptRepeat::Bound {
+                    keycode,
+                    bound: Bound::Emulate { keys },
+                }),
+                Some(RepeatModel::Emulate(k)),
+            ) => {
+                assert_eq!(keycode, k);
+                assert_eq!(keys, &emulate_keys(*k));
+                assert_eq!(held.get(k), Some(&HeldKeyOwner::Emulate));
+            }
             (actual, expected) => {
                 panic!("repeat mismatch: actual={actual:?} expected={expected:?}");
             }
@@ -170,7 +202,7 @@ mod tests {
                     Op::End(key) => {
                         state.end_hold(&handle, key);
                         held.remove(&key);
-                        if matches!(repeat, Some(RepeatModel::Command(k) | RepeatModel::TextInput(k)) if k == key) {
+                        if matches!(repeat, Some(RepeatModel::Command(k) | RepeatModel::Emulate(k) | RepeatModel::TextInput(k)) if k == key) {
                             repeat = None;
                         }
                     }
@@ -178,6 +210,12 @@ mod tests {
                         state.start_repeat(&handle, InterceptRepeat::Bound { keycode: key, bound: Bound::Command { key: format!("key-{key}") } });
                         if repeat_enabled {
                             repeat = Some(RepeatModel::Command(key));
+                        }
+                    }
+                    Op::StartEmulateRepeat(key) if held.get(&key) == Some(&HeldKeyOwner::Emulate) => {
+                        state.start_repeat(&handle, InterceptRepeat::Bound { keycode: key, bound: Bound::Emulate { keys: emulate_keys(key) } });
+                        if repeat_enabled {
+                            repeat = Some(RepeatModel::Emulate(key));
                         }
                     }
                     Op::StartTextRepeat(key) if held.get(&key) == Some(&HeldKeyOwner::TextInput) => {
@@ -242,6 +280,7 @@ impl InterceptRepeat {
             Self::Bound { bound, .. } => match bound {
                 Bound::Command { .. } => HeldKeyOwner::Command,
                 Bound::Action(_) => HeldKeyOwner::Action,
+                Bound::Emulate { .. } => HeldKeyOwner::Emulate,
             },
         }
     }

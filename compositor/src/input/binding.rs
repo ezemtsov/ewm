@@ -106,6 +106,7 @@ impl InterceptedKey {
             InterceptDispatch::Command => Some(Bound::Command {
                 key: self.key.clone(),
             }),
+            InterceptDispatch::Emulate(keys) => Some(Bound::Emulate { keys: keys.clone() }),
             InterceptDispatch::Keyboard => None,
         }
     }
@@ -128,8 +129,14 @@ pub fn find_binding(
 /// What a bound trigger runs: a compositor action, or `key` as an Emacs command.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum Bound {
-    Command { key: String },
+    Command {
+        key: String,
+    },
     Action(Action),
+    /// Re-emit the target chords straight to the focused client.
+    Emulate {
+        keys: Vec<module::ChordSpec>,
+    },
 }
 
 /// How an intercepted key is delivered to Emacs.
@@ -146,6 +153,8 @@ pub enum InterceptDispatch {
     Command,
     /// Run in the compositor, Emacs told afterwards.
     Action(Action),
+    /// Re-emit the target chords to the focused client, no Emacs round trip.
+    Emulate(Vec<module::ChordSpec>),
 }
 
 /// What a key or a module call changes in the compositor alone, Emacs told by events.

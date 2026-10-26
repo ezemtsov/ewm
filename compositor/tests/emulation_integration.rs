@@ -27,6 +27,7 @@ const KEY_N: u32 = 49 + 8;
 const KEY_LEFTALT: u32 = 56 + 8;
 const KEY_HOME: u32 = 102 + 8;
 const KEY_END: u32 = 107 + 8;
+const KEY_DOWN: u32 = 108 + 8;
 const KEY_DELETE: u32 = 111 + 8;
 
 /// Loads the real Lisp with the module stubbed to keep the last list and key sent.
@@ -198,10 +199,11 @@ impl Harness {
     }
 }
 
-/// A key entry is intercepted as a repeating command on its own surface and
-/// forwarded untouched everywhere else.
+/// A key entry is served in the compositor. Pressing it over its surface hands that
+/// client the mapped keys directly, with no Emacs round trip, and it forwards untouched
+/// on every other surface.
 #[test]
-fn key_entries_are_intercepted_on_their_surface_only() {
+fn key_entries_are_emulated_on_their_surface_only() {
     let mut h = Harness::new();
     h.fix.configure_lisp(&format!(
         r#"(add-hook 'ewm-update-app-hook
@@ -211,28 +213,14 @@ fn key_entries_are_intercepted_on_their_surface_only() {
            (ewm--handle-new-surface '((id . {1}) (app . "other")))"#,
         h.ids[APP0], h.ids[APP1]
     ));
-    h.fix.enable_event_capture();
-    assert_eq!(h.fix.keyboard_key(KEY_LEFTCTRL, true), Forward);
-    h.wires();
-    assert_eq!(h.fix.keyboard_key(KEY_N, true), Bound);
-    let mut commands = 0;
-    for _ in 0..100 {
-        h.fix.roundtrip(&mut h.clients[APP0]);
-        commands += h
-            .fix
-            .drain_events()
-            .iter()
-            .filter(|e| matches!(e, Event::InterceptedCommand { key } if key == "C-n"))
-            .count();
-        if commands >= 2 {
-            break;
-        }
-    }
-    assert_eq!(h.fix.keyboard_key(KEY_N, false), Bound);
-    assert!(h.wires().iter().all(Vec::is_empty), "a client saw the key");
-    assert!(commands >= 2, "press plus repeats: {commands}");
-    assert_eq!(h.fix.keyboard_key(KEY_LEFTCTRL, false), Forward);
+    // Firefox is focused. C-n is its per-app emulation, and the client is handed <down>,
+    // never C-n itself, the same key the old Lisp round trip delivered.
+    assert_eq!(
+        h.tap(KEY_LEFTCTRL, KEY_N, Bound),
+        tapped(0, KEY_DOWN, h.ctrl)
+    );
 
+    // Off that surface the key is no one's emulation and forwards as itself.
     for client in [APP1, EMACS] {
         h.focus(client);
         assert_eq!(
@@ -242,21 +230,19 @@ fn key_entries_are_intercepted_on_their_surface_only() {
     }
 }
 
-/// Emacs sends the mapped keys for key and command entries alike, and a target
-/// may be a sequence.
+/// A command entry still round-trips through Lisp. The command runs, then Emacs sends
+/// the key it maps to, which a target may spell as a sequence.
 #[test]
-fn emacs_sends_the_mapped_keys_for_both_entry_kinds() {
+fn emacs_sends_the_mapped_keys_for_command_entries() {
     let mut h = Harness::new();
     let config = format!(
         r#"(setopt ewm-surface-emulate-keys
-                   '(("C-n" . "<down>") (kill-ring-save . "C-c") ("C-k" . "<end> <delete>")))
+                   '((kill-ring-save . "C-c") (mark-whole-buffer . "<end> <delete>")))
            (ewm--handle-new-surface '((id . {0}) (app . "app")))
            (switch-to-buffer (gethash {0} ewm--surfaces))
-           (execute-kbd-macro (kbd "C-n"))
-           (cl-assert (equal (plist-get (car (aref sent 1)) :key) "down"))
            (execute-kbd-macro (kbd "M-w"))
            (cl-assert (eql (plist-get (car (aref sent 1)) :key) ?c))
-           (execute-kbd-macro (kbd "C-k"))"#,
+           (execute-kbd-macro (kbd "C-x h"))"#,
         h.ids[APP0]
     );
     let wire = only(h.send_lisp(&config), APP0);

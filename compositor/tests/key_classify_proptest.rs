@@ -7,7 +7,7 @@ use ewm_core::input::{
     classify_scroll, classify_swipe,
 };
 use ewm_core::testing::proptest_cases;
-use ewm_core::{Action, InterceptDispatch, InterceptedKey, Trigger};
+use ewm_core::{Action, ChordSpec, InterceptDispatch, InterceptedKey, KeyName, Trigger};
 use proptest::prelude::*;
 use smithay::input::keyboard::{Keysym, ModifiersState, keysyms};
 
@@ -148,6 +148,23 @@ fn arb_action() -> impl Strategy<Value = Action> {
     ]
 }
 
+/// A short, non-empty target sequence for an `Emulate` binding, drawn from a fixed name
+/// pool since the chords are only carried and compared, never resolved.
+fn arb_chords() -> impl Strategy<Value = Vec<ChordSpec>> {
+    let chord = (
+        prop::sample::select(vec!["down", "end", "delete", "home"]),
+        arb_mods(),
+    )
+        .prop_map(|(name, mods)| ChordSpec {
+            key: KeyName::Name(name.to_owned()),
+            ctrl: mods.ctrl,
+            alt: mods.alt,
+            shift: mods.shift,
+            logo: mods.logo,
+        });
+    prop::collection::vec(chord, 1..4)
+}
+
 /// Every `InterceptDispatch` kind. The match on it in the gate and mapping tests has
 /// no wildcard, so a new variant breaks the build until covered.
 fn arb_dispatch() -> impl Strategy<Value = InterceptDispatch> {
@@ -155,6 +172,7 @@ fn arb_dispatch() -> impl Strategy<Value = InterceptDispatch> {
         Just(InterceptDispatch::Keyboard),
         Just(InterceptDispatch::Command),
         arb_action().prop_map(InterceptDispatch::Action),
+        arb_chords().prop_map(InterceptDispatch::Emulate),
     ]
 }
 
@@ -409,6 +427,10 @@ proptest! {
                     action,
                     KeyAction::Bound { bound: Bound::Command { key: "cmd".to_owned() }, repeat: false }
                 ),
+                InterceptDispatch::Emulate(keys) => prop_assert_eq!(
+                    action,
+                    KeyAction::Bound { bound: Bound::Emulate { keys }, repeat: false }
+                ),
             }
         } else {
             // Gated shut, the key forwards to the client ahead of the text-input tail.
@@ -473,7 +495,9 @@ proptest! {
                 action,
                 KeyAction::Bound { bound: Bound::Action(action_kind), repeat }
             ),
-            InterceptDispatch::Keyboard | InterceptDispatch::Command => {
+            InterceptDispatch::Keyboard
+            | InterceptDispatch::Command
+            | InterceptDispatch::Emulate(_) => {
                 prop_assert_eq!(action, KeyAction::Forward)
             }
         }
@@ -505,6 +529,10 @@ proptest! {
             InterceptDispatch::Command => prop_assert_eq!(
                 action,
                 KeyAction::Bound { bound: Bound::Command { key: "cmd".to_owned() }, repeat }
+            ),
+            InterceptDispatch::Emulate(keys) => prop_assert_eq!(
+                action,
+                KeyAction::Bound { bound: Bound::Emulate { keys }, repeat }
             ),
         }
     }
@@ -692,5 +720,35 @@ proptest! {
         let first = classify_key(std::slice::from_ref(&ik), routing, seed.as_input());
         let second = classify_key(std::slice::from_ref(&ik), routing, seed.as_input());
         prop_assert_eq!(first, second);
+    }
+
+    /// A surface-scoped key-type emulation is compositor-native: off Emacs it classifies
+    /// to `Bound::Emulate` carrying the target chords, bound for the application rather
+    /// than Emacs.
+    #[test]
+    fn surface_scoped_emulate_targets_application(
+        sym in arb_safe_keysym(),
+        mods in arb_mods(),
+        keys in arb_chords(),
+        a in any::<u64>(),
+        repeat in any::<bool>(),
+    ) {
+        let ik = Build::keysym(sym, &mods)
+            .dispatch(InterceptDispatch::Emulate(keys.clone()))
+            .repeat(repeat)
+            .surface(Some(a))
+            .build();
+        prop_assert!(ik.matches(sym, sym, &mods));
+        let routing = KeyRouting {
+            text_input_surface: None,
+            focus_on_emacs: false,
+            fullscreen_active: false,
+            focused_surface_id: Some(a),
+        };
+        let action = classify_key(std::slice::from_ref(&ik), routing, press(sym, &mods).as_input());
+        prop_assert_eq!(
+            action,
+            KeyAction::Bound { bound: Bound::Emulate { keys }, repeat }
+        );
     }
 }

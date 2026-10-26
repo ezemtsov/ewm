@@ -1486,7 +1486,7 @@ fn gesture_trigger(name: &str) -> Option<Trigger> {
 }
 
 /// A key as Emacs names it: a character code or a key name like `left`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(untagged)]
 pub enum KeyName {
     Code(u32),
@@ -1546,7 +1546,7 @@ pub(crate) struct KeySpec {
 }
 
 /// A key with the modifiers a client should see it under, as Lisp names it.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct ChordSpec {
     pub key: KeyName,

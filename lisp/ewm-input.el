@@ -18,8 +18,8 @@
 ;;    use-package :bind (:map ewm-mode-map ...). Touchpad swipes bind as
 ;;    `<swipe-FINGERS-DIRECTION>' keys and scrolls as `<wheel-DIRECTION>'
 ;;    keys, with the usual modifier prefixes.
-;; 2. `ewm-surface-emulate-keys' - Key entries are intercepted as commands
-;;    and `ewm-surface-emulate' sends the mapped keys to the client.
+;; 2. `ewm-surface-emulate-keys' - Key entries emulate their mapped keys in the
+;;    compositor, command entries route through `ewm-surface-emulate'.
 ;;
 ;; Example:
 ;;   (use-package ewm
@@ -421,22 +421,17 @@ Nil for both means the focused surface. Waits while Emacs holds the keyboard."
       (apply #'ewm-send-key-module send))))
 
 (defun ewm-surface-emulate ()
-  "Send the keys `ewm-surface-emulate-keys' maps the typed key or command to."
+  "Send the keys `ewm-surface-emulate-keys' maps the invoked command to."
   (interactive)
-  (let* ((keys (this-command-keys-vector))
-         (event (and (= (length keys) 1) (aref keys 0)))
-         (command (unless (eq this-original-command 'ewm-surface-emulate)
+  (let* ((command (unless (eq this-original-command 'ewm-surface-emulate)
                     this-original-command))
          (target (cl-loop for (from . to)
                           in (append ewm-surface-emulate-keys
                                      (default-value 'ewm-surface-emulate-keys))
-                          when (if (symbolp from)
-                                   (eq from command)
-                                 (and event (eq (ewm--key-event from) event)))
+                          when (eq from command)
                           return to)))
     (cond (target (ewm-send-key target))
-          (command (call-interactively command))
-          (t (ewm-send-key (key-description keys))))))
+          (command (call-interactively command)))))
 
 (defun ewm-input--keyboard-capture-on ()
   "Enable compositor keyboard capture for foreground Emacs input."
@@ -619,16 +614,17 @@ ENTRY is its (COMMAND . FLAGS) in `ewm-mode-map', looked up when omitted."
                          :repeat (and (memq :repeat flags) t))))
 
 (defun ewm--emulation-specs (table &optional surface)
-  "Return command intercepts for TABLE's key entries, scoped to SURFACE when given.
-Every entry also runs as `ewm-surface-emulate' in surface buffers."
-  (cl-loop for (from . _) in table
+  "Return intercepts for TABLE's key entries, scoped to SURFACE when given.
+Command entries instead remap to `ewm-surface-emulate' in surface buffers."
+  (cl-loop for (from . to) in table
            for event = (ewm--key-event from)
            if (symbolp from)
            do (define-key ewm-surface-mode-map (vector 'remap from) #'ewm-surface-emulate)
            else if event
-           do (define-key ewm-surface-mode-map (vector event) #'ewm-surface-emulate)
-           and collect (ewm--intercept-spec event :dispatch 'command :repeat t
-                                            :surface surface)
+           collect (ewm--intercept-spec
+                    event
+                    :dispatch (cons 'emulate (seq-keep #'ewm--event-key-spec (key-parse to)))
+                    :repeat t :surface surface)
            else
            do (display-warning
                'ewm (format "ewm-surface-emulate-keys: %S is not a single key or command" from))))
