@@ -72,6 +72,7 @@ pub struct OutputManagementState {
     serial: u32,
     clients: HashMap<ClientId, ClientData>,
     current_state: HashMap<String, OutputHeadState>,
+    current_config: HashMap<String, OutputConfig>,
     /// Set by the backend when output topology or config changes, cleared by
     /// `Ewm::refresh_output_management`, which sends the updates.
     pub output_heads_changed: bool,
@@ -168,8 +169,13 @@ impl OutputManagementState {
             clients: HashMap::new(),
             serial: 0,
             current_state: HashMap::new(),
+            current_config: HashMap::new(),
             output_heads_changed: false,
         }
+    }
+
+    pub fn on_config_changed(&mut self, new_config: HashMap<String, OutputConfig>) {
+        self.current_config = new_config;
     }
 
     /// Update protocol state when outputs change.
@@ -604,19 +610,13 @@ where
                     }
                 };
 
-                let Some(current_head) = g_state.current_state.get(output_name) else {
-                    tracing::error!("EnableHead: output missing from current state");
-                    let _fail = data_init.init(id, OutputConfigurationHeadState::Cancelled);
-                    return;
-                };
-
-                if insert_output_config(
-                    new_config,
-                    output_name.clone(),
-                    output_config_from_head(current_head),
-                )
-                .is_err()
-                {
+                let mut config = g_state
+                    .current_config
+                    .get(output_name)
+                    .cloned()
+                    .unwrap_or_default();
+                config.enabled = true;
+                if insert_output_config(new_config, output_name.clone(), config).is_err() {
                     let _fail = data_init.init(id, OutputConfigurationHeadState::Cancelled);
                     conf.post_error(
                         zwlr_output_configuration_v1::Error::AlreadyConfiguredHead,
@@ -647,16 +647,13 @@ where
                     }
                 };
 
-                if insert_output_config(
-                    new_config,
-                    output_name.clone(),
-                    OutputConfig {
-                        enabled: false,
-                        ..Default::default()
-                    },
-                )
-                .is_err()
-                {
+                let mut config = g_state
+                    .current_config
+                    .get(output_name)
+                    .cloned()
+                    .unwrap_or_default();
+                config.enabled = false;
+                if insert_output_config(new_config, output_name.clone(), config).is_err() {
                     conf.post_error(
                         zwlr_output_configuration_v1::Error::AlreadyConfiguredHead,
                         "head has been already configured",
@@ -1047,29 +1044,6 @@ fn is_known_adaptive_sync_state(state: WEnum<AdaptiveSyncState>) -> bool {
     }
 }
 
-/// Build an OutputConfig from the current head state (used when enabling a head).
-fn output_config_from_head(head: &OutputHeadState) -> OutputConfig {
-    let mode = head.current_mode.and_then(|idx| {
-        head.modes.get(idx).map(|m| Mode {
-            custom: false,
-            mode: ConfiguredMode {
-                width: m.width as u16,
-                height: m.height as u16,
-                refresh: refresh_hz(m.refresh),
-            },
-        })
-    });
-
-    OutputConfig {
-        mode,
-        modeline: None,
-        position: head.position,
-        scale: head.scale,
-        transform: head.transform,
-        enabled: true,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1206,35 +1180,15 @@ mod tests {
     #[test]
     fn insert_output_config_rejects_duplicate_heads() {
         let mut configs = HashMap::new();
-        let source = head("HEAD-A");
-        let enabled = output_config_from_head(&source);
-        let disabled = config(false);
-
         assert_eq!(
-            insert_output_config(&mut configs, "HEAD-A".to_string(), enabled),
+            insert_output_config(&mut configs, "HEAD-A".to_string(), config(true)),
             Ok(()),
         );
         assert_eq!(
-            insert_output_config(&mut configs, "HEAD-A".to_string(), disabled),
+            insert_output_config(&mut configs, "HEAD-A".to_string(), config(false)),
             Err(ConfigureHeadError::AlreadyConfigured),
         );
-
-        let stored = &configs["HEAD-A"];
-        assert!(stored.enabled);
-        assert_eq!(
-            stored.mode,
-            Some(Mode {
-                custom: false,
-                mode: ConfiguredMode {
-                    width: 1920,
-                    height: 1080,
-                    refresh: Some(60.0),
-                },
-            })
-        );
-        assert_eq!(stored.position, Some((0, 0)));
-        assert_eq!(stored.scale, Some(1.0));
-        assert_eq!(stored.transform, Some(Transform::Normal));
+        assert!(configs["HEAD-A"].enabled);
     }
 
     #[test]

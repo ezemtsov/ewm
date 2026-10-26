@@ -2731,6 +2731,9 @@ impl State {
     /// Preserves the pointer's relative position within the output (e.g. center
     /// stays center after a scale change).
     fn apply_output_config_for(&mut self, output_name: &str) {
+        self.ewm
+            .output_management_state
+            .on_config_changed(self.ewm.output_config.clone());
         let pos: Point<f64, Logical> = self.ewm.pointer_location().into();
         let output = self.ewm.find_mapped_output(output_name);
         let old_geo = output.as_ref().and_then(|o| self.ewm.layout.output_rect(o));

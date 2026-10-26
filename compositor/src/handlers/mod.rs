@@ -491,7 +491,6 @@ impl OutputManagementHandler for State {
     }
 
     fn apply_output_config(&mut self, configs: HashMap<String, OutputConfig>) {
-        // Merge each config into ewm.output_config and apply.
         // The backend sets output_heads_changed = true. The deferred
         // refresh_output_management() call (before next render) will
         // send protocol updates to clients, after the Dispatch handler
