@@ -44,8 +44,6 @@ mod config;
 pub(crate) mod floating_move_grab;
 pub(crate) mod floating_resize_grab;
 pub(crate) mod frame_click_grab;
-#[cfg(test)]
-mod routing_tests;
 mod scroll_tracker;
 
 use std::any::Any;
