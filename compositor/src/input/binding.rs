@@ -111,15 +111,18 @@ impl InterceptedKey {
     }
 }
 
-/// The first binding that `matches` among those applying to input reaching `surface_id`.
+/// The binding that `matches` in scope, a surface-scoped one preferred over a global one.
 pub fn find_binding(
     bindings: &[InterceptedKey],
     surface_id: Option<u64>,
     matches: impl Fn(&InterceptedKey) -> bool,
 ) -> Option<&InterceptedKey> {
+    let in_scope_match = |ik: &&InterceptedKey| ik.in_scope(surface_id) && matches(ik);
     bindings
         .iter()
-        .find(|ik| ik.in_scope(surface_id) && matches(ik))
+        .filter(in_scope_match)
+        .find(|ik| ik.surface.is_some())
+        .or_else(|| bindings.iter().find(in_scope_match))
 }
 
 /// What a bound trigger runs: a compositor action, or `key` as an Emacs command.

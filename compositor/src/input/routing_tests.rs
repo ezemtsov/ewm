@@ -1,10 +1,6 @@
-//! Characterization proptests for the pure key router.
-//!
-//! These pin the precedence `classify_key` guarantees, plus the scope and
-//! fullscreen subset shared by `classify_swipe` and `classify_scroll`. Every
-//! match-path property draws its binding and input from one coordinated
-//! generator and meta-asserts that the two still `matches`, so a change that
-//! silently stops matching fails here instead of passing as a `Forward` no-op.
+//! Characterization proptests for the pure key router. Every match-path property
+//! draws its binding and input from one coordinated generator and meta-asserts the
+//! two still `matches`, so a matcher that silently stops matching fails here.
 
 use proptest::prelude::*;
 use smithay::input::keyboard::{Keysym, ModifiersState, keysyms};
@@ -153,9 +149,8 @@ fn arb_action() -> impl Strategy<Value = Action> {
     ]
 }
 
-/// A dispatch of every `InterceptDispatch` kind. `dispatch_mapping`, `emacs_focus_gate`
-/// and `fullscreen_gate` match it with no wildcard arm, so a new variant breaks the
-/// build until the generator and those assertions cover it.
+/// Every `InterceptDispatch` kind. The match on it in the gate and mapping tests has
+/// no wildcard, so a new variant breaks the build until covered.
 fn arb_dispatch() -> impl Strategy<Value = InterceptDispatch> {
     prop_oneof![
         Just(InterceptDispatch::Keyboard),
@@ -300,21 +295,70 @@ proptest! {
         prop_assert_eq!(action, KeyAction::VtSwitch(n));
     }
 
-    /// Characterization of today's list-order first match. Replaced in Phase 2 by a
-    /// scoped-over-global property, and that replacement is the regression evidence.
+    /// A surface-scoped match beats a global one on the same key, whatever the list
+    /// order. Both orderings run, so this is red on the old first-in-list `find_binding`.
     #[test]
-    fn first_in_scope_match_characterization(
+    fn scoped_beats_global(
+        sym in arb_safe_keysym(),
+        mods in arb_mods(),
+        a in any::<u64>(),
+    ) {
+        let scoped = Build::keysym(sym, &mods)
+            .dispatch(InterceptDispatch::Command)
+            .key("scoped")
+            .surface(Some(a))
+            .build();
+        let global = Build::keysym(sym, &mods)
+            .dispatch(InterceptDispatch::Command)
+            .key("global")
+            .surface(None)
+            .build();
+        // Both match the press and both are in scope for the focused surface, so the
+        // scope class, not `matches`, is the only thing that can decide the winner.
+        prop_assert!(scoped.matches(sym, sym, &mods));
+        prop_assert!(global.matches(sym, sym, &mods));
+        prop_assert!(scoped.in_scope(Some(a)));
+        prop_assert!(global.in_scope(Some(a)));
+        let routing = KeyRouting {
+            text_input_surface: None,
+            focus_on_emacs: false,
+            fullscreen_active: false,
+            focused_surface_id: Some(a),
+        };
+        // global-before-scoped is the ordering the old first-in-list router gets wrong.
+        for bindings in [
+            vec![global.clone(), scoped.clone()],
+            vec![scoped.clone(), global.clone()],
+        ] {
+            let action = classify_key(&bindings, routing, press(sym, &mods).as_input());
+            prop_assert_eq!(
+                action,
+                KeyAction::Bound {
+                    bound: Bound::Command { key: "scoped".to_owned() },
+                    repeat: false,
+                }
+            );
+        }
+    }
+
+    /// Within one scope class, list order still decides: the first match fires.
+    #[test]
+    fn first_within_scope_class_wins(
         sym in arb_safe_keysym(),
         decoy in arb_safe_keysym(),
         mods in arb_mods(),
+        a in any::<u64>(),
+        scoped in any::<bool>(),
         n in 1usize..5,
     ) {
         prop_assume!(decoy != sym);
-        // A leading in-scope non-match is skipped, then the first of several matches fires.
+        // One class per case: all global, or all scoped to the focused surface.
+        let surface = if scoped { Some(a) } else { None };
         let mut bindings = vec![
             Build::keysym(decoy, &mods)
                 .dispatch(InterceptDispatch::Command)
                 .key("decoy")
+                .surface(surface)
                 .build(),
         ];
         for i in 0..n {
@@ -322,13 +366,20 @@ proptest! {
                 Build::keysym(sym, &mods)
                     .dispatch(InterceptDispatch::Command)
                     .key(&format!("cmd-{i}"))
+                    .surface(surface)
                     .build(),
             );
         }
         for ik in &bindings[1..] {
             prop_assert!(ik.matches(sym, sym, &mods));
+            prop_assert!(ik.in_scope(Some(a)));
         }
-        let routing = KeyRouting::default();
+        let routing = KeyRouting {
+            text_input_surface: None,
+            focus_on_emacs: false,
+            fullscreen_active: false,
+            focused_surface_id: Some(a),
+        };
         let action = classify_key(&bindings, routing, press(sym, &mods).as_input());
         prop_assert_eq!(
             action,
@@ -578,6 +629,64 @@ proptest! {
             prop_assert_eq!(scroll, Some(Bound::Command { key: "scroll".to_owned() }));
         } else {
             prop_assert_eq!(scroll, None);
+        }
+    }
+
+    /// Scope ranks for gestures too, whatever the list order. No surface-scoped swipe
+    /// or scroll bindings exist today, so this guards a future invariant.
+    #[test]
+    fn gestures_scoped_beats_global(
+        fingers in 1u32..=4,
+        direction in arb_direction(),
+        mods in arb_mods(),
+        a in any::<u64>(),
+    ) {
+        let scope = Scope { surface_id: Some(a), fullscreen: false };
+
+        let swipe_trigger = Trigger::Swipe { fingers, direction };
+        let scoped_swipe = Build::trigger(swipe_trigger, &mods)
+            .dispatch(InterceptDispatch::Command)
+            .key("scoped")
+            .surface(Some(a))
+            .build();
+        let global_swipe = Build::trigger(swipe_trigger, &mods)
+            .dispatch(InterceptDispatch::Command)
+            .key("global")
+            .surface(None)
+            .build();
+        prop_assert!(scoped_swipe.matches_trigger(swipe_trigger, &mods));
+        prop_assert!(global_swipe.matches_trigger(swipe_trigger, &mods));
+        prop_assert!(scoped_swipe.in_scope(Some(a)));
+        prop_assert!(global_swipe.in_scope(Some(a)));
+        for bindings in [
+            vec![global_swipe.clone(), scoped_swipe.clone()],
+            vec![scoped_swipe.clone(), global_swipe.clone()],
+        ] {
+            let swipe = classify_swipe(&bindings, scope, fingers, direction, &mods);
+            prop_assert_eq!(swipe, SwipeAction::Bound(Bound::Command { key: "scoped".to_owned() }));
+        }
+
+        let scroll_trigger = Trigger::Scroll { direction };
+        let scoped_scroll = Build::trigger(scroll_trigger, &mods)
+            .dispatch(InterceptDispatch::Command)
+            .key("scoped")
+            .surface(Some(a))
+            .build();
+        let global_scroll = Build::trigger(scroll_trigger, &mods)
+            .dispatch(InterceptDispatch::Command)
+            .key("global")
+            .surface(None)
+            .build();
+        prop_assert!(scoped_scroll.matches_trigger(scroll_trigger, &mods));
+        prop_assert!(global_scroll.matches_trigger(scroll_trigger, &mods));
+        prop_assert!(scoped_scroll.in_scope(Some(a)));
+        prop_assert!(global_scroll.in_scope(Some(a)));
+        for bindings in [
+            vec![global_scroll.clone(), scoped_scroll.clone()],
+            vec![scoped_scroll.clone(), global_scroll.clone()],
+        ] {
+            let scroll = classify_scroll(&bindings, scope, direction, &mods);
+            prop_assert_eq!(scroll, Some(Bound::Command { key: "scoped".to_owned() }));
         }
     }
 
