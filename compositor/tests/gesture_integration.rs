@@ -366,7 +366,7 @@ fn a_binding_yields_to_the_fullscreen_surface_under_the_pointer_only() {
     let (_client, _toplevel) = fullscreen_view(&mut fix);
     fix.ewm()
         .set_focus_frame(middle(0), FocusSource::Test, Notify::None);
-    assert!(fix.ewm_ref().focused_fullscreen_entry().is_some());
+    assert!(fix.ewm_ref().focused_fullscreen());
     fix.enable_event_capture();
 
     // The keyboard sits on the fullscreen view, the pointer on the other output: the swipe is ours.

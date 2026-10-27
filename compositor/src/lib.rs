@@ -2449,7 +2449,6 @@ impl Ewm {
             "keyboard_capture": module::get_keyboard_capture(),
             "keyboard_capture_holders": module::keyboard_capture_holders_debug(),
             "debug_mode": module::DEBUG_MODE.load(std::sync::atomic::Ordering::Relaxed),
-            "pending_commands": module::peek_commands(),
             "focus_history": module::get_focus_history(),
         })
     }

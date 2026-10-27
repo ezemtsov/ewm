@@ -389,7 +389,6 @@ fn get_pointer_location() -> Result<Lisp<Data>> {
 // Module Commands (Emacs -> Compositor)
 
 /// Commands sent from Emacs to the compositor via the module interface.
-#[derive(Debug)]
 pub enum ModuleCommand {
     Action {
         action: crate::Action,
@@ -696,16 +695,6 @@ fn command_queue() -> &'static Mutex<Vec<ModuleCommand>> {
 /// Take every command Emacs queued, once per compositor tick.
 pub fn drain_commands() -> Vec<ModuleCommand> {
     command_queue().lock().unwrap().drain(..).collect()
-}
-
-/// Peek at pending commands without draining (for state dump)
-pub fn peek_commands() -> Vec<String> {
-    command_queue()
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|cmd| format!("{:?}", cmd))
-        .collect()
 }
 
 /// Push a command to the queue and wake the compositor.

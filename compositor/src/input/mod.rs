@@ -742,21 +742,8 @@ impl State {
             return KeyboardAction::Forward;
         }
 
-        // Look up the focused entry on the focused frame. If it's fullscreen,
-        // make sure normal forwarded keys still go to that surface.
-        let fullscreen_entry = self.ewm.focused_fullscreen_entry();
-        let fullscreen_active = fullscreen_entry.is_some();
-
-        // Undo temporary redirects before forwarding into fullscreen surfaces.
-        if let Some((entry_id, surface_id)) = fullscreen_entry
-            && self.ewm.focused_surface_id() != Some(surface_id)
-        {
-            self.ewm.set_focus_entry(
-                entry_id,
-                FocusSource::FullscreenFocusRedirect,
-                Notify::Emacs,
-            );
-        }
+        // Unflagged bindings yield under a fullscreen view.
+        let fullscreen_active = self.ewm.focused_fullscreen();
 
         self.sync_keyboard_focus();
 
@@ -769,21 +756,6 @@ impl State {
         {
             return action;
         }
-
-        // During keyboard capture, Emacs needs Latin keysyms for keybinding
-        // dispatch. Temporarily set base layout for this key event, then restore
-        // immediately after. No persistent state needed.
-        let prefix_saved_layout =
-            if module::get_keyboard_capture() && focus_on_emacs && self.ewm.xkb_current_layout != 0
-            {
-                let saved = self.ewm.xkb_current_layout;
-                keyboard.with_xkb_state(self, |mut context| {
-                    context.set_layout(smithay::input::keyboard::Layout(0));
-                });
-                Some(saved)
-            } else {
-                None
-            };
 
         let focused_surface_id = self.ewm.focused_surface_id();
         // Gate on smithay's synchronous active-text-input state, not the relay's
@@ -825,12 +797,6 @@ impl State {
                     },
                 )
             });
-        if let Some(saved) = prefix_saved_layout {
-            keyboard.with_xkb_state(self, |mut context| {
-                context.set_layout(smithay::input::keyboard::Layout(saved as u32));
-            });
-        }
-
         match action {
             KeyAction::Forward => {
                 // Keys for Emacs queue behind a Focus it has not read.

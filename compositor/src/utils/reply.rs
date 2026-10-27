@@ -2,7 +2,6 @@
 //! the compositor. The mutex serializes "deliver" against "give up": once
 //! either side commits, the other observes the outcome and reacts.
 
-use std::fmt;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -49,12 +48,6 @@ impl<T> Drop for Reply<T> {
             *s = ReplyState::Abandoned;
             self.0.cvar.notify_one();
         }
-    }
-}
-
-impl<T> fmt::Debug for Reply<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("<reply>")
     }
 }
 

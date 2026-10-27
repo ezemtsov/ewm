@@ -26,7 +26,6 @@ pub enum FocusSource {
     ToplevelDestroyed,
     CleanupDeadWindows,
     FullscreenOver,
-    FullscreenFocusRedirect,
     FocusOutputDirection,
     Unlock,
     XdgActivation,
@@ -78,13 +77,14 @@ impl Ewm {
         })
     }
 
-    /// The focused entry and its surface when that entry is fullscreen.
-    pub fn focused_fullscreen_entry(&self) -> Option<(LayoutEntryId, u64)> {
-        let frame = self.layout.focused_frame()?;
-        let entry = frame
-            .fullscreen_entry()
-            .filter(|entry| Some(entry.id) == frame.selected_entry_id)?;
-        Some((entry.id, entry.surface_id()?))
+    /// Whether the focused view is fullscreen.
+    pub fn focused_fullscreen(&self) -> bool {
+        self.layout.focused_frame().is_some_and(|frame| {
+            frame
+                .fullscreen_entry()
+                .filter(|entry| Some(entry.id) == frame.selected_entry_id)
+                .is_some_and(|entry| entry.surface_id().is_some())
+        })
     }
 
     pub fn set_surface_urgent(&mut self, surface_id: u64, urgent: bool) -> bool {

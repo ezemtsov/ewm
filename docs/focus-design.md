@@ -446,10 +446,9 @@ triggers them, rather than deferred to a later tick:
 
 - **Fullscreen surfaces.**  After a key or an Emacs command makes a
   surface fullscreen, keyboard focus has to land on the now-fullscreen
-  surface immediately, not on the Emacs frame.
-  A small redirect in the input handler ensures this: if the focused
-  frame has a fullscreen view and the keyboard isn't on it, snap it
-  back.
+  surface immediately, not on the Emacs frame.  `sync_keyboard_focus`
+  runs before every forwarded key and follows the frame's selected
+  entry, which the fullscreen view is.
 
 Everything else -- clicks, gestures, layout-driven focus changes -- can
 use the slower, deferred path: activate the frame, sync the Wayland
