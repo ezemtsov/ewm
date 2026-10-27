@@ -13,9 +13,9 @@ contexts communicate.
 │  │                                                           │ │
 │  │  Compositor Thread          Shared State (Mutex)          │ │
 │  │  ┌─────────────┐           ┌───────────────────┐         │ │
-│  │  │  calloop    │──────────▶│ focused_surface   │         │ │
-│  │  │  Wayland    │           │ surfaces          │         │ │
-│  │  └──────┬──────┘           │ outputs           │         │ │
+│  │  │  calloop    │──────────▶│ focused ids       │         │ │
+│  │  │  Wayland    │           │ outputs           │         │ │
+│  │  └──────┬──────┘           │ frames            │         │ │
 │  │         │                  └─────────▲─────────┘         │ │
 │  │    pipe fd                           │                   │ │
 │  │   (open_channel)           ┌─────────┴─────────┐         │ │
@@ -120,24 +120,10 @@ compositor's event loop via `LOOP_SIGNAL`.
 
 ## Startup Sequence
 
-The compositor sends a `ready` event after initialization. Emacs waits for
-this event instead of using arbitrary sleep delays:
-
-```elisp
-(defun ewm-start-module ()
-  (ewm--init-event-channel)         ; Set up pipe before starting compositor
-  (ewm-start (ewm--cursor-theme)
-             (ewm--cursor-size))    ; Start compositor thread
-  (setq ewm--module-mode t)
-  (ewm--setup)                      ; Install frame/input hooks early
-  ;; Wait for ready event
-  (let ((timeout 50))
-    (while (and (> timeout 0) (not ewm--compositor-ready))
-      (accept-process-output ewm--event-process 0.1)
-      (cl-decf timeout)))
-  (ewm--publish-mode-state t)       ; Publish ewm-mode after ready
-  ...)
-```
+`ewm-start-module` turns on `ewm-mode`, whose setter runs
+`ewm--start-compositor`: it registers the event pipe, starts the compositor
+thread, installs the frame and input hooks, then waits for the `ready` event
+with `accept-process-output` under `with-timeout`.
 
 **Critical**: Emacs-side setup must run before the wait loop so that the
 `outputs_complete` event finds its handlers installed and creates the first frames.  The public
@@ -172,7 +158,7 @@ All `*-module` functions push to command queue:
 (ewm-layout-module frames-vector)
 (ewm-move-frame-module id delta)
 (ewm-warp-pointer-module x y)
-(ewm-configure-output-module name x y width height refresh scale transform enabled)
+(ewm-configure-output-module name config)
 (ewm-intercept-keys-module keys-vector)
 (ewm-action-module action)
 (ewm-configure-module config-plist)
@@ -193,13 +179,11 @@ All `*-module` functions push to command queue:
 | ~~60Hz polling~~ | Event sync | Removed (pipe fd) |
 | ~~Minibuffer 50ms~~ | Layout settle | Removed (sync redisplay) |
 | ~~Startup sleep~~ | Wait for init | Removed (ready event) |
-| Focus debounce | Coalesce rapid changes | 10ms, for UX only |
 | Shutdown polling | Wait for thread exit | Kept |
 | Frame deletion | Defer during creation | Kept (one-shot) |
 
-The focus debounce timer is for user experience (prevents flicker), not
-correctness. Correctness-critical state changes are edge-triggered through
-module commands and pipe events, not polling.
+Correctness-critical state changes are edge-triggered through module
+commands and pipe events, not polling.
 
 ## Benefits
 

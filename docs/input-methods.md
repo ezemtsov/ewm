@@ -130,7 +130,7 @@ Held-key ownership and timers live in `im::repeat`.
 The intercept/capture hot path keeps these invariants:
 
 1. Keyboard capture is a Wayland keyboard-focus overlay; it does not change
-   EWM's stored focused frame/view pair.
+   the window focus the layout derives.
 2. Command-dispatch intercepted keys are `ewm-mode-map` command bindings; they
    go through the event pipe and do not move keyboard focus to Emacs by
    themselves.
