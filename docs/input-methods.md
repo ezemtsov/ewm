@@ -95,10 +95,9 @@ The key that starts a redirected sequence (`C-x`, `M-x`) is forwarded under
 the base layout (index 0), so Emacs finds the binding whatever layout is
 active. The keys that follow arrive under the active layout.
 
-Emacs requests keyboard capture through tokened leases. Beginning capture
-returns a token, and ending capture must present that same token. Capture stays
-active while any lease remains, so stale cleanup from one
-minibuffer/transient/read-key unwind cannot clear another live capture.
+Emacs requests keyboard capture through one tokened lease. Beginning capture
+returns a token, and ending capture must present that same token, so a stale
+end from an earlier input context cannot clear the capture a later one holds.
 Keyboard-dispatch intercepts also open synchronous redirect capture in
 the compositor so a prefix like `C-x` keeps the next key routed to Emacs even
 if the physical prefix key is released before Lisp's post-command hook runs.
@@ -136,11 +135,10 @@ The intercept/capture hot path keeps these invariants:
 3. Once EWM consumes an intercepted physical press, backend repeat presses and
    the matching release are consumed by EWM too, never forwarded to the client
    surface.
-4. Keyboard capture and command-repeat ownership are mutually exclusive, so a
-   held command/media key cannot keep repeating behind a minibuffer, transient,
+4. A held command or media key stops repeating at its next tick once keyboard
+   capture is active, so it cannot keep going behind a minibuffer, transient
    or `read-key` sequence.
-5. Stale keyboard-capture token ends are ignored; capture remains active while
-   any other lease is live.
+5. Stale keyboard-capture token ends are ignored.
 6. Repeat timers are valid only for the currently held intercepted key.
 
 ## Text Input (Emacs IM in External Apps)

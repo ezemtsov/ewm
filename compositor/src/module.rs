@@ -8,7 +8,7 @@
 //!    - `EVENT_CHANNEL`: Compositor -> Emacs events, drainable only after the tick publishes
 //!      `SHARED_STATE`. The pipe fd (open_channel) only carries a wakeup byte
 //!    - `SHARED_STATE`: Compositor -> Emacs snapshot (focus, pointer, outputs)
-//!    - `KEYBOARD_CAPTURE_ACTIVE`: derived from tokened Emacs input leases
+//!    - `KEYBOARD_CAPTURE_ACTIVE`: derived from the Emacs input lease and the redirect
 //!
 //! 2. **No blocking**: Module functions called from Emacs must never block. They push to queues and
 //!    return immediately. The compositor processes queues on its event loop. Exception:
@@ -51,7 +51,7 @@ use emacs::{Env, Result, Value, defun};
 use serde::Deserialize;
 use smithay::input::keyboard::{keysyms, xkb};
 use smithay::reexports::calloop::LoopSignal;
-use tracing::{debug, info, trace};
+use tracing::{debug, info};
 
 use crate::config::{self, Config};
 use crate::im::TextInputProvider;
@@ -196,27 +196,31 @@ pub(crate) fn intercepted_keys() -> &'static RwLock<Vec<InterceptedKey>> {
 
 /// Emacs currently needs Wayland keyboard focus for command-loop input.
 ///
-/// Capture is represented as tokened leases so cleanup from one input context
-/// cannot clear capture that another still owns.
+/// One tokened lease, so a stale end from an earlier input context cannot
+/// clear the capture a later one holds.
 static KEYBOARD_CAPTURE_ACTIVE: AtomicBool = AtomicBool::new(false);
 static KEYBOARD_CAPTURE_STATE: OnceLock<Mutex<KeyboardCaptureState>> = OnceLock::new();
 
 #[derive(Debug, Default)]
 struct KeyboardCaptureState {
     next_token: u64,
-    leases: BTreeMap<u64, String>,
+    lease: Option<(u64, String)>,
     redirect_active: bool,
 }
 
 impl KeyboardCaptureState {
     fn begin(&mut self, reason: String) -> u64 {
-        let token = self.allocate_token();
-        self.leases.insert(token, reason);
-        token
+        self.next_token = self.next_token.wrapping_add(1).max(1);
+        self.lease = Some((self.next_token, reason));
+        self.next_token
     }
 
     fn end(&mut self, token: u64) -> bool {
-        self.leases.remove(&token).is_some()
+        let held = self.lease.as_ref().is_some_and(|(held, _)| *held == token);
+        if held {
+            self.lease = None;
+        }
+        held
     }
 
     fn begin_redirect(&mut self) {
@@ -228,11 +232,11 @@ impl KeyboardCaptureState {
     }
 
     fn is_active(&self) -> bool {
-        self.redirect_active || !self.leases.is_empty()
+        self.redirect_active || self.lease.is_some()
     }
 
     fn clear(&mut self) {
-        self.leases.clear();
+        self.lease = None;
         self.redirect_active = false;
     }
 
@@ -240,24 +244,8 @@ impl KeyboardCaptureState {
         self.redirect_active
             .then(|| (0, "keyboard-redirect".to_string()))
             .into_iter()
-            .chain(
-                self.leases
-                    .iter()
-                    .map(|(&token, reason)| (token, reason.clone())),
-            )
+            .chain(self.lease.clone())
             .collect()
-    }
-
-    fn allocate_token(&mut self) -> u64 {
-        loop {
-            self.next_token = self.next_token.wrapping_add(1);
-            if self.next_token == 0 {
-                self.next_token = 1;
-            }
-            if !self.leases.contains_key(&self.next_token) {
-                return self.next_token;
-            }
-        }
     }
 }
 
@@ -436,9 +424,6 @@ pub enum ModuleCommand {
         surface_id: Option<u64>,
         keys: Vec<ChordSpec>,
     },
-    KeyboardCaptureChanged {
-        active: bool,
-    },
     SwitchLayout {
         layout: String,
     },
@@ -592,12 +577,6 @@ impl State {
             ModuleCommand::ConfigureTextInput { provider } => {
                 self.set_text_input_provider(provider);
             }
-            ModuleCommand::KeyboardCaptureChanged { active } => {
-                trace!("Keyboard capture changed: active={}", active);
-                if active {
-                    self.ewm.cancel_command_repeat();
-                }
-            }
             ModuleCommand::SwitchLayout { layout } => self.switch_xkb_layout(layout),
             ModuleCommand::GetLayouts => {
                 self.ewm.queue_event(Event::Layouts {
@@ -700,18 +679,14 @@ pub fn drain_commands() -> Vec<ModuleCommand> {
 /// Push a command to the queue and wake the compositor.
 fn push_command(cmd: ModuleCommand) {
     command_queue().lock().unwrap().push(cmd);
-    // Wake the event loop so it processes the command
+    wake_loop();
+}
+
+/// Wake the event loop, it syncs keyboard focus with the capture state on every pass.
+fn wake_loop() {
     if let Some(signal) = LOOP_SIGNAL.get() {
         signal.wakeup();
     }
-}
-
-fn push_keyboard_capture_changed() {
-    // Snapshot the edge at enqueue time. A begin+end pair can be queued before
-    // the compositor drains commands. The begin still needs to cancel repeat.
-    push_command(ModuleCommand::KeyboardCaptureChanged {
-        active: get_keyboard_capture(),
-    });
 }
 
 /// Flag to request compositor shutdown from Emacs thread
@@ -1698,7 +1673,7 @@ fn configure_text_input_module(provider: Lisp<TextInputProvider>) -> Result<()> 
 #[defun]
 fn keyboard_capture_begin_module(reason: String) -> Result<i64> {
     let token = begin_keyboard_capture(reason);
-    push_keyboard_capture_changed();
+    wake_loop();
     Ok(token as i64)
 }
 
@@ -1711,7 +1686,7 @@ fn keyboard_capture_end_module(token: i64) -> Result<bool> {
     let token = token as u64;
     let removed = end_keyboard_capture(token);
     if removed {
-        push_keyboard_capture_changed();
+        wake_loop();
     }
     Ok(removed)
 }
@@ -1727,7 +1702,7 @@ fn keyboard_capture_active_module() -> Result<bool> {
 fn keyboard_redirect_capture_clear_module() -> Result<bool> {
     let removed = clear_keyboard_redirect_capture();
     if removed {
-        push_keyboard_capture_changed();
+        wake_loop();
     }
     Ok(removed)
 }
@@ -2011,26 +1986,24 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_capture_holds_while_any_lease_or_the_redirect_does() {
+    fn keyboard_capture_holds_while_the_lease_or_the_redirect_does() {
         let mut state = KeyboardCaptureState::default();
-        let old = state.begin("prefix".to_string());
-        let new = state.begin("minibuffer".to_string());
+        let token = state.begin("command-loop".to_string());
         state.begin_redirect();
         state.begin_redirect();
-        assert!(!state.end(new + 1));
-        assert!(state.end(old));
+        assert!(!state.end(token + 1));
         assert_eq!(
             state.debug_holders(),
             vec![
                 (0, "keyboard-redirect".to_string()),
-                (new, "minibuffer".to_string())
+                (token, "command-loop".to_string())
             ]
         );
         assert!(state.clear_redirect());
         assert!(!state.clear_redirect());
         assert!(state.is_active());
-        assert!(state.end(new));
-        assert!(!state.end(new));
+        assert!(state.end(token));
+        assert!(!state.end(token));
         assert!(!state.is_active());
     }
 }

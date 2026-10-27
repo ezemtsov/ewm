@@ -273,18 +273,16 @@ impl Ewm {
                 surface.pending_activation = None;
             }
         }
-        let mut ready: Vec<u64> = self
-            .pending_activations()
-            .filter(|&id| self.focus_target_ready(id))
-            .collect();
-        ready.sort_unstable();
+        let mut pending: Vec<u64> = self.pending_activations().collect();
+        pending.sort_unstable();
 
-        for id in ready {
-            if let Some(surface) = self.surfaces.get_mut(&id) {
-                surface.pending_activation = None;
+        for id in pending {
+            if self.set_focus(id, FocusSource::XdgActivationPending, Notify::Emacs) {
+                if let Some(surface) = self.surfaces.get_mut(&id) {
+                    surface.pending_activation = None;
+                }
+                self.layer_shell_on_demand_focus = None;
             }
-            self.set_focus(id, FocusSource::XdgActivationPending, Notify::Emacs);
-            self.layer_shell_on_demand_focus = None;
         }
     }
 

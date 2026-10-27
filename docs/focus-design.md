@@ -168,9 +168,9 @@ resolve time, override modes sit on top of this:
   interactivity steal focus while present.  Again, the window focus
   underneath is untouched.
 - **Emacs keyboard capture**: incomplete key sequences, minibuffers,
-  transient maps, and read-key/read-event commands hold tokened leases that
-  route Wayland keyboard focus to Emacs without changing the window focus.
-  Stale token cleanup cannot clear another live capture.
+  transient maps, and read-key/read-event commands hold one tokened lease
+  that routes Wayland keyboard focus to Emacs without changing the window
+  focus.  A stale token cannot end a newer lease.
 
 Collapsed to discrete states, this gives:
 
