@@ -17,43 +17,10 @@
 (require 'ert)
 (require 'cl-lib)
 
-(setq load-prefer-newer t)
+(load (expand-file-name "ewm-test-stubs"
+                        (file-name-directory (or load-file-name buffer-file-name)))
+      nil t)
 
-;; The compositor dynamic module isn't loaded in the test harness; stub
-;; the module entry points the libs would otherwise pull in.
-(defmacro ewm-test--stub (name args &rest body)
-  `(unless (fboundp ',name) (defun ,name ,args ,@body)))
-
-(ewm-test--stub ewm-layout (_frames) nil)
-(ewm-test--stub ewm-get-strip-frame-ids (_output) nil)
-(ewm-test--stub ewm-get-frame-output (surface-id)
-  (seq-some (lambda (frame)
-              (and (eql (frame-parameter frame 'ewm-surface-id) surface-id)
-                   (frame-parameter frame 'ewm-output)))
-            (frame-list)))
-(ewm-test--stub ewm-init-event-channel (_process) nil)
-(defvar ewm-test--queued nil "Events the stubbed `ewm-drain-events' hands out.")
-(ewm-test--stub ewm-drain-events () (prog1 ewm-test--queued (setq ewm-test--queued nil)))
-(ewm-test--stub ewm-focus-target-module (_focus-id) nil)
-(ewm-test--stub ewm-prepare-frame-close-module (_surface-id) nil)
-(ewm-test--stub ewm-intercept-keys-module (_keys) nil)
-(ewm-test--stub ewm-configure-module (_config) nil)
-(ewm-test--stub ewm-notify-initialized-module () nil)
-(ewm-test--stub ewm-gtk-set-style (_css) nil)
-(ewm-test--stub ewm-keyboard-capture-begin-module (_reason) 1)
-(ewm-test--stub ewm-keyboard-capture-end-module (_token) t)
-(ewm-test--stub ewm-keyboard-redirect-capture-clear-module () nil)
-(ewm-test--stub ewm-im-commit-module (_text _surface-id) nil)
-(ewm-test--stub ewm-im-preedit-module (_text _surface-id) nil)
-(ewm-test--stub ewm-text-input-intercept-module (_enabled) nil)
-(ewm-test--stub ewm-configure-text-input-module (_provider) nil)
-(ewm-test--stub ewm-get-focused-id () nil)
-(ewm-test--stub ewm-get-focused-frame-id () 0)
-(provide 'ewm-core)
-
-(add-to-list 'load-path
-             (expand-file-name "../lisp"
-                               (file-name-directory (or load-file-name buffer-file-name))))
 (require 'ewm)
 (require 'cus-edit)
 ;; One of each event, printed by the module's serializer.
@@ -106,13 +73,12 @@
 
 (ert-deftest ewm-event-tests/filter-consumes-handler-quit ()
   "A handler `quit' must not escape the compositor process filter."
-  (let ((ewm-test--queued '(ready))
-        called)
+  (let (called)
     (cl-letf (((symbol-function 'ewm--handle-event)
                (lambda (_event)
                  (setq called t)
                  (signal 'quit nil))))
-      (ewm--event-filter nil "\0"))
+      (ewm-test--drain 'ready))
     (should called)
     (should (null ewm-test--queued))))
 
@@ -135,8 +101,7 @@
               ((symbol-function 'accept-process-output)
                (lambda (&rest _)
                  (push (list 'poll ewm-mode ewm--compositor-ready) events)
-                 (setq ewm-test--queued '(ready))
-                 (ewm--event-filter nil "\0")
+                 (ewm-test--drain 'ready)
                  t))
               ((symbol-function 'run-with-idle-timer) (lambda (&rest _) nil)))
       (unwind-protect

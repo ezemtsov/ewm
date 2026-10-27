@@ -11,13 +11,10 @@
 
 (require 'ert)
 
-(setq load-prefer-newer t)
+(load (expand-file-name "ewm-test-stubs"
+                        (file-name-directory (or load-file-name buffer-file-name)))
+      nil t)
 
-(provide 'ewm-core)
-
-(add-to-list 'load-path
-             (expand-file-name "../lisp"
-                               (file-name-directory (or load-file-name buffer-file-name))))
 (require 'ewm)
 
 (ert-deftest ewm-cursor-tests/auto-restores-the-session-theme-or-clears-it ()

@@ -18,7 +18,9 @@
 (require 'cl-lib)
 (require 'ert)
 
-(setq load-prefer-newer t)
+(load (expand-file-name "ewm-test-stubs"
+                        (file-name-directory (or load-file-name buffer-file-name)))
+      nil t)
 
 (defvar ewm-text-input-tests--focused-id nil)
 (defvar ewm-text-input-tests--commits nil)
@@ -28,8 +30,7 @@
 (defvar ewm-text-input-tests--surrounding nil)
 (defvar ewm-text-input-tests--preedits nil)
 
-;; The compositor dynamic module isn't loaded in the test harness; stub
-;; the module entry points `ewm-text-input' needs.
+;; The suite records what `ewm-text-input' sends to the module.
 (defun ewm-im-commit-module (text surface-id)
   (push (cons surface-id text) ewm-text-input-tests--commits))
 
@@ -51,11 +52,6 @@
 (defun ewm-get-focused-id ()
   ewm-text-input-tests--focused-id)
 
-(provide 'ewm-core)
-
-(add-to-list 'load-path
-             (expand-file-name "../lisp"
-                               (file-name-directory (or load-file-name buffer-file-name))))
 (require 'ewm-text-input)
 
 (defmacro ewm-text-input-tests--with-state (&rest body)

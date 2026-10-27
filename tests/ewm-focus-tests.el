@@ -19,40 +19,10 @@
 (require 'ert)
 (require 'cl-lib)
 
-;; A stale .elc next to a newer .el would otherwise mask the source we're
-;; meant to be testing.
-(setq load-prefer-newer t)
+(load (expand-file-name "ewm-test-stubs"
+                        (file-name-directory (or load-file-name buffer-file-name)))
+      nil t)
 
-;; The compositor dynamic module isn't loaded in the test harness; stub
-;; the module entry points the libs would otherwise pull in.
-(unless (fboundp 'ewm-layout)
-  (defun ewm-layout (_frames) nil))
-(unless (fboundp 'ewm-get-strip-frame-ids)
-  (defun ewm-get-strip-frame-ids (_output) nil))
-;; Frames sit where they were made for.
-(unless (fboundp 'ewm-get-frame-output)
-  (defun ewm-get-frame-output (surface-id)
-    (seq-some (lambda (frame)
-                (and (eql (frame-parameter frame 'ewm-surface-id) surface-id)
-                     (frame-parameter frame 'ewm-output)))
-              (frame-list))))
-(unless (fboundp 'ewm-focus-target-module)
-  (defun ewm-focus-target-module (_focus-id) nil))
-(unless (fboundp 'ewm-prepare-frame-close-module)
-  (defun ewm-prepare-frame-close-module (_surface-id) nil))
-(unless (fboundp 'ewm-get-active-frame-id)
-  (defun ewm-get-active-frame-id (_output) nil))
-(unless (fboundp 'ewm-get-output-origin)
-  (defun ewm-get-output-origin (_output) nil))
-(unless (fboundp 'ewm-get-focused-frame-id)
-  (defun ewm-get-focused-frame-id () 0))
-;; The dynamic module provides the `ewm-core' feature in production;
-;; stub it here so `(require 'ewm)' resolves under batch.
-(provide 'ewm-core)
-
-(add-to-list 'load-path
-             (expand-file-name "../lisp"
-                               (file-name-directory (or load-file-name buffer-file-name))))
 (require 'ewm-layout)
 (require 'ewm-focus)
 (require 'ewm-surface)
@@ -370,17 +340,11 @@ buffer; `mapped' displays and publishes it."
        (unwind-protect (progn ,@body)
          (when (window-live-p surface-window) (delete-window surface-window))))))
 
-(defun ewm-focus-tests--drain (&rest events)
-  "Run the event filter over EVENTS, as one compositor wakeup would."
-  (cl-letf (((symbol-function 'ewm-drain-events)
-             (lambda () (prog1 events (setq events nil)))))
-    (ewm--event-filter nil "\0")))
-
 (ert-deftest ewm-focus/selection-change-queues-focus-change ()
   "A drain that moves the selection queues one boundary behind the keys it unread."
   (ewm-focus-tests--with-two-windows
     (setq unread-command-events (list ?a))
-    (ewm-focus-tests--drain event '(intercepted-command (key . "s-1")))
+    (ewm-test--drain event '(intercepted-command (key . "s-1")))
     (should (eq (selected-window) surface-window))
     (should (equal unread-command-events
                    (list ?a (cons t ?\s-1) (list 'ewm-focus-change (selected-frame)))))))
@@ -389,7 +353,7 @@ buffer; `mapped' displays and publishes it."
   "A focus on the selected window is no boundary."
   (ewm-focus-tests--with-two-windows
     (select-window surface-window)
-    (ewm-focus-tests--drain event)
+    (ewm-test--drain event)
     (should-not unread-command-events)
     (should-not post-command-hook)))
 
@@ -397,7 +361,7 @@ buffer; `mapped' displays and publishes it."
   "A running command never reads the boundary, it is queued once it ends."
   (ewm-focus-tests--with-two-windows
     (setq this-command 'some-command)
-    (ewm-focus-tests--drain event)
+    (ewm-test--drain event)
     (should-not unread-command-events)
     (run-hooks 'post-command-hook)
     (should (equal unread-command-events
@@ -416,7 +380,7 @@ buffer; `mapped' displays and publishes it."
   "Events unread from the filter are recorded, so a macro would keep the boundary."
   (ewm-focus-tests--with-two-windows
     (setq defining-kbd-macro t)
-    (ewm-focus-tests--drain event)
+    (ewm-test--drain event)
     (should (eq (selected-window) surface-window))
     (should-not unread-command-events)
     (should-not post-command-hook)))
@@ -451,7 +415,7 @@ buffer; `mapped' displays and publishes it."
                          ((title (id . 5) (app . "x") (title . "y")) . t)))
           (ert-info ((format "%S" event))
             (setq unread-command-events nil)
-            (ewm-focus-tests--drain event)
+            (ewm-test--drain event)
             (should (eq (and (assq 'ewm-focus-change unread-command-events) t) moves))))))))
 
 ;;;; Handler-boilerplate contracts

@@ -15,11 +15,20 @@ use crate::InterceptedKey;
 use crate::config::Config;
 use crate::module::{self, ChordSpec, KeySpec};
 
-/// Run `emacs -Q -batch` with `lisp/` on the load path and return its stdout.
+/// Run `emacs -Q -batch` with `lisp/` and `tests/` on the load path and return its stdout.
 pub fn emacs(args: &[&str]) -> String {
-    let lisp_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).with_file_name("lisp");
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let lisp_dir = repo.with_file_name("lisp");
+    let tests_dir = repo.with_file_name("tests");
     let output = Command::new("emacs")
-        .args(["-Q", "-batch", "-L", lisp_dir.to_str().unwrap()])
+        .args([
+            "-Q",
+            "-batch",
+            "-L",
+            lisp_dir.to_str().unwrap(),
+            "-L",
+            tests_dir.to_str().unwrap(),
+        ])
         .args(args)
         .output()
         .expect("failed to spawn `emacs`; ensure it is on PATH");
@@ -34,11 +43,8 @@ pub fn emacs(args: &[&str]) -> String {
 }
 
 /// Module functions keep what they are sent, then the real Lisp loads in module mode.
-const PRELUDE: &str = r#"(setq load-prefer-newer t)
+const PRELUDE: &str = r#"(require 'ewm-test-stubs)
   (setenv "XCURSOR_SIZE" nil)
-  (require 'ewm-module)
-  (dolist (form (cdr (macroexpand '(ewm-module--declare))))
-    (defalias (cadr form) #'ignore))
   (defvar keys nil)
   (defvar sent nil)
   (defvar capture nil)
@@ -46,7 +52,6 @@ const PRELUDE: &str = r#"(setq load-prefer-newer t)
   (defun ewm-send-key-module (id k) (cl-assert (not capture)) (setq sent (vector id k)))
   (defun ewm-keyboard-redirect-capture-clear-module () (setq capture nil))
   (defun ewm-keyboard-capture-active-module () capture)
-  (provide 'ewm-core)
   (require 'ewm)
   (setq ewm--module-mode t)"#;
 
