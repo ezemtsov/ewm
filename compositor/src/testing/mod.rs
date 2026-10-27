@@ -44,7 +44,13 @@ pub fn prepare_frame(output: &str, seq: u64, after: Option<u64>) {
         output: output.to_owned(),
         placement: crate::layout::Placement::Tiled { after },
         seq,
+        home: None,
     });
+}
+
+/// Home the queued frame SEQ, as `ewm-prepare-frame-home-module` does.
+pub fn prepare_frame_home(seq: u64, home: crate::layout::Home) {
+    crate::module::home_pending_frame(seq, home);
 }
 
 /// A bare output called `name`, for layouts without a backend.

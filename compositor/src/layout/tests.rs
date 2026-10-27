@@ -413,6 +413,7 @@ enum LayoutOp {
         floating: bool,
         after: Option<u64>,
         filler: bool,
+        home: Option<usize>,
     },
     RemoveFrame {
         id: u64,
@@ -471,14 +472,16 @@ fn layout_op() -> impl Strategy<Value = LayoutOp> {
             output.clone(),
             any::<bool>(),
             prop::option::of(id.clone()),
-            any::<bool>()
+            any::<bool>(),
+            prop::option::of(output.clone())
         )
-            .prop_map(|(id, output, floating, after, filler)| LayoutOp::AddFrame {
+            .prop_map(|(id, output, floating, after, filler, home)| LayoutOp::AddFrame {
                 id,
                 output,
                 floating,
                 after,
                 filler,
+                home,
             }),
         1 => (id.clone(), any::<bool>())
             .prop_map(|(id, active_close)| LayoutOp::RemoveFrame { id, active_close }),
@@ -607,6 +610,7 @@ fn apply_layout_op(
             floating,
             after,
             filler,
+            home,
         } => {
             if !live.contains(&id) && layout.monitor_of(&outputs[output]).is_some() {
                 let placement = if floating {
@@ -614,7 +618,8 @@ fn apply_layout_op(
                 } else {
                     Placement::Tiled { after }
                 };
-                layout.add_frame(id, &outputs[output], placement);
+                let home = home.map(|home| Home::of(&outputs[home]));
+                layout.add_frame(id, &outputs[output], placement, home);
                 let frame = layout.frame_mut(id).unwrap();
                 if filler {
                     frame.owner = strip::Owner::Compositor;
@@ -886,6 +891,7 @@ fn a_pin_onto_a_frame_added_after_the_float() {
         floating,
         after: None,
         filler: false,
+        home: None,
     };
     check_layout_ops(&[
         add(7, true),

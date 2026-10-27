@@ -327,9 +327,10 @@ impl Ewm {
             .or_else(|| self.active_output())
             .cloned();
         let frame_seq = pending_frame.as_ref().map(|pending| pending.seq);
-        let placement = pending_frame.map_or(Placement::Tiled { after: None }, |pending| {
-            pending.placement
-        });
+        let (placement, home) = pending_frame
+            .map_or((Placement::Tiled { after: None }, None), |pending| {
+                (pending.placement, pending.home)
+            });
         let frame_is_floating = matches!(placement, Placement::Floating { .. });
         let working_area = target_output
             .as_ref()
@@ -366,7 +367,7 @@ impl Ewm {
         // etc. work before Emacs's first layout arrives. That layout only
         // fills in contents (name, width, entries, selected_entry_id).
         if is_emacs && let Some(output) = &target_output {
-            self.layout.add_frame(id, output, placement);
+            self.layout.add_frame(id, output, placement, home);
             self.reconcile_output_entries(output);
         } else if let Some(output) = target_output.as_ref().or_else(|| self.first_output()) {
             // Scale and enter before the first commit, bypassing SpaceElement::output_enter

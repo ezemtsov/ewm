@@ -125,6 +125,8 @@ pub struct PendingFrame {
     pub placement: Placement,
     /// Emacs's creation counter, echoed in `Event::New` to pair the surface with its frame.
     pub seq: u64,
+    /// Where the frame belongs when that is not the output it lands on.
+    pub home: Option<Home>,
 }
 
 static PENDING_FRAMES: OnceLock<Mutex<VecDeque<PendingFrame>>> = OnceLock::new();
@@ -136,6 +138,18 @@ fn pending_frames() -> &'static Mutex<VecDeque<PendingFrame>> {
 /// Queue FRAME for the next Emacs toplevel.
 pub(crate) fn prepare_frame(frame: PendingFrame) {
     pending_frames().lock().unwrap().push_back(frame);
+}
+
+/// Home the queued frame SEQ at `home`.
+pub(crate) fn home_pending_frame(seq: u64, home: Home) {
+    if let Some(pending) = pending_frames()
+        .lock()
+        .unwrap()
+        .iter_mut()
+        .find(|pending| pending.seq == seq)
+    {
+        pending.home = Some(home);
+    }
 }
 
 /// Take the next pending frame output (called by compositor when creating surfaces).
@@ -1338,6 +1352,7 @@ fn prepare_frame_module(output: String, seq: Lisp<u64>, after: Lisp<Option<u64>>
         output,
         placement: Placement::Tiled { after: after.0 },
         seq: seq.0,
+        home: None,
     });
     Ok(())
 }
@@ -1356,7 +1371,21 @@ fn prepare_floating_frame_module(
         output,
         placement: Placement::Floating { pos },
         seq: seq.0,
+        home: None,
     });
+    Ok(())
+}
+
+/// Home the queued frame SEQ on IDENTITY and CONNECTOR, a display that need not be connected.
+#[defun]
+fn prepare_frame_home_module(seq: Lisp<u64>, identity: String, connector: String) -> Result<()> {
+    home_pending_frame(
+        seq.0,
+        Home {
+            identity,
+            connector,
+        },
+    );
     Ok(())
 }
 

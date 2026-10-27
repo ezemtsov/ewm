@@ -681,7 +681,7 @@ impl Fixture {
             } else {
                 crate::layout::Placement::Tiled { after: None }
             };
-            ewm.layout.add_frame(id, &output, placement);
+            ewm.layout.add_frame(id, &output, placement, None);
         }
     }
 

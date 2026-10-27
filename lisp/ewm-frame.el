@@ -189,6 +189,8 @@ The compositor echoes it in the `new' event of the frame's surface.")
 (defun ewm--make-output-frame (output-name seq extra-params)
   "Make managed frame SEQ on OUTPUT-NAME carrying EXTRA-PARAMS.
 EXTRA-PARAMS win over the defaults, so a caller can override `visibility'."
+  (when-let* ((home (alist-get 'ewm-home extra-params)))
+    (ewm-prepare-frame-home-module seq (car home) (cdr home)))
   (make-frame `(,@extra-params
                 (visibility . t)
                 (window-system . ,(ewm--window-system))

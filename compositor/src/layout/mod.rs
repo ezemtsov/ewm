@@ -682,13 +682,19 @@ impl Layout {
         self.settle_focus();
     }
 
-    /// Put new frame `id` on `output` as `placement` says.
-    pub fn add_frame(&mut self, id: u64, output: &Output, placement: Placement) {
+    /// Put new frame `id` on `output` as `placement` says, homed at `home` or there.
+    pub fn add_frame(
+        &mut self,
+        id: u64,
+        output: &Output,
+        placement: Placement,
+        home: Option<Home>,
+    ) {
         let Some(monitor) = self.monitor_of_mut(output) else {
             return;
         };
         let mut frame = strip::Frame::new(id);
-        frame.home = Home::of(output);
+        frame.home = home.unwrap_or_else(|| Home::of(output));
         match placement {
             Placement::Tiled { after } => {
                 let at = monitor.strip.slot_after(after);

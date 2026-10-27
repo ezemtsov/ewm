@@ -3,9 +3,13 @@
 //! These tests verify compositor behavior using the headless backend and test fixture.
 
 use ewm_core::backend::{closest_representable_scale, int_to_transform, transform_to_int};
+use ewm_core::layout::Home;
 use ewm_core::layout::floating::{ResizeEdge, SizeFracPoint};
 use ewm_core::layout::strip::Frame;
-use ewm_core::testing::{ClientEvent, Fixture, TestClient, WL_FIXED_TOLERANCE, nz, proptest_cases};
+use ewm_core::testing::{
+    ClientEvent, Fixture, TestClient, WL_FIXED_TOLERANCE, clear_pending_frames, nz, prepare_frame,
+    prepare_frame_home, proptest_cases,
+};
 use ewm_core::utils::output_size;
 use ewm_core::{Event, FocusSource, LayoutEntry, LayoutEntryId, Notify, OutputConfig};
 use proptest::prelude::*;
@@ -565,12 +569,15 @@ struct Display {
     serial: String,
     frames: Vec<u64>,
     connector: Option<String>,
+    home: Home,
 }
 
 #[derive(Debug, Clone)]
 enum HotplugOp {
     Connect(usize),
     Disconnect(usize),
+    /// A session restore recreates a frame of a disconnected display.
+    Restore(usize),
 }
 
 fn strip_ids(fixture: &Fixture, output: &str) -> Vec<u64> {
@@ -652,18 +659,25 @@ proptest! {
     /// disconnects/reconnects, even though every reconnect re-enumerates the
     /// panel on a fresh connector. Pins home-return over the whole hotplug state
     /// space; the old connector-name home stranded frames (and let Emacs spawn a
-    /// spurious workspace) as soon as a connector renamed.
+    /// spurious workspace) as soon as a connector renamed. A frame restored
+    /// while its display is away is homed there and returns with the others.
     #[test]
     fn frames_return_to_home_display_across_hotplug(
         ops in prop::collection::vec(
             prop_oneof![
                 (0usize..3).prop_map(HotplugOp::Connect),
                 (0usize..3).prop_map(HotplugOp::Disconnect),
+                (0usize..3).prop_map(HotplugOp::Restore),
             ],
             1..24,
         ),
     ) {
         let mut fixture = Fixture::new().unwrap();
+        clear_pending_frames();
+        fixture.ewm().set_emacs_pid(std::process::id());
+        let mut client = fixture.new_client().unwrap();
+        fixture.roundtrip(&mut client);
+        let mut next_seq = 0u64;
         let mut connector_seq = 0u32;
         let mut mint = |i: usize, serial: &str| {
             if serial.is_empty() {
@@ -674,15 +688,17 @@ proptest! {
         };
 
         // Three displays, the first two twins without a serial, each with two frames whose home
-        // is set by the initial layout while every display is connected.
+        // is set by the initial layout while every display is connected. Restored frames take
+        // real surface ids from 1, clear of these.
         let mut displays: Vec<Display> = (0..3)
             .map(|i| {
                 let serial = if i < 2 { String::new() } else { format!("SER{i}") };
-                let frames = vec![(i as u64 + 1) * 10, (i as u64 + 1) * 10 + 1];
+                let frames = vec![(i as u64 + 1) * 100, (i as u64 + 1) * 100 + 1];
                 let connector = mint(i, &serial);
                 fixture.add_output_with_identity(&connector, 1280, 720, "Acme", "Panel", &serial);
                 fixture.tile(&connector, frames.iter().copied().map(Frame::new).collect());
-                Display { serial, frames, connector: Some(connector) }
+                let home = Home::of(&fixture.output(&connector));
+                Display { serial, frames, connector: Some(connector), home }
             })
             .collect();
         assert_hotplug_invariants(&fixture, &displays);
@@ -701,6 +717,20 @@ proptest! {
                 HotplugOp::Disconnect(i) => {
                     if let Some(connector) = displays[i].connector.take() {
                         fixture.remove_output(&connector);
+                    }
+                }
+                HotplugOp::Restore(i) => {
+                    // Lisp prepares the frame after the last displaced one, on the output
+                    // holding it, with the home of the display it was saved on.
+                    let last = *displays[i].frames.last().unwrap();
+                    let holder = fixture.ewm_ref().layout.frame_output(last).map(str::to_owned);
+                    if let (None, Some(holder)) = (&displays[i].connector, holder) {
+                        next_seq += 1;
+                        prepare_frame(&holder, next_seq, Some(last));
+                        prepare_frame_home(next_seq, displays[i].home.clone());
+                        let size = Size::from((400, 300));
+                        let id = fixture.open_toplevel_id(&mut client, "frame", size);
+                        displays[i].frames.push(id);
                     }
                 }
             }
