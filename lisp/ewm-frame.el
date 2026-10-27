@@ -167,15 +167,6 @@ Emacs's `selected-frame' can drift via `display-buffer'/`select-window'."
   "Frame the user is on per the compositor, falling back to `selected-frame'."
   (or (ewm--current-frame) (selected-frame)))
 
-(defun ewm--surface-target-frame-for-output (output-name)
-  "Return the best tiled fallback frame for a new surface on OUTPUT-NAME."
-  (or (let ((frame (ewm--focused-frame)))
-        (and frame
-             (not (frame-parameter frame 'ewm-floating))
-             (equal (ewm--frame-output frame) output-name)
-             frame))
-      (ewm-output-active-frame output-name)))
-
 (defun ewm--get-frame-origin (frame)
   "Return global origin for FRAME, falling back to its output origin."
   (or (and (frame-parameter frame 'ewm-floating)

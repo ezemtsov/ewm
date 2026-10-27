@@ -39,8 +39,10 @@
           (with-current-buffer buf
             (ewm-surface-mode)
             (setq-local ewm-surface-id 42))
-          (ewm--handle-event '(activate_surface (id . 42)))
+          (set-frame-parameter nil 'ewm-surface-id 1)
+          (ewm--handle-event '(activate_surface (id . 42) (frame_surface_id . 1)))
           (should (eq (window-buffer (selected-window)) buf)))
+      (set-frame-parameter nil 'ewm-surface-id nil)
       (kill-buffer buf))))
 
 (ert-deftest ewm-event-tests/no-event-is-dropped ()

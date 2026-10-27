@@ -87,18 +87,16 @@ window switching is handled by `ewm--handle-focus' from those events."
            (y (alist-get 'y event))
            (pointer (and (alist-get 'pointer event) x y)))
       (if-let* ((win (ewm--find-window-by-entry-id focus-id)))
-          (progn
-            (select-window win)
-            (setq ewm--mff-last-window win))
+          (select-window win)
         (when-let* ((frame (ewm--find-frame-by-focus-id focus-id)))
           (select-frame frame)
           (when (and ewm-focus-follows-mouse pointer)
             (when-let* ((window (ewm--window-at-logical frame x y))
                         ((not (minibufferp (window-buffer window)))))
-              (select-window window)))
-          ;; Anchor only on pointer focus; keyboard events must leave it stale so MFF warps.
-          (when pointer
-            (setq ewm--mff-last-window (selected-window))))))))
+              (select-window window)))))
+      ;; Anchor only on pointer focus; keyboard events must leave it stale so MFF warps.
+      (when pointer
+        (setq ewm--mff-last-window (selected-window))))))
 
 (provide 'ewm-focus)
 ;;; ewm-focus.el ends here

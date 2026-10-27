@@ -408,7 +408,8 @@ buffer; `mapped' displays and publishes it."
                        `(((mapped (id . 42) (output . ,ewm-focus-tests--output)
                                   (frame_surface_id . ,ewm-focus-tests--frame-surface-id)) . t)
                          ((minimize (id . 42)) . t)
-                         ((activate_surface (id . 42)) . t)
+                         ((activate_surface (id . 42)
+                                            (frame_surface_id . ,ewm-focus-tests--frame-surface-id)) . t)
                          ((intercepted-command (key . "s-1")) . nil)
                          ((close (id . ,ewm-focus-tests--surface-id)) . nil)
                          ((close (id . 42)) . t)
@@ -422,19 +423,6 @@ buffer; `mapped' displays and publishes it."
 ;;
 ;; Compositor can queue events whose surface dies first; the macro must
 ;; absorb that race silently.
-
-(ert-deftest ewm-focus/surface-target-skips-focused-floating-frame ()
-  "New-surface fallback ignores a focused float and takes the shown strip frame."
-  (ewm-focus-tests--with-frame f
-    (set-frame-parameter f 'ewm-floating t)
-    (unwind-protect
-        (cl-letf (((symbol-function 'ewm--current-frame) (lambda () f))
-                  ((symbol-function 'ewm-get-strip-frame-ids) (lambda (_output) '(7)))
-                  ((symbol-function 'ewm--frame-by-surface-id)
-                   (lambda (id) (and (eql id 7) 'g))))
-          (should (eq 'g (ewm--surface-target-frame-for-output
-                          ewm-focus-tests--output))))
-      (set-frame-parameter f 'ewm-floating nil))))
 
 (ert-deftest ewm-focus/surface-match-is-a-display-buffer-condition ()
   "`ewm-surface-match' matches app and title regexps on surface buffers only."

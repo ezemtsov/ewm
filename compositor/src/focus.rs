@@ -261,9 +261,20 @@ impl Ewm {
             return;
         };
         surface.pending_activation = (!focused).then(Instant::now);
-        // Mapped asks Emacs to show an unplaced surface.
+        // Mapped asks Emacs to show an unplaced surface, in the host a new one would get.
         if !focused && surface.placed {
-            self.queue_event(Event::ActivateSurface { id });
+            let parent_id = self
+                .window(id)
+                .and_then(|window| window.toplevel())
+                .and_then(|toplevel| toplevel.parent())
+                .and_then(|wl| self.surface_id(&wl));
+            let output = self.active_output();
+            let frame_surface_id = self.resolve_app_host_frame(parent_id, output);
+            self.queue_event(Event::ActivateSurface {
+                id,
+                output: output.map(Output::name),
+                frame_surface_id,
+            });
         }
     }
 

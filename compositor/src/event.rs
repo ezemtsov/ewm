@@ -97,7 +97,11 @@ pub enum Event {
     Minimize { id: u64 },
     /// Activation asked for a surface Emacs no longer shows
     #[serde(rename = "activate_surface")]
-    ActivateSurface { id: u64 },
+    ActivateSurface {
+        id: u64,
+        output: Option<String>,
+        frame_surface_id: Option<u64>,
+    },
     /// Surface title changed
     #[serde(rename = "title")]
     Title { id: u64, app: String, title: String },

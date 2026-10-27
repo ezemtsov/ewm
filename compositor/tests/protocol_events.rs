@@ -101,7 +101,11 @@ fn every_event() -> Vec<Event> {
         },
         Event::Close { id: 7 },
         Event::Minimize { id: 7 },
-        Event::ActivateSurface { id: 7 },
+        Event::ActivateSurface {
+            id: 7,
+            output: Some("eDP-1".into()),
+            frame_surface_id: Some(1),
+        },
         Event::Title {
             id: 7,
             app: "Alacritty".into(),

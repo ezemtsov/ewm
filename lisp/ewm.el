@@ -425,7 +425,7 @@ paired with it. Any other surface gets a buffer."
   "Display BUFFER on OUTPUT: floating in a new frame, else tiled in HOST-ID.
 A float is selected only when ACTIVATE."
   (let ((host (or (ewm--frame-by-surface-id host-id)
-                  (ewm--surface-target-frame-for-output output))))
+                  (ewm-output-active-frame output))))
     (when host (select-frame host))
     (cond
      (floating
@@ -466,11 +466,10 @@ A float is selected only when ACTIVATE."
     (bury-buffer)))
 
 (defun ewm--handle-activate-surface (event)
-  "Show the surface named by activation EVENT tiled on the focused output."
+  "Show the surface of activation EVENT tiled in the host the compositor chose."
   (ewm--with-surface-buffer-from-event event
-    (ewm--place-or-defer (current-buffer) nil
-                         (ewm--frame-output (ewm--focused-frame))
-                         nil t)))
+    (ewm--place-or-defer (current-buffer) nil (alist-get 'output event)
+                         (alist-get 'frame_surface_id event) t)))
 
 (defcustom ewm-bell-function #'ewm-bell-ding
   "Function called when a client rings the system bell.

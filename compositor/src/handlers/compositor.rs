@@ -267,7 +267,7 @@ fn natural_open_size(window: &Window) -> Option<Size<i32, Logical>> {
 
 impl Ewm {
     /// Tiled host for an app surface: parent's frame, else focused, else active, never a float.
-    fn resolve_app_host_frame(
+    pub(crate) fn resolve_app_host_frame(
         &self,
         parent_id: Option<u64>,
         output: Option<&Output>,

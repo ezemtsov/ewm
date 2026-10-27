@@ -81,7 +81,7 @@ fn activation(serial: Serial, target: Target) {
     let events = fix.drain_events();
     let asked = events
         .iter()
-        .any(|e| matches!(e, Event::ActivateSurface { id } if *id == other_sid));
+        .any(|e| matches!(e, Event::ActivateSurface { id, .. } if *id == other_sid));
     let (pending, urgent) = {
         let other = &fix.ewm_ref().surfaces[&other_sid];
         (other.activation_pending(), other.urgent)
