@@ -149,11 +149,11 @@ Click a frame to select it and zoom back in.")
 Clicking the emptied output also brings them back.")
 
 (defun ewm-workspace-rename (name &optional frame)
-  "Rename FRAME's workspace to NAME.
-When FRAME is nil, use the selected frame.  An empty NAME clears
-the workspace name."
+  "Rename the workspace of FRAME to NAME, empty clears, queued until it pairs."
   (interactive (list (read-string "Workspace name: ")))
-  (ewm-workspace-rename-module name (frame-parameter frame 'ewm-surface-id)))
+  (if-let* ((id (frame-parameter frame 'ewm-surface-id)))
+      (ewm-workspace-rename-module name id)
+    (set-frame-parameter frame 'ewm-workspace-name name)))
 
 (defun ewm-workspace-mark-urgent (&optional frame)
   "Mark FRAME's workspace as urgent.

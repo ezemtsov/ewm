@@ -71,6 +71,7 @@ The batch frame is shared; we save and restore the parameters we touch."
           (saved-surface-id (frame-parameter ,var 'ewm-surface-id))
           (saved-output (frame-parameter ,var 'ewm-output))
           (saved-focus (frame-parameter ,var 'ewm-focus-on-create))
+          (saved-name (frame-parameter ,var 'ewm-workspace-name))
           (saved-window (frame-selected-window ,var))
           (saved-buffer (window-buffer saved-window))
           (saved-entry-id (window-parameter saved-window 'ewm-entry-id))
@@ -84,6 +85,7 @@ The batch frame is shared; we save and restore the parameters we touch."
        (set-frame-parameter ,var 'ewm-surface-id saved-surface-id)
        (set-frame-parameter ,var 'ewm-output saved-output)
        (set-frame-parameter ,var 'ewm-focus-on-create saved-focus)
+       (set-frame-parameter ,var 'ewm-workspace-name saved-name)
        (when (buffer-live-p saved-buffer)
          (set-window-buffer saved-window saved-buffer))
        (set-window-parameter saved-window 'ewm-entry-id saved-entry-id)
@@ -583,6 +585,29 @@ whatever same-window rule would keep the buffer in its tile."
         (ewm--select-frame-set-input-focus f)
         (should (equal (list (ewm-layout--ensure-frame-focus-id f)) sent))
         (should-not (frame-parameter f 'ewm-focus-on-create))))))
+
+(ert-deftest ewm-focus/workspace-rename-waits-for-the-surface-id ()
+  "A rename waits for the surface id, a paired frame renames at once."
+  (ewm-focus-tests--with-frame f
+    (let (sent)
+      (cl-letf (((symbol-function 'ewm-workspace-rename-module)
+                 (lambda (name id) (push (list name id) sent))))
+        (set-frame-parameter f 'ewm-surface-id nil)
+        (set-frame-parameter f 'ewm-frame-seq 7)
+        (unwind-protect
+            (progn
+              (ewm-workspace-rename "Mail" f)
+              (should (null sent))
+              (should (equal (frame-parameter f 'ewm-workspace-name) "Mail"))
+              (ewm--assign-surface-to-frame 42 7)
+              (should (equal sent '(("Mail" 42))))
+              (should-not (frame-parameter f 'ewm-workspace-name))
+              (ewm-workspace-rename "Code")
+              (should (equal sent '(("Code" 42) ("Mail" 42))))
+              (should-not (frame-parameter f 'ewm-workspace-name))
+              (ewm--assign-surface-to-frame 43 7)
+              (should (equal (length sent) 2)))
+          (set-frame-parameter f 'ewm-frame-seq nil))))))
 
 (ert-deftest ewm-focus/a-launch-opens-its-surface-in-the-launch-window ()
   "A launch fills its window by token or by pid and never selects it."

@@ -363,6 +363,10 @@ A section the compositor rejects is reported and stays at its default."
     (when (frame-parameter frame 'ewm-focus-on-create)
       (set-frame-parameter frame 'ewm-focus-on-create nil)
       (select-frame-set-input-focus frame))
+    ;; A rename queued before the frame paired, see `ewm-workspace-rename'.
+    (when-let* ((name (frame-parameter frame 'ewm-workspace-name)))
+      (set-frame-parameter frame 'ewm-workspace-name nil)
+      (ewm-workspace-rename-module name id))
     (ewm-layout--refresh)
     frame))
 
