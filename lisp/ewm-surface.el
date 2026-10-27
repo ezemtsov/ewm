@@ -99,6 +99,11 @@ Similar to `exwm-title'.")
 (defvar-local ewm-surface-size nil
   "Client's natural size (W . H) in logical pixels at map, or nil.")
 
+;; Surface state belongs to the buffer, not its major mode.
+(dolist (var '(ewm-surface-id ewm-surface-app ewm-surface-title
+               ewm-surface-pid ewm-surface-size))
+  (put var 'permanent-local t))
+
 (defun ewm-buffer-name (app title _id)
   "Name the surface after TITLE, or APP while it has none."
   (format "*ewm:%s*" (if (member title '(nil "")) app title)))

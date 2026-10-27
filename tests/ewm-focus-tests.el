@@ -254,9 +254,8 @@ buffer; `mapped' displays and publishes it."
                      (lambda (frames) (push frames captures)))
                     ((symbol-function 'ewm-get-strip-frame-ids)
                      (lambda (_output) (list ewm-focus-tests--frame-surface-id))))
-            (ewm--create-surface-buffer 80 "pinentry" 1234)
-            (setq created (gethash 80 ewm--surfaces))
-            (should created)
+            (setq created (ewm--create-surface-buffer 80 "pinentry" 1234))
+            (should (eq created (gethash 80 ewm--surfaces)))
             ;; New alone must not publish: placement waits for the map event.
             (should-not captures)
             (ewm--handle-mapped-surface

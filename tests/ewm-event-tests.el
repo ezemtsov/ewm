@@ -30,15 +30,11 @@
 
 (ert-deftest ewm-event-tests/activation-shows-hidden-surface-buffer ()
   "Activating a surface no window shows puts its buffer back in the layout."
-  (let ((ewm--surfaces (make-hash-table :test 'eql))
-        (ewm--module-mode nil)
-        (buf (generate-new-buffer " *ewm-test-activation*")))
+  (let* ((ewm--surfaces (make-hash-table :test 'eql))
+         (ewm--module-mode nil)
+         (buf (ewm--create-surface-buffer 42 "test" 0)))
     (unwind-protect
         (save-window-excursion
-          (puthash 42 buf ewm--surfaces)
-          (with-current-buffer buf
-            (ewm-surface-mode)
-            (setq-local ewm-surface-id 42))
           (set-frame-parameter nil 'ewm-surface-id 1)
           (ewm--handle-event '(activate_surface (id . 42) (frame_surface_id . 1)))
           (should (eq (window-buffer (selected-window)) buf)))

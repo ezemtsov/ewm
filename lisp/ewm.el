@@ -368,15 +368,14 @@ A section the compositor rejects is reported and stays at its default."
 
 (defun ewm--create-surface-buffer (id app pid)
   "Create the buffer for surface ID (APP, client PID); placed later on map."
-  (let ((buf (generate-new-buffer
-              (funcall ewm-buffer-name-function app nil id))))
-    (puthash id buf ewm--surfaces)
-    (with-current-buffer buf
-      (ewm-surface-mode)
-      (setq-local ewm-surface-id id)
-      (setq-local ewm-surface-app app)
-      (setq-local ewm-surface-pid pid)
-      (ewm--update-app))))
+  (with-current-buffer
+      (generate-new-buffer (funcall ewm-buffer-name-function app nil id))
+    (puthash id (current-buffer) ewm--surfaces)
+    ;; Permanent locals, the mode keeps them.
+    (setq-local ewm-surface-id id ewm-surface-app app ewm-surface-pid pid)
+    (ewm-surface-mode)
+    (ewm--update-app)
+    (current-buffer)))
 
 (defun ewm--handle-new-surface (event)
   "Handle new surface EVENT.
