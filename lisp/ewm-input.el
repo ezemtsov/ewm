@@ -461,23 +461,6 @@ Nil for both means the focused surface. Waits while Emacs holds the keyboard."
         (advice-add fn :around #'ewm-input--with-keyboard-capture)
       (advice-remove fn #'ewm-input--with-keyboard-capture))))
 
-;;; Input method follows the selected window
-;;
-;; `ewm--handle-focus' selects windows from the async event filter, where
-;; `current-buffer' reverts on return though `select-window' sticks. So the
-;; first key after a focus change is read against the previous buffer's input
-;; method. Apply the selected window's instead, at both `read-char' entry
-;; points: the global default and an :around advice on `quail-input-method'.
-;; The text-input handler names its surface buffer itself and is left alone.
-
-(defun ewm-input--in-selected-window (orig key)
-  "Translate KEY through the selected window's input method, else ORIG."
-  (let ((buf (window-buffer (selected-window))))
-    (if (or ewm-text-input--composing (eq buf (current-buffer)))
-        (funcall orig key)
-      (with-current-buffer buf
-        (if current-input-method (funcall input-method-function key) (list key))))))
-
 (defun ewm-input--enable ()
   "Enable EWM input handling."
   (setq ewm--mff-last-window (selected-window))
@@ -492,9 +475,6 @@ Nil for both means the focused surface. Waits while Emacs holds the keyboard."
   ;; command loop, they cannot fire `post-command-hook' mid-prefix.
   (define-key special-event-map [switch-frame] #'ignore)
   (define-key global-map [ewm-focus-change] #'ewm--focus-change)
-  (setq-default input-method-function
-                (apply-partially #'ewm-input--in-selected-window #'list))
-  (advice-add 'quail-input-method :around #'ewm-input--in-selected-window)
   (advice-add 'define-key :after #'ewm-input--on-define-key))
 
 (defun ewm-input--disable ()
@@ -511,8 +491,6 @@ Nil for both means the focused surface. Waits while Emacs holds the keyboard."
   (ewm-input--set-keyboard-capture nil t)
   (define-key special-event-map [switch-frame] nil)
   (define-key global-map [ewm-focus-change] nil)
-  (setq-default input-method-function #'list)
-  (advice-remove 'quail-input-method #'ewm-input--in-selected-window)
   (advice-remove 'define-key #'ewm-input--on-define-key)
   (ewm-input--cancel-resend))
 

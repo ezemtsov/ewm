@@ -266,23 +266,5 @@ background, and never asks the layout to refresh."
                                       (ewm-input--with-keyboard-capture #'ignore))))))
                        (cons calls after)))))))
 
-(ert-deftest ewm-input-tests/in-selected-window-routes-to-the-window-buffer-unless-composing ()
-  "A stale current buffer is not the one translated in, a composing client field is left alone."
-  (let (called routed)
-    (with-temp-buffer                     ; the window's buffer
-      (let ((win-buf (current-buffer)))
-        (setq-local current-input-method "x")
-        (setq-local input-method-function
-                    (lambda (k) (setq routed (cons k (current-buffer))) (list k)))
-        (with-temp-buffer                 ; a stale current buffer
-          (cl-letf (((symbol-function 'window-buffer) (lambda (&optional _) win-buf)))
-            (let ((ewm-text-input--composing 7))
-              (ewm-input--in-selected-window (lambda (k) (setq called k) (list k)) ?a))
-            (let ((ewm-text-input--composing nil))
-              (ewm-input--in-selected-window
-               (lambda (_k) (error "must not translate in the wrong buffer")) ?z))))
-        (should (eq called ?a))
-        (should (equal routed (cons ?z win-buf)))))))
-
 (provide 'ewm-input-tests)
 ;;; ewm-input-tests.el ends here
