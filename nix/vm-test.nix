@@ -1,4 +1,4 @@
-# Boots an EWM session under greetd and runs tests/ewm-session-tests.el in it.
+# Boots an EWM session under greetd and runs tests/ewm-live-tests.el in it.
 # The compositor needs the host GPU, run the driver outside the sandbox with
 # KVM and a render node.
 {
@@ -103,60 +103,60 @@ let
 
       with subtest("greetd logs alice into an EWM session"):
           machine.wait_until_succeeds(READY, timeout=dt.timedelta(minutes=3))
-          machine.succeed(eval_cmd('(progn (load "${../tests/ewm-session-tests.el}") (setq ewm-session-tests-dir "/tmp/session"))'))
+          machine.succeed(eval_cmd('(progn (load "${../tests/ewm-live-tests.el}") (setq ewm-live-tests-dir "/tmp/session"))'))
 
       # The screenshots leave the machine whatever happens to the checks.
       try:
           with subtest("both outputs come up with their configured scales"):
-              check('(ewm-session-tests-outputs \'(("Virtual-1" . 1.5) ("Virtual-2" . 1.0)))')
-              check("(ewm-session-tests-setup)")
+              check('(ewm-live-tests-outputs \'(("Virtual-1" . 1.5) ("Virtual-2" . 1.0)))')
+              check("(ewm-live-tests-setup)")
 
           with subtest("keyboard input reaches the focused frame"):
               machine.send_chars("typed in the vm")
-              print(machine.wait_until_succeeds(eval_cmd('(ewm-session-tests-typed "typed in the vm")'), timeout=dt.timedelta(seconds=30)))
+              print(machine.wait_until_succeeds(eval_cmd('(ewm-live-tests-typed "typed in the vm")'), timeout=dt.timedelta(seconds=30)))
 
           with subtest("keys reach the app and Super bindings run over it, fullscreen too"):
-              check("(ewm-session-tests-foot)")
+              check("(ewm-live-tests-foot)")
               machine.send_chars("typed-in-foot\n")
-              check('(ewm-session-tests-foot-typed "typed-in-foot")')
+              check('(ewm-live-tests-foot-typed "typed-in-foot")')
               machine.send_key("meta_l-f")
-              check("(ewm-session-tests-foot-fullscreen t)")
+              check("(ewm-live-tests-foot-fullscreen t)")
               # Over a fullscreen app a plain binding is forwarded, foot types the letter.
               machine.send_key("meta_l-t")
               machine.send_chars("\n")
-              check('(ewm-session-tests-foot-typed "t")')
+              check('(ewm-live-tests-foot-typed "t")')
               machine.send_key("meta_l-f")
-              check("(ewm-session-tests-foot-fullscreen nil)")
+              check("(ewm-live-tests-foot-fullscreen nil)")
               machine.send_key("meta_l-t")
-              check("(ewm-session-tests-new-frame)")
+              check("(ewm-live-tests-new-frame)")
 
           with subtest("an app goes fullscreen over its output and back"):
-              check("(ewm-session-tests-fullscreen)")
+              check("(ewm-live-tests-fullscreen)")
 
           with subtest("one app surface shows in two windows at once"):
-              check("(ewm-session-tests-views)")
+              check("(ewm-live-tests-views)")
 
           with subtest("a child frame and a float show where they were put"):
-              check("(ewm-session-tests-child-frame)")
-              check("(ewm-session-tests-float)")
+              check("(ewm-live-tests-child-frame)")
+              check("(ewm-live-tests-float)")
 
           with subtest("the focused frame moves to the other output and back"):
-              check("(ewm-session-tests-move)")
+              check("(ewm-live-tests-move)")
 
           with subtest("a launch opens in its window and leaves the keyboard, one hinted for the other head opens there unfocused"):
-              check("(ewm-session-tests-launch-anchor)")
-              check("(ewm-session-tests-launch-away)")
+              check("(ewm-live-tests-launch-anchor)")
+              check("(ewm-live-tests-launch-away)")
 
           with subtest("a head goes off and on under the session, the other changes scale"):
-              check("(ewm-session-tests-reconfigure)")
-              check("(ewm-session-tests-rescale)")
+              check("(ewm-live-tests-reconfigure)")
+              check("(ewm-live-tests-rescale)")
 
           with subtest("the session locks every output, swallows input and unlocks with the password"):
-              check("(ewm-session-tests-lock)")
+              check("(ewm-live-tests-lock)")
               machine.send_chars("alice\n")
-              check('(ewm-session-tests-unlocked "alice")')
+              check('(ewm-live-tests-unlocked "alice")')
 
-          check("(ewm-session-tests-teardown)")
+          check("(ewm-live-tests-teardown)")
       finally:
           machine.execute("mkdir -p /tmp/session")
           shutil.rmtree(driver.out_dir / "session", ignore_errors=True)
