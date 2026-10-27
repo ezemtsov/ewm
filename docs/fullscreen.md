@@ -35,7 +35,9 @@ windows as they are and the compositor draws the view over the whole output.
   in that frame's slot, sliding out and back in with it, and focusing it brings
   the frame to the front. Off screen, it leaves without a fade. It is a plain
   float again, in place and untouched in size, once it shows a view that is not
-  fullscreen, while one left with no view at all stays pinned. One view is
+  fullscreen, while one left with no view at all stays pinned. Primaries, their
+  configures and suspension read the pin a pending request settles to
+  (`settles_shown`), the commit that settles it draws no configure. One view is
   fullscreen per strip frame: a request puts the one before it, the frame's own
   view or a float pinned to the frame, back (`Layout::fullscreen_rivals`).
 - The bit outlives the view: a buffer switched away and back is fullscreen

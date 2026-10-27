@@ -554,13 +554,6 @@ impl Ewm {
         None
     }
 
-    /// The views of `id` in shown frames, with their output.
-    pub(crate) fn surface_views(&self, id: u64) -> impl Iterator<Item = (&Output, &LayoutEntry)> {
-        self.surface_entry_locations(id)
-            .filter(LayoutEntryLocation::shown)
-            .map(|location| (location.monitor.output(), location.entry))
-    }
-
     /// The views of surface `id` as drawn.
     pub fn views_of(&self, id: u64) -> Vec<ViewRect> {
         self.view_rects()
@@ -593,10 +586,6 @@ impl Ewm {
                 })
             })
             .collect()
-    }
-
-    fn surface_has_primary_entry(&self, id: u64) -> bool {
-        self.surface_views(id).any(|(_, entry)| entry.primary())
     }
 
     fn configure_surface_fullscreen_state(&self, id: u64, fullscreen: bool) {
@@ -648,9 +637,11 @@ impl Ewm {
         if !changed {
             return;
         }
-        if self.surface_has_primary_entry(id) {
-            self.refresh_primary_assignments();
-        } else {
+        self.refresh_primary_assignments();
+        if self
+            .layout_entry_for_surface(id, LayoutEntry::primary)
+            .is_none()
+        {
             self.configure_surface_fullscreen_state(id, on);
         }
     }
@@ -1044,13 +1035,13 @@ impl Ewm {
         )
     }
 
-    /// Configure every shown primary entry's surface for its slot, fading the answer to a resize.
+    /// Configure every primary entry's surface for its slot, fading the answer to a resize.
     fn configure_primary_entries(&mut self) {
-        let shown_primaries = self
+        let primaries = self
             .layout
             .entry_locations()
-            .filter(|location| location.shown() && location.entry.primary());
-        for location in shown_primaries {
+            .filter(|location| location.entry.primary());
+        for location in primaries {
             let Some(id) = location.entry.surface_id() else {
                 continue;
             };
@@ -1077,18 +1068,19 @@ impl Ewm {
     /// Panic unless the layout holds and the surfaces follow it.
     pub fn verify_invariants(&self) {
         self.layout.verify_invariants();
+        let requested = |id| self.pending_fullscreen(id);
         let mut primaries: HashMap<u64, usize> = HashMap::new();
         for location in self.layout.entry_locations() {
             let entry = location.entry;
             let Some(id) = entry.surface_id() else {
                 continue;
             };
-            if location.shown() {
+            if location.settles_shown(&requested) {
                 *primaries.entry(id).or_default() += usize::from(entry.primary());
             } else {
                 assert!(
                     !entry.primary(),
-                    "view {} of surface {id} is primary off screen",
+                    "view {} of surface {id} is primary while hidden",
                     entry.id
                 );
             }

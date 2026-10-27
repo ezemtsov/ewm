@@ -1355,7 +1355,8 @@ impl Ewm {
         if self.unattended || self.frames_hidden() {
             return HashSet::new();
         }
-        self.layout.shown_surface_ids(self.overview.is_active())
+        self.layout
+            .shown_surface_ids(self.overview.is_active(), |id| self.pending_fullscreen(id))
     }
 
     /// Tell each placed toplevel whether some output shows it. Unplaced ones keep drawing

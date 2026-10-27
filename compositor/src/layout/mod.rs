@@ -37,6 +37,11 @@ impl<'a> LayoutEntryLocation<'a> {
         self.frame_location().shown()
     }
 
+    /// Whether the entry is on screen once the pending fullscreen requests settle.
+    pub(crate) fn settles_shown(&self, requested: &impl Fn(u64) -> bool) -> bool {
+        self.frame_location().settles_shown(requested)
+    }
+
     pub(crate) fn frame_location(&self) -> FrameLocation<'a> {
         FrameLocation {
             monitor: self.monitor,
@@ -72,6 +77,22 @@ impl<'a> FrameLocation<'a> {
         } else {
             self.monitor.strip.active_idx() == self.frame_idx
         }
+    }
+
+    /// Whether the frame is on screen once the pending fullscreen requests settle: a float
+    /// pins to its frame while a view asks for fullscreen and is free otherwise.
+    pub(crate) fn settles_shown(&self, requested: &impl Fn(u64) -> bool) -> bool {
+        if !self.floating {
+            return self.shown();
+        }
+        let strip = &self.monitor.strip;
+        let pinned = self
+            .frame
+            .entries
+            .iter()
+            .filter_map(LayoutEntry::surface_id)
+            .any(requested);
+        !pinned || strip.frame_of_float(self.frame) == strip.active_frame_id()
     }
 
     /// Screen x of the strip slot the frame rides in.
@@ -1017,11 +1038,15 @@ impl Layout {
 
     /// Each monitor's active frame, or every frame when `every_frame`, its floats on screen,
     /// and the surfaces their views show.
-    pub(crate) fn shown_surface_ids(&self, every_frame: bool) -> HashSet<u64> {
+    pub(crate) fn shown_surface_ids(
+        &self,
+        every_frame: bool,
+        requested: impl Fn(u64) -> bool,
+    ) -> HashSet<u64> {
         self.monitors
             .iter()
             .flat_map(Monitor::frame_locations)
-            .filter(|location| every_frame || location.shown())
+            .filter(|location| every_frame || location.settles_shown(&requested))
             .flat_map(|location| location.frame.surface_ids())
             .collect()
     }
@@ -1049,15 +1074,16 @@ impl Layout {
             .any(|monitor| monitor.presenting_fullscreen().is_some())
     }
 
-    /// Mark one view of each surface primary: its largest among the shown frames, a view shown
-    /// fullscreen counting the output while `requested` of its surface, ties broken by `order`.
+    /// Mark one view of each surface primary: its largest among the frames shown once the
+    /// requests settle, a view shown fullscreen counting the output while `requested` of its
+    /// surface, ties broken by `order`.
     pub(crate) fn assign_primaries(&mut self, order: &[Output], requested: impl Fn(u64) -> bool) {
         let mut best: HashMap<u64, (u64, LayoutEntryId)> = HashMap::new();
         let shown = order
             .iter()
             .filter_map(|output| self.monitor_of(output))
             .flat_map(Monitor::entry_locations)
-            .filter(LayoutEntryLocation::shown);
+            .filter(|location| location.settles_shown(&requested));
         for location in shown {
             let Some(surface_id) = location.entry.surface_id() else {
                 continue;
