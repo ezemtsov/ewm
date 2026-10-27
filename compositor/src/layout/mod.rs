@@ -128,7 +128,7 @@ struct InteractiveMove {
 }
 
 /// The output a frame belongs to, by display identity and connector.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub struct Home {
     pub identity: String,
     pub connector: String,
@@ -141,6 +141,14 @@ impl Home {
             connector: output.name(),
         }
     }
+}
+
+/// One Emacs frame as Lisp reads it back, placed or parked.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct FrameSnapshot {
+    pub output: Option<String>,
+    pub workspace_name: Option<String>,
+    pub home: Home,
 }
 
 /// Where a new frame goes on its output.
@@ -208,10 +216,6 @@ impl Monitor {
             .frames_mut()
             .iter_mut()
             .chain(self.floating.frames_mut().iter_mut())
-    }
-
-    fn frame_ids(&self) -> impl Iterator<Item = u64> + '_ {
-        self.frames().map(|frame| frame.surface_id)
     }
 
     /// The frame holding the keyboard while this is the active output.
@@ -1168,11 +1172,17 @@ impl Layout {
             .collect()
     }
 
-    /// Output name per placed frame.
-    pub(crate) fn frame_outputs_snapshot(&self) -> HashMap<u64, String> {
-        self.monitors
-            .iter()
-            .flat_map(|monitor| monitor.frame_ids().map(|id| (id, monitor.name.clone())))
+    /// Every frame as Lisp reads it back, the parked ones without an output.
+    pub fn frames_snapshot(&self) -> HashMap<u64, FrameSnapshot> {
+        self.all_frames()
+            .map(|frame| {
+                let snapshot = FrameSnapshot {
+                    output: self.frame_output(frame.surface_id).map(str::to_owned),
+                    workspace_name: frame.workspace_name.clone(),
+                    home: frame.home.clone(),
+                };
+                (frame.surface_id, snapshot)
+            })
             .collect()
     }
 

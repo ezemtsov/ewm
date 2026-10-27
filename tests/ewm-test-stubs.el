@@ -25,6 +25,9 @@
 (defun ewm-get-frame-output (surface-id)
   (when-let* ((frame (ewm--frame-by-surface-id surface-id)))
     (frame-parameter frame 'ewm-output)))
+(defun ewm-get-frame-home (surface-id)
+  (when-let* ((frame (ewm--frame-by-surface-id surface-id)))
+    (frame-parameter frame 'ewm-home)))
 
 (defvar ewm-test--queued nil "Events the stubbed `ewm-drain-events' hands out.")
 (defun ewm-drain-events () (prog1 ewm-test--queued (setq ewm-test--queued nil)))

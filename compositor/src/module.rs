@@ -56,8 +56,8 @@ use tracing::{debug, info};
 use crate::config::{self, Config};
 use crate::handlers::PlacementHint;
 use crate::im::TextInputProvider;
-use crate::layout::Placement;
 use crate::layout::strip::{self, Frame};
+use crate::layout::{FrameSnapshot, Home, Placement};
 pub use crate::utils::reply::Reply;
 use crate::utils::reply::{ReplyError, reply_channel};
 use crate::{
@@ -90,7 +90,7 @@ pub struct SharedState {
     pub frame_origins: Vec<FrameOrigin>,
     pub active_frames: HashMap<String, u64>,
     pub strip_frames: HashMap<String, Vec<u64>>,
-    pub frame_outputs: HashMap<u64, String>,
+    pub frames: HashMap<u64, FrameSnapshot>,
 }
 
 static SHARED_STATE: OnceLock<Mutex<SharedState>> = OnceLock::new();
@@ -346,13 +346,35 @@ fn get_strip_frame_ids(name: String) -> Result<Lisp<Vec<u64>>> {
     ))
 }
 
+fn frame_snapshot(state: &SharedState, surface_id: i64) -> Option<&FrameSnapshot> {
+    state.frames.get(&u64::try_from(surface_id).ok()?)
+}
+
 /// Output name of the Emacs frame with SURFACE-ID, or nil while it is unplaced.
 #[defun]
 fn get_frame_output(surface_id: i64) -> Result<Option<String>> {
     let state = shared_state().lock().unwrap();
-    Ok(u64::try_from(surface_id)
-        .ok()
-        .and_then(|id| state.frame_outputs.get(&id).cloned()))
+    Ok(frame_snapshot(&state, surface_id).and_then(|frame| frame.output.clone()))
+}
+
+/// Workspace name of the Emacs frame with SURFACE-ID, or nil.
+#[defun]
+fn get_workspace_name(surface_id: i64) -> Result<Option<String>> {
+    let state = shared_state().lock().unwrap();
+    Ok(frame_snapshot(&state, surface_id).and_then(|frame| frame.workspace_name.clone()))
+}
+
+/// Home of the Emacs frame with SURFACE-ID as (IDENTITY . CONNECTOR), or nil.
+#[defun]
+fn get_frame_home(surface_id: i64) -> Result<Lisp<Data>> {
+    let state = shared_state().lock().unwrap();
+    let Some(home) = frame_snapshot(&state, surface_id).map(|frame| &frame.home) else {
+        return Ok(Lisp(Data::NIL));
+    };
+    Ok(Lisp(Data::cons(
+        Data::Str(home.identity.clone()),
+        Data::Str(home.connector.clone()),
+    )))
 }
 
 /// Query a floating Emacs frame's origin for mouse-follows-focus pointer warping.

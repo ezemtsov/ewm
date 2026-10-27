@@ -14,6 +14,8 @@
      (declare-function ewm-get-active-frame-id "ewm-core" (name))
      (declare-function ewm-get-strip-frame-ids "ewm-core" (name))
      (declare-function ewm-get-frame-output "ewm-core" (surface-id))
+     (declare-function ewm-get-workspace-name "ewm-core" (surface-id))
+     (declare-function ewm-get-frame-home "ewm-core" (surface-id))
      (declare-function ewm-get-frame-origin "ewm-core" (surface-id))
      (declare-function ewm-get-pointer-location "ewm-core" ())
      (declare-function ewm-create-activation-token "ewm-core" ())

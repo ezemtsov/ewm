@@ -2376,7 +2376,7 @@ impl Ewm {
             .partition(|&id| self.layout.has_frame(id));
         urgent_surfaces.sort_unstable();
         urgent_workspaces.sort_unstable();
-        let emacs_surfaces = self.layout.frame_outputs_snapshot();
+        let emacs_surfaces = self.layout.frames_snapshot();
         let cursor_pos: Point<f64, Logical> = self.cursor_location().into();
         let pointer_output = self.output_at(cursor_pos);
         let cursor_scale = pointer_output
@@ -3007,7 +3007,7 @@ impl State {
             shared.frame_origins = self.ewm.frame_origins_snapshot();
             shared.active_frames = self.ewm.layout.active_frames_snapshot();
             shared.strip_frames = self.ewm.layout.strip_frames_snapshot();
-            shared.frame_outputs = self.ewm.layout.frame_outputs_snapshot();
+            shared.frames = self.ewm.layout.frames_snapshot();
         }
         module::flush_events();
     }

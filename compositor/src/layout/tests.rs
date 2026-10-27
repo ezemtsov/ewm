@@ -615,8 +615,11 @@ fn apply_layout_op(
                     Placement::Tiled { after }
                 };
                 layout.add_frame(id, &outputs[output], placement);
+                let frame = layout.frame_mut(id).unwrap();
                 if filler {
-                    layout.frame_mut(id).unwrap().owner = strip::Owner::Compositor;
+                    frame.owner = strip::Owner::Compositor;
+                } else {
+                    frame.workspace_name = Some(id.to_string());
                 }
                 live.insert(id);
                 prop_assert_eq!(layout.frame_output(id), Some(PROP_HEADS[output]));
@@ -804,10 +807,11 @@ fn apply_layout_op(
         }
         LayoutOp::Merge(ref ids) => {
             let strips = layout.strip_frames_snapshot();
-            let placed = layout.frame_outputs_snapshot();
+            let frames = layout.frames_snapshot();
             layout.merge_frames(ids.iter().map(|&id| strip::Frame::new(id)).collect());
             prop_assert_eq!(layout.strip_frames_snapshot(), strips);
-            prop_assert_eq!(layout.frame_outputs_snapshot(), placed);
+            // Names and homes survive the refill.
+            prop_assert_eq!(layout.frames_snapshot(), frames);
         }
     }
     Ok(())
@@ -821,6 +825,18 @@ fn verify_live_frames(layout: &Layout, live: &BTreeSet<u64>) -> Result<(), TestC
     prop_assert_eq!(&everywhere, &live.iter().copied().collect::<Vec<_>>());
     for id in LAYOUT_FRAME_IDS {
         prop_assert_eq!(layout.has_frame(id), live.contains(&id));
+    }
+    // The snapshot names every live frame once, with an output exactly when it is placed.
+    let snapshot = layout.frames_snapshot();
+    prop_assert_eq!(&snapshot.keys().copied().collect::<BTreeSet<_>>(), live);
+    for frame in layout.all_frames() {
+        let snap = &snapshot[&frame.surface_id];
+        prop_assert_eq!(
+            snap.output.as_deref(),
+            layout.frame_output(frame.surface_id)
+        );
+        prop_assert_eq!(&snap.workspace_name, &frame.workspace_name);
+        prop_assert_eq!(&snap.home, &frame.home);
     }
     Ok(())
 }
