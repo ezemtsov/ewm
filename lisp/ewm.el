@@ -66,7 +66,9 @@
   "Dispatch the events the compositor queued; the pipe only carries a wakeup."
   ;; A nested filter (a handler waited for output) must not jump the queue.
   (unless ewm--draining-events
-    (let ((ewm--draining-events t))
+    (let ((ewm--draining-events t)
+          (window (selected-window))
+          (buffer (window-buffer)))
       (while-let ((events (ewm-drain-events)))
         (dolist (event events)
           (condition-case dispatch-err
@@ -78,7 +80,10 @@
             (user-error
              (message "%s" (error-message-string dispatch-err)))
             (error
-             (message "EWM: event handler error: %s" dispatch-err))))))))
+             (message "EWM: event handler error: %s" dispatch-err)))))
+      ;; A text-input key the drain unread must stay ahead of the boundary.
+      (unless (and (eq window (selected-window)) (eq buffer (window-buffer)))
+        (ewm--queue-focus-change)))))
 
 (defun ewm--init-event-channel ()
   "Create a pipe process and register it as the compositor event channel."

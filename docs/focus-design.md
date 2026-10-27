@@ -283,15 +283,21 @@ After specific operations:
     overview, hide, fullscreen and spawn actions change the compositor's
     state on the key press or module command and queue events for Lisp
     at most.  Nothing waits for a reply, so they work while Emacs is busy.
-16. **A selection made from the event filter ends in a command boundary.**
-    `current-buffer` reverts when the filter returns, so `ewm--handle-focus`
-    queues an `ewm-focus-change` event whose no-op command runs before the
-    next typed key, and `post-command-hook` sees the new buffer first.  The
-    event is of the `switch-frame` kind, so a key sequence in progress
-    finishes first.  A running command gets the event once it ends.  A macro
-    being defined gets none, since Emacs records events a filter unreads.
-    The boundary leaves keyboard capture alone.  PGTK's own `switch-frame`
-    events stay ignored, they may name a stale frame.
+16. **A drain of compositor events that moves the selection ends in a
+    command boundary.**  `current-buffer` reverts when the filter returns.
+    `ewm--event-filter` compares the selected window and its buffer around
+    the drain and queues one `ewm-focus-change` event behind the keys the
+    drain unread.  Its no-op command runs before the next typed key, and
+    `post-command-hook` sees the new buffer first.  The boundary comes last
+    because a text-input key dispatches through `special-event-map` only as
+    the first unread entry.  The event is of the `switch-frame` kind, so a
+    key sequence in progress finishes first.  A running command gets the
+    event once it ends.  A macro being defined gets none, since Emacs records
+    events a filter unreads.  The boundary leaves keyboard capture alone.
+    PGTK's own `switch-frame` events stay ignored, they may name a stale
+    frame.  The hooks that redisplay runs after the filter, such as
+    `window-buffer-change-functions`, still see the previous `current-buffer`.
+    Their FRAME argument names the new selection.
 17. **A frame sent to another output stays focused.**  The move lands it
     after the destination's active frame, makes it that output's active
     frame and keeps keyboard focus on it, and repeated moves carry it round

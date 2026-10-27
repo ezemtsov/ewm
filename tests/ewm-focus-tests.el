@@ -360,7 +360,7 @@ buffer; `mapped' displays and publishes it."
   (declare (indent 0))
   `(ewm-focus-tests--with-frame f
      (let ((surface-window (split-window (frame-selected-window f) nil t))
-           (event `((focus_id . ,ewm-focus-tests--surface-entry-id)))
+           (event `(focus (focus_id . ,ewm-focus-tests--surface-entry-id)))
            (unread-command-events nil)
            (this-command nil)
            (defining-kbd-macro nil)
@@ -370,20 +370,26 @@ buffer; `mapped' displays and publishes it."
        (unwind-protect (progn ,@body)
          (when (window-live-p surface-window) (delete-window surface-window))))))
 
+(defun ewm-focus-tests--drain (&rest events)
+  "Run the event filter over EVENTS, as one compositor wakeup would."
+  (cl-letf (((symbol-function 'ewm-drain-events)
+             (lambda () (prog1 events (setq events nil)))))
+    (ewm--event-filter nil "\0")))
+
 (ert-deftest ewm-focus/selection-change-queues-focus-change ()
-  "A focus that moves the selection queues one boundary for the selected frame."
+  "A drain that moves the selection queues one boundary behind the keys it unread."
   (ewm-focus-tests--with-two-windows
-    (setq unread-command-events (list ?a '(ewm-focus-change stale)))
-    (ewm--handle-focus event)
+    (setq unread-command-events (list ?a))
+    (ewm-focus-tests--drain event '(intercepted-command (key . "s-1")))
     (should (eq (selected-window) surface-window))
     (should (equal unread-command-events
-                   (list ?a (list 'ewm-focus-change (selected-frame)))))))
+                   (list ?a (cons t ?\s-1) (list 'ewm-focus-change (selected-frame)))))))
 
 (ert-deftest ewm-focus/unchanged-selection-queues-nothing ()
   "A focus on the selected window is no boundary."
   (ewm-focus-tests--with-two-windows
     (select-window surface-window)
-    (ewm--handle-focus event)
+    (ewm-focus-tests--drain event)
     (should-not unread-command-events)
     (should-not post-command-hook)))
 
@@ -391,7 +397,7 @@ buffer; `mapped' displays and publishes it."
   "A running command never reads the boundary, it is queued once it ends."
   (ewm-focus-tests--with-two-windows
     (setq this-command 'some-command)
-    (ewm--handle-focus event)
+    (ewm-focus-tests--drain event)
     (should-not unread-command-events)
     (run-hooks 'post-command-hook)
     (should (equal unread-command-events
@@ -410,7 +416,7 @@ buffer; `mapped' displays and publishes it."
   "Events unread from the filter are recorded, so a macro would keep the boundary."
   (ewm-focus-tests--with-two-windows
     (setq defining-kbd-macro t)
-    (ewm--handle-focus event)
+    (ewm-focus-tests--drain event)
     (should (eq (selected-window) surface-window))
     (should-not unread-command-events)
     (should-not post-command-hook)))
@@ -424,6 +430,29 @@ buffer; `mapped' displays and publishes it."
     (run-hooks 'pre-command-hook)
     (should (eq last-command 'undo))
     (should-not pre-command-hook)))
+
+(ert-deftest ewm-focus/every-drain-moving-the-selection-is-a-boundary ()
+  "Placement, activation, minimize, close and a failed handler end in the boundary a focus does."
+  (ewm-focus-tests--with-two-windows
+    (let ((ewm--surfaces (make-hash-table :test 'eql))
+          (other (ewm-focus-tests--make-surface-buffer 42)))
+      (puthash 42 other ewm--surfaces)
+      (puthash ewm-focus-tests--surface-id (window-buffer surface-window) ewm--surfaces)
+      (cl-letf (((symbol-function 'ewm--handle-title-update)
+                 (lambda (_) (select-window surface-window) (error "boom"))))
+        (pcase-dolist (`(,event . ,moves)
+                       `(((mapped (id . 42) (output . ,ewm-focus-tests--output)
+                                  (frame_surface_id . ,ewm-focus-tests--frame-surface-id)) . t)
+                         ((minimize (id . 42)) . t)
+                         ((activate_surface (id . 42)) . t)
+                         ((intercepted-command (key . "s-1")) . nil)
+                         ((close (id . ,ewm-focus-tests--surface-id)) . nil)
+                         ((close (id . 42)) . t)
+                         ((title (id . 5) (app . "x") (title . "y")) . t)))
+          (ert-info ((format "%S" event))
+            (setq unread-command-events nil)
+            (ewm-focus-tests--drain event)
+            (should (eq (and (assq 'ewm-focus-change unread-command-events) t) moves))))))))
 
 ;;;; Handler-boilerplate contracts
 ;;
