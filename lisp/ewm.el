@@ -368,7 +368,8 @@ A section the compositor rejects is reported and stays at its default."
 
 (defun ewm--create-surface-buffer (id app pid)
   "Create the buffer for surface ID (APP, client PID); placed later on map."
-  (let ((buf (generate-new-buffer (format "*ewm:%s:%d*" app id))))
+  (let ((buf (generate-new-buffer
+              (funcall ewm-buffer-name-function app nil id))))
     (puthash id buf ewm--surfaces)
     (with-current-buffer buf
       (ewm-surface-mode)
@@ -549,17 +550,11 @@ The current buffer is the surface buffer when this runs."
       (let ((app-changed (not (member app (list nil "" ewm-surface-app)))))
         (when app-changed (setq-local ewm-surface-app app))
         (setq-local ewm-surface-title title)
-        (ewm--rename-buffer)
+        (rename-buffer (funcall ewm-buffer-name-function
+                                ewm-surface-app title ewm-surface-id)
+                       t)
         (when app-changed (ewm--update-app))
         (run-hooks 'ewm-update-title-hook)))))
-
-(defun ewm--rename-buffer ()
-  "Rename the current surface buffer based on app and title.
-Similar to `exwm-workspace-rename-buffer'."
-  (let* ((app (or ewm-surface-app "unknown"))
-         (title (or ewm-surface-title ""))
-         (name (format "*ewm:%s*" (if (string-empty-p title) app title))))
-    (rename-buffer name t)))
 
 ;;; Shell CWD tracking
 

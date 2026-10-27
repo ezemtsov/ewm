@@ -99,6 +99,17 @@ Similar to `exwm-title'.")
 (defvar-local ewm-surface-size nil
   "Client's natural size (W . H) in logical pixels at map, or nil.")
 
+(defun ewm-buffer-name (app title _id)
+  "Name the surface after TITLE, or APP while it has none."
+  (format "*ewm:%s*" (if (member title '(nil "")) app title)))
+
+(defcustom ewm-buffer-name-function #'ewm-buffer-name
+  "Function returning a surface buffer name from app id, title and surface id.
+Called with a nil title at creation and again on every app id or title change.
+The current buffer is unspecified."
+  :type 'function
+  :group 'ewm)
+
 (defun ewm-surface-buffer-p (buffer)
   "If BUFFER is an EWM surface buffer, return its surface id, else nil."
   (and buffer (buffer-local-value 'ewm-surface-id buffer)))
