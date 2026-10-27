@@ -342,7 +342,6 @@ A section the compositor rejects is reported and stays at its default."
       ('text-input-replace-dropped (ewm--handle-text-input-replace-dropped body))
       ('key (ewm--handle-key body))
       ('intercepted-command (ewm--handle-intercepted-command body))
-      ('working_area (ewm--handle-working-area body))
       ('selection-changed (ewm--handle-selection-changed body))
       ('bell (ewm--handle-bell body))
       ('idle_state_changed (ewm--handle-idle-state-changed body))
@@ -498,14 +497,6 @@ apply; nil ignores the bell."
 (defun ewm--handle-ready ()
   "Note that the compositor is fully initialized."
   (setq ewm--compositor-ready t))
-
-(defun ewm--handle-working-area (event)
-  "Log the working area EVENT a panel's exclusive zone produced."
-  ;; Frames resize through their own configure, which refreshes the layout.
-  (ewm--log "Working area for %s: %dx%d+%d+%d"
-            (alist-get 'output event) (alist-get 'width event)
-            (alist-get 'height event) (alist-get 'x event)
-            (alist-get 'y event)))
 
 (defun ewm--handle-idle-state-changed (event)
   "Handle idle_state_changed EVENT from compositor."

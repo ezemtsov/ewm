@@ -7,7 +7,7 @@ use ewm_core::event::{Event, OutputInfo, OutputMode, TextInputKey};
 
 mod common;
 
-const VARIANTS: usize = 31;
+const VARIANTS: usize = 30;
 
 /// Exhaustive by construction: a new variant does not compile until it is numbered here.
 fn variant(event: &Event) -> usize {
@@ -30,19 +30,18 @@ fn variant(event: &Event) -> usize {
         Event::TextInputReplaceDropped { .. } => 15,
         Event::Key(_) => 16,
         Event::InterceptedCommand { .. } => 17,
-        Event::WorkingArea { .. } => 18,
-        Event::OutputConfigChanged { .. } => 19,
-        Event::SelectionChanged { .. } => 20,
-        Event::MaximizeRequest { .. } => 21,
-        Event::UnmaximizeRequest { .. } => 22,
-        Event::Bell { .. } => 23,
-        Event::IdleStateChanged { .. } => 24,
-        Event::Environment { .. } => 25,
-        Event::FrameShown { .. } => 26,
-        Event::FrameHidden { .. } => 27,
-        Event::ActivateSurface { .. } => 28,
-        Event::Overview { .. } => 29,
-        Event::Hide { .. } => 30,
+        Event::OutputConfigChanged { .. } => 18,
+        Event::SelectionChanged { .. } => 19,
+        Event::MaximizeRequest { .. } => 20,
+        Event::UnmaximizeRequest { .. } => 21,
+        Event::Bell { .. } => 22,
+        Event::IdleStateChanged { .. } => 23,
+        Event::Environment { .. } => 24,
+        Event::FrameShown { .. } => 25,
+        Event::FrameHidden { .. } => 26,
+        Event::ActivateSurface { .. } => 27,
+        Event::Overview { .. } => 28,
+        Event::Hide { .. } => 29,
     }
 }
 
@@ -158,13 +157,6 @@ fn every_event() -> Vec<Event> {
             logo: false,
         }),
         Event::InterceptedCommand { key: "s-d".into() },
-        Event::WorkingArea {
-            output: "eDP-1".into(),
-            x: 0,
-            y: 32,
-            width: 1920,
-            height: 1168,
-        },
         Event::OutputConfigChanged {
             name: "eDP-1".into(),
             width: 2880,

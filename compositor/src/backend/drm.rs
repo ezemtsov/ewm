@@ -1964,7 +1964,7 @@ impl DrmBackendState {
     ///
     /// Creates the DRM surface, Smithay output, and DrmCompositor.
     /// Reads `ewm.output_config` for mode/scale/transform/position.
-    /// Sends OutputDetected and WorkingArea events to Emacs.
+    /// Sends the OutputDetected event to Emacs.
     fn connect_output(
         &mut self,
         node: DrmNode,

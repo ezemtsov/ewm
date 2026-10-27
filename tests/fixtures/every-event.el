@@ -27,7 +27,6 @@
     (key (keycode . 38) (keysym . 97) (utf8 . "a") (surface_id . 7) (ctrl) (alt) (shift) (logo))
     (key (keycode . 36) (keysym . 65293) (utf8) (surface_id . 7) (ctrl . t) (alt) (shift) (logo))
     (intercepted-command (key . "s-d"))
-    (working_area (output . "eDP-1") (x . 0) (y . 32) (width . 1920) (height . 1168))
     (output_config_changed (name . "eDP-1") (width . 2880) (height . 1800) (refresh . 90000) (x . 0) (y . 0) (scale . 1.5) (transform . 0))
     (selection-changed (text . "copied"))
     (maximize_request (id . 7))

@@ -327,7 +327,6 @@ apply_output_config()
   ├─► reconfigure lock surface (if locked)
   │
   ├─► check_working_area_change() -> update_frames_for_working_area()
-  │     └─► sends WorkingArea event to Emacs with new logical dimensions
   │
   └─► send OutputConfigChanged event to Emacs
 ```

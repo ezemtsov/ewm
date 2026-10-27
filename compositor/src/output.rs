@@ -498,23 +498,11 @@ impl Ewm {
             .get_or_insert_with(|| output.create_global::<State>(&self.display_handle));
     }
 
-    /// Register an output the backend has set up and mapped: order, size, working area, Emacs.
+    /// Register an output the backend has set up and mapped.
     pub fn add_output(&mut self, output: &Output, info: OutputInfo) {
-        let output_name = info.name.clone();
-
         self.refresh_cursor_outputs();
 
         self.queue_event(Event::OutputDetected(info));
-
-        // Send initial working area (full output initially, before any panels)
-        let working_area = self.get_working_area(output);
-        self.queue_event(Event::WorkingArea {
-            output: output_name.clone(),
-            x: working_area.loc.x,
-            y: working_area.loc.y,
-            width: working_area.size.w,
-            height: working_area.size.h,
-        });
 
         if self.output_mapped(output) {
             self.attach_output(output);
@@ -646,14 +634,13 @@ impl Ewm {
         self.queue_redraw(output);
     }
 
-    /// Check and update working area for an output, sending event if changed.
+    /// Check and update the working area of an output.
     ///
     /// Returns true when the working area changed and Emacs frames were resized.
     pub fn check_working_area_change(&mut self, output: &Output) -> bool {
         // Re-arrange layer map so it picks up any scale/mode/transform change
         layer_map_for_output(output).arrange();
         let working_area = self.get_working_area(output);
-        let output_name = output.name();
 
         let Some(monitor) = self.layout.monitor_of_mut(output) else {
             return false;
@@ -665,7 +652,7 @@ impl Ewm {
         if changed {
             info!(
                 "Working area for {} changed: {}x{}+{}+{}",
-                output_name,
+                output.name(),
                 working_area.size.w,
                 working_area.size.h,
                 working_area.loc.x,
@@ -674,15 +661,6 @@ impl Ewm {
 
             // Update Emacs frames to fit new working area
             self.update_frames_for_working_area(output);
-
-            // Notify Emacs
-            self.queue_event(Event::WorkingArea {
-                output: output_name.clone(),
-                x: working_area.loc.x,
-                y: working_area.loc.y,
-                width: working_area.size.w,
-                height: working_area.size.h,
-            });
         }
 
         changed

@@ -142,15 +142,6 @@ pub enum Event {
     /// Intercepted Emacs command key. Lisp replays this through its keymaps.
     #[serde(rename = "intercepted-command")]
     InterceptedCommand { key: String },
-    /// Working area changed (due to layer-shell exclusive zones)
-    #[serde(rename = "working_area")]
-    WorkingArea {
-        output: String,
-        x: i32,
-        y: i32,
-        width: i32,
-        height: i32,
-    },
     /// Output configuration applied (after ConfigureOutput command)
     #[serde(rename = "output_config_changed")]
     OutputConfigChanged {
