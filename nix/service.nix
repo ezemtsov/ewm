@@ -30,7 +30,7 @@ let
       --fg-daemon \
       --eval "(require 'ewm)" \
       --eval "(ewm-start-module)" \
-      ${cfg.extraEmacsArgs} "$@"
+      ${lib.trim cfg.extraEmacsArgs} "$@"
   '';
 
   ewmSystemPackage = pkgs.runCommand "ewm-system" {
