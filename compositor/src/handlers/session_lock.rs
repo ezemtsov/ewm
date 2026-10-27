@@ -37,8 +37,8 @@ pub enum LockState {
     },
     /// Lock requested, waiting for all outputs to render a locked frame.
     Locking(SessionLocker),
-    /// Session is fully locked, the lock object detects a dead client.
-    Locked(ExtSessionLockV1),
+    /// Fully locked, the lock object detects a dead client, none from the previous instance.
+    Locked(Option<ExtSessionLockV1>),
 }
 
 /// Per-output lock render state for tracking lock confirmation.
@@ -66,7 +66,7 @@ impl Ewm {
             LockState::Unlocked => false,
             LockState::WaitingForSurfaces { confirmation, .. }
             | LockState::Locking(confirmation) => confirmation.ext_session_lock().is_alive(),
-            LockState::Locked(lock) => lock.is_alive(),
+            LockState::Locked(lock) => lock.as_ref().is_some_and(|lock| lock.is_alive()),
         }
     }
 
@@ -123,7 +123,10 @@ impl Ewm {
                 info!("All outputs rendered locked frame, confirming lock");
                 let lock = confirmation.ext_session_lock().clone();
                 confirmation.lock();
-                self.lock_state = LockState::Locked(lock);
+                self.lock_state = LockState::Locked(Some(lock));
+                if let Some(logind) = &self.logind {
+                    logind.set_locked_hint(true);
+                }
             }
         }
     }
@@ -184,6 +187,15 @@ impl SessionLockHandler for State {
 
         info!("Session lock requested");
 
+        // A surface wait would uncover the session, the outputs are blank already.
+        if self.ewm.is_locked() {
+            self.ewm.lock_state = LockState::Locking(confirmation);
+            self.ewm.check_lock_complete();
+            self.ewm.queue_redraw_all();
+            self.ewm.wake_from_idle();
+            return;
+        }
+
         // Save current focus to restore after unlock
         self.ewm.pre_lock_focus = self.ewm.focused_surface_id();
 
@@ -242,6 +254,9 @@ impl SessionLockHandler for State {
         self.ewm.notify_activity();
         self.ewm.reset_idle_timer();
 
+        if let Some(logind) = &self.ewm.logind {
+            logind.set_locked_hint(false);
+        }
         info!("Session unlocked");
     }
 

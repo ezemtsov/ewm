@@ -14,3 +14,16 @@ Slice=session.slice
 Type=notify
 WorkingDirectory=%h
 ExecStart=ewm-launch
+
+# When a session restart is requested Emacs exits with 15, the status
+# it also has on SIGTERM. Handled here to restart the unit in place
+# instead of ending the login, which a stop still does.
+SuccessExitStatus=15
+Restart=on-failure
+RestartForceExitStatus=15
+RestartMode=direct
+
+# With the lid closed a session restart leaves the compositor without
+# a lid inhibitor, logind would suspend the laptop before the next
+# instance starts. Holding the inhibitor 8 s after a stop prevents it.
+ExecStopPost=-systemd-run --user --quiet --collect systemd-inhibit --what=handle-lid-switch --who=ewm --why='the lid stays with the compositor across a restart' sleep 8

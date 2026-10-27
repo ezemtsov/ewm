@@ -86,7 +86,7 @@ use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_pre
 use smithay::wayland::presentation::Refresh;
 
 use crate::{
-    Ewm, LockRenderState, OutputInfo, OutputMode, OutputState, RedrawState, State,
+    Ewm, LockRenderState, LockState, OutputInfo, OutputMode, OutputState, RedrawState, State,
     backend::{
         Backend, OutputInfos, apply_enabled_output_config, apply_initial_output_config,
         map_initial_output,
@@ -895,10 +895,6 @@ pub struct DrmBackendState {
     pub lid_closed: bool,
     /// Bounded wait after closed-lid startup/resume for slow USB-C displays.
     closed_lid_settle_timer: Option<RegistrationToken>,
-    /// Logind session: inhibitor fd + D-Bus connection for suspend.
-    /// When present, we manage lid-close policy (macOS-like: stay awake with
-    /// external monitor, suspend via D-Bus when no display remains).
-    logind: Option<Login1>,
     /// Primary KMS node and render node. Set once DRM initialization succeeds.
     primary_node: Option<DrmNode>,
     primary_render_node: Option<DrmNode>,
@@ -2472,18 +2468,18 @@ impl DrmBackendState {
     /// Unattended by choice, not for a refused suspend, logind refuses others' sleep.
     fn set_unattended(&mut self, ewm: &mut Ewm, unattended: bool) {
         ewm.set_unattended(unattended);
-        if let Some(logind) = &mut self.logind {
+        if let Some(logind) = &mut ewm.logind {
             logind.set_sleep_inhibited(unattended && !ewm.config.power.closed_lid_suspends);
         }
     }
 
     /// Suspend with the panel lit so the kernel restores it, else stay awake with it dark.
     fn closed_lid_without_external(&mut self, ewm: &mut Ewm, reason: LidPolicyReason) {
-        if ewm.config.power.closed_lid_suspends && self.logind.is_some() {
+        if ewm.config.power.closed_lid_suspends && ewm.logind.is_some() {
             info!("Lid closed with no external display after {reason:?}, suspending");
             self.set_unattended(ewm, false);
             ewm.activate_monitors();
-            if self.logind.as_ref().is_some_and(Login1::suspend) {
+            if ewm.logind.as_ref().is_some_and(Login1::suspend) {
                 return;
             }
             // Refused: dark until the lid opens.
@@ -2967,7 +2963,6 @@ pub fn run_drm(cursor: crate::config::Cursor) -> anyhow::Result<()> {
         lid_supported: initial_lid_state.is_some(),
         lid_closed: initial_lid_state.unwrap_or(false),
         closed_lid_settle_timer: None,
-        logind: Login1::new(to_ewm),
         messages,
         loop_handle: Some(event_loop.handle()),
         cursor_texture_cache: CursorTextureCache::default(),
@@ -2984,6 +2979,12 @@ pub fn run_drm(cursor: crate::config::Cursor) -> anyhow::Result<()> {
         backend: Backend::Drm(backend),
         ewm,
     };
+
+    state.ewm.logind = Login1::new(to_ewm);
+    if state.ewm.logind.as_ref().is_some_and(Login1::locked_hint) {
+        info!("Session locked by the previous instance");
+        state.ewm.lock_state = LockState::Locked(None);
+    }
 
     // Set up xwayland-satellite for X11 support (on-demand)
     crate::xwayland::satellite::setup(&mut state);

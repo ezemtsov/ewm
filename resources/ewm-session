@@ -15,10 +15,7 @@ if [ -n "$SHELL" ] &&
 fi
 
 # Stop stale session from a previous login
-if systemctl --user -q is-active ewm.service; then
-  echo 'Stopping stale EWM session...'
-  systemctl --user stop ewm.service
-fi
+systemctl --user stop ewm.service
 
 # Reset failed state of user units
 systemctl --user reset-failed

@@ -101,6 +101,14 @@ in
     environment.systemPackages = [ ewmSystemPackage ];
     services.displayManager.sessionPackages = [ ewmSystemPackage ];
     systemd.packages = [ ewmSystemPackage ];
+    # Restarting the compositor ends the graphical session, a rebuild
+    # leaves the running unit alone, as with the display managers.
+    systemd.user.services.ewm = {
+      restartIfChanged = false;
+      # This definition adds a drop-in, which would set the NixOS default
+      # PATH over the one the session imported into the user manager.
+      enableDefaultPath = false;
+    };
     security.polkit.enable = true;
     security.pam.services.swaylock = { };
 

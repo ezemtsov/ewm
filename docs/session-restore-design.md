@@ -11,7 +11,9 @@ the terminal processes still running.
 Out of scope: keeping live Wayland surfaces across the restart. The
 compositor is a thread of the Emacs process, a restart is a new process, the
 socket and every client connection die with it. Surfaces are relaunched, not
-kept.
+kept. Qt 6.6 and later reconnect on their own when `QT_WAYLAND_RECONNECT` is
+set and the socket name is stable (it is, `wayland-ewm-vt1`). GTK, Firefox,
+Chromium and Electron exit.
 
 ## The mode is desktop-save-mode
 
@@ -87,8 +89,9 @@ runs, and the desktop auto-save is gated on owning the lock. EWM leaves both
 as they are, whether and when the desktop is saved is the `desktop-save` and
 `desktop-auto-save-timeout` of the user. An exit through
 `save-buffers-kill-emacs` saves or asks as `desktop-save` says and a refusal
-keeps the session running. A stop from outside, the SIGTERM of `systemctl`,
-leaves the file as the last auto-save wrote it, as for any Emacs daemon.
+keeps the session running, `ewm-restart` runs the same queries before
+it exits. A stop from outside, the SIGTERM of `systemctl`, leaves the file as
+the last auto-save wrote it, as for any Emacs daemon.
 
 ### Startup
 
@@ -111,6 +114,36 @@ lets go once a frame is in flight for its output.
 `desktop-after-read-hook` and `after-init-hook` launch the placeholders and
 fill the outputs still empty.
 
+### Restart mechanics
+
+`ewm-restart` offers modified files for saving, runs the exit queries
+and exits Emacs itself with status 15, the status Emacs returns for the
+SIGTERM of a stop. Emacs exits itself because a SIGTERM can land during a
+garbage collection and then any error in a `kill-emacs-hook` function aborts
+it. The unit decides what an exit means, as the GNOME Shell X11 unit does.
+`SuccessExitStatus=15` keeps a stop and this exit out of the failure log,
+`Restart=on-failure` brings a crash back, `RestartForceExitStatus=15` brings
+the requested restart back, and a plain exit or `systemctl stop` ends the
+unit, the documented meaning of both in `systemd.service(5)`.
+`RestartMode=direct` keeps the unit out of the inactive state while it
+restarts, the one `systemctl --user --wait start` of `ewm-session` returns
+only when the unit has ended, and `graphical-session.target` stays up
+throughout. After each exit the unit holds a `handle-lid-switch` lock for 8 s
+from `ExecStopPost`, logind would suspend a closed laptop in the gap before
+the next instance, and the hold expires on its own when the start is broken.
+The start limit stays at the systemd default of five starts in ten seconds. A
+NixOS switch leaves the unit alone, `nix/service.nix` marks it
+`restartIfChanged = false` with `enableDefaultPath = false`, the drop-in this
+makes carries no default `PATH` over the one the session imported, a stop
+would end the login, and the new build applies at the next restart from
+inside. The logind session and the VT stay, the unit starts the launcher
+afresh, a new Emacs and a new module
+come up. `restart-emacs` is no shortcut, it re-execs the running binary with
+the inherited load path and can never pick up a new build. A client unit of
+the session that restarts on failure needs a `RestartSec` long enough for the
+new socket to appear, or it bursts its start limit while no compositor
+listens.
+
 ## Compositor primitives
 
 1. `ewm-place-frame-module`, the placement of an Emacs frame from Lisp once
@@ -128,7 +161,9 @@ fill the outputs still empty.
    enough for a two minute warm start, the focus grant stays 10 s.
 
 Everything else is Elisp: the frameset filters, the desktop handlers and the
-placeholder in `lisp/ewm-session.el`, and `ewm-output-populate-functions` and
+placeholder in `lisp/ewm-session.el`, `ewm-restart` in `lisp/ewm-commands.el`,
+and `ewm-output-populate-functions` and `ewm-place-surface-functions` in
+`lisp/ewm.el`.
 `ewm-place-surface-functions` in `lisp/ewm.el`.
 
 ## Verification

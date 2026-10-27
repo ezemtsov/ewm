@@ -66,12 +66,17 @@ pub use tracy::VBlankFrameTracker;
 #[doc(hidden)]
 pub mod testing;
 
-/// Get the current VT (virtual terminal) number.
-/// Returns None if not running on a VT or detection fails.
+/// The VT of the session, the active one may belong to another session.
 pub fn current_vt() -> Option<u32> {
-    std::fs::read_to_string("/sys/class/tty/tty0/active")
-        .ok()
-        .and_then(|s| s.trim().strip_prefix("tty")?.parse().ok())
+    let vt = match std::env::var("XDG_VTNR") {
+        Ok(vt) => vt,
+        Err(_) => std::fs::read_to_string("/sys/class/tty/tty0/active")
+            .ok()?
+            .trim()
+            .strip_prefix("tty")?
+            .to_owned(),
+    };
+    vt.trim().parse().ok()
 }
 
 /// Get a VT-specific suffix for socket names.
@@ -637,6 +642,8 @@ pub struct Ewm {
     // Session lock state (ext-session-lock-v1 protocol)
     pub session_lock_state: SessionLockManagerState,
     pub lock_state: LockState,
+    /// The logind session, none outside one.
+    pub logind: Option<dbus_login1::Login1>,
     /// Surface ID that was focused before locking (restored on unlock)
     pub pre_lock_focus: Option<u64>,
 
@@ -982,6 +989,7 @@ impl Ewm {
             output_management_state,
             session_lock_state,
             lock_state: LockState::Unlocked,
+            logind: None,
             pre_lock_focus: None,
             idle_notifier_state,
             idle_inhibit_manager_state,

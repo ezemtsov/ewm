@@ -243,6 +243,17 @@ Without a surface, describe the selected Emacs frame instead."
   (interactive)
   (ewm-power-on-monitors-module))
 
+(defun ewm-restart ()
+  "Restart EWM in the login session, the exit queries run, status 15."
+  (interactive)
+  (save-some-buffers nil t)
+  ;; The unit restarts on this status. Emacs exits itself, a SIGTERM in a GC
+  ;; aborts it in the hooks.
+  (when (and (run-hook-with-args-until-failure 'kill-emacs-query-functions)
+             (or (null confirm-kill-emacs)
+                 (funcall confirm-kill-emacs "Really restart EWM? ")))
+    (kill-emacs 15)))
+
 (defvar ewm-launch-hint nil
   "Plist (:frame-surface-id ID :quiet BOOL) placing the next spawn.")
 
