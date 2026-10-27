@@ -37,20 +37,15 @@ ibus, which then serves Emacs frames as well."
 (defvar ewm-text-input--preedit ""
   "Text last shown as preedit for the composing field.")
 
-(defvar ewm-text-input-activated-hook nil
-  "Hook run when a client text field becomes active.
-Use this to enable special input handling modes.")
-
-(defvar ewm-text-input-deactivated-hook nil
-  "Hook run when a client text field becomes inactive.")
-
 (defvar ewm-text-input--client-active nil
   "Non-nil while a Wayland client text field is active.")
 
+(defvar ewm-text-input-auto-mode)
+
 (defun ewm--handle-text-input-activated ()
-  "Note that a client text field gained focus and run the hook."
+  "Note that a client text field gained focus."
   (setq ewm-text-input--client-active t)
-  (run-hooks 'ewm-text-input-activated-hook))
+  (when ewm-text-input-auto-mode (ewm-text-input--refresh-auto-state)))
 
 (defun ewm--handle-text-input-deactivated ()
   "Note that the client text field lost focus, aborting any composition."
@@ -60,7 +55,7 @@ Use this to enable special input handling modes.")
     (setq ewm-text-input--composing nil)
     (setq unread-command-events
           (nconc unread-command-events (list '(no-record . ewm-text-input-abort)))))
-  (run-hooks 'ewm-text-input-deactivated-hook))
+  (when ewm-text-input-auto-mode (ewm-text-input--refresh-auto-state)))
 
 (defun ewm-im-commit (text surface-id)
   "Commit TEXT to the client text field on SURFACE-ID."
@@ -100,8 +95,6 @@ Value is (SURFACE-ID TEXT CURSOR ANCHOR); CURSOR/ANCHOR are byte offsets."
   (when-let* ((buf (ewm--surface-buffer (ewm-get-focused-id))))
     (buffer-local-value 'current-input-method buf)))
 
-(defvar ewm-text-input-auto-mode)
-
 (defun ewm-text-input--refresh-auto-state ()
   "Intercept keys only in auto mode with an active field and input method."
   (let ((enabled (and ewm-text-input-auto-mode
@@ -121,9 +114,7 @@ Value is (SURFACE-ID TEXT CURSOR ANCHOR); CURSOR/ANCHOR are byte offsets."
   :global t
   :group 'ewm-input-methods
   (let ((hook-function (if ewm-text-input-auto-mode #'add-hook #'remove-hook)))
-    (dolist (hook '(ewm-text-input-activated-hook ewm-text-input-deactivated-hook
-                   input-method-activate-hook))
-      (funcall hook-function hook #'ewm-text-input--refresh-auto-state))
+    (funcall hook-function 'input-method-activate-hook #'ewm-text-input--refresh-auto-state)
     (funcall hook-function 'input-method-deactivate-hook
              #'ewm-text-input--input-method-deactivated))
   (ewm-text-input--refresh-auto-state))

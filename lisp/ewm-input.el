@@ -311,10 +311,7 @@ warps from packages that temporarily switch windows internally
 (defun ewm-input--set-drag-source (active)
   "Push ACTIVE to the compositor when it differs from the last push."
   (setq active (and active t))
-  ;; Cache only what a live module was told, so a change while the module
-  ;; is off is re-pushed once it starts.
-  (when (and (not (eq active ewm-input--drag-source))
-             ewm--module-mode)
+  (unless (eq active ewm-input--drag-source)
     (setq ewm-input--drag-source active)
     (ewm-set-drag-source active)))
 
@@ -371,31 +368,23 @@ warps from packages that temporarily switch windows internally
   "Return non-nil when a new compositor keyboard-capture lease may start."
   ;; A client-field input method reads keys the compositor already intercepts.
   (and (not ewm-text-input--composing)
-       (or (not ewm--module-mode)
-           (ewm-input--emacs-frame-focused-p)
+       (or (ewm-input--emacs-frame-focused-p)
            (ewm-input--command-key-active-p)
            (ewm-input--prefix-key-active-p))))
 
 (defvar ewm--pending-keys nil
   "Sends waiting for Emacs to release the keyboard, newest first.")
 
-(defun ewm-input--set-keyboard-capture (enabled &optional clear-redirect)
-  "Synchronize Lisp command-loop capture.
-When CLEAR-REDIRECT is non-nil, also clear compositor-owned keyboard
-redirect capture."
-  (let ((enabled (and enabled t))
-        (token ewm-input--keyboard-capture-token))
-    (cond
-     ((and enabled (not token))
-      (setq ewm-input--keyboard-capture-token
-            (if ewm--module-mode
-                (ewm-keyboard-capture-begin-module "command-loop")
-              0)))
-     ((and (not enabled) token)
-      (setq ewm-input--keyboard-capture-token nil)
-      (when (and ewm--module-mode (> token 0))
-        (ewm-keyboard-capture-end-module token))))
-    (when (and clear-redirect (not enabled) ewm--module-mode)
+(defun ewm-input--set-keyboard-capture (enabled)
+  "Synchronize Lisp command-loop capture, ending the redirect with it."
+  (let ((token ewm-input--keyboard-capture-token))
+    (if enabled
+        (unless token
+          (setq ewm-input--keyboard-capture-token
+                (ewm-keyboard-capture-begin-module "command-loop")))
+      (when token
+        (setq ewm-input--keyboard-capture-token nil)
+        (ewm-keyboard-capture-end-module token))
       (ewm-keyboard-redirect-capture-clear-module)
       (dolist (send (nreverse ewm--pending-keys))
         (apply #'ewm-send-key-module send))
@@ -409,7 +398,7 @@ redirect capture."
            (and (ewm-input--modal-input-active-p)
                 (or ewm-input--keyboard-capture-token
                     (ewm-input--keyboard-capture-start-allowed-p)))))
-      (ewm-input--set-keyboard-capture capture-active (not capture-active)))))
+      (ewm-input--set-keyboard-capture capture-active))))
 
 (defun ewm-send-key (key &optional surface-id)
   "Send KEY, a key description, to SURFACE-ID or the current surface buffer's.
@@ -488,7 +477,7 @@ Nil for both means the focused surface. Waits while Emacs holds the keyboard."
   (remove-hook 'minibuffer-exit-hook #'ewm-input--sync-keyboard-capture)
   (remove-hook 'window-selection-change-functions #'ewm-input--on-window-selection-change)
   (ewm-input--set-read-function-capture nil)
-  (ewm-input--set-keyboard-capture nil t)
+  (ewm-input--set-keyboard-capture nil)
   (define-key special-event-map [switch-frame] nil)
   (define-key global-map [ewm-focus-change] nil)
   (advice-remove 'define-key #'ewm-input--on-define-key)
@@ -532,20 +521,6 @@ Nil for both means the focused surface. Waits while Emacs holds the keyboard."
   "EVENT's (COMMAND . FLAGS) in `ewm-mode-map', or nil."
   (cdr (assq event (ewm--mode-map-entries))))
 
-(defun ewm--event-dispatch (event command &optional intercept)
-  "Return the compositor dispatch mode for EVENT, bound to COMMAND.
-Keymap prefixes and intercepted Emacs keys need keyboard delivery.
-`ewm-mode-map' command bindings use command-event delivery so they can
-repeat without moving Wayland keyboard focus; if they enter a
-minibuffer/transient/read-key state, Lisp enables keyboard capture at
-runtime."
-  (cond
-   ((keymapp command) 'keyboard)
-   (command 'command)
-   ((keymapp (key-binding (vector event) t)) 'keyboard)
-   (intercept 'keyboard)
-   (t 'command)))
-
 (defun ewm--event-key-spec (event)
   "Return a (:key VALUE modifier-flags) plist for EVENT, or nil.
 VALUE is the ASCII code or special-key name; flags are t or nil."
@@ -586,9 +561,10 @@ ENTRY is its (COMMAND . FLAGS) in `ewm-mode-map', looked up when omitted."
                          :fullscreen (and (or (memq :fullscreen flags)
                                               (function-get command 'ewm-fullscreen))
                                           t)
+                         ;; A prefix keymap or an intercepted Emacs key wants the keyboard.
                          :dispatch (if-let* ((action (ewm--event-action event command)))
                                        (cons 'action action)
-                                     (ewm--event-dispatch event command (memq :intercept flags)))
+                                     (if (and command (not (keymapp command))) 'command 'keyboard))
                          :repeat (and (memq :repeat flags) t))))
 
 (defun ewm--emulation-specs (table &optional surface)

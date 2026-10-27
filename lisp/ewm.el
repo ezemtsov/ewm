@@ -610,6 +610,7 @@ Called by shell hooks via emacsclient."
   "Record a newly detected output."
   (let ((name (alist-get 'name event)))
     (setf (alist-get name ewm--output-info nil nil #'string=) event)
+    ;; Refill a frame parked while its output was gone.
     (ewm-layout--refresh)))
 
 (defvar ewm-output-config-changed-hook nil
@@ -632,8 +633,7 @@ Each function receives the event alist with symbol keys:
   "Record that an output disconnected. The compositor moves its frames."
   (let ((name (alist-get 'name event)))
     (setq ewm--output-info
-          (assoc-delete-all name ewm--output-info #'string=))
-    (ewm-layout--refresh)))
+          (assoc-delete-all name ewm--output-info #'string=))))
 
 (defvar ewm--late-frames-replayed nil
   "Non-nil once frames created after the ready event asked for a focus replay.")
@@ -656,7 +656,6 @@ Each function receives the event alist with symbol keys:
         (ewm--create-frame-for-output output nil '((ewm-owner . compositor)))
         (setq created t)))
     (ewm--delete-stray-frames)
-    (ewm-layout--refresh)
     ;; Frames created after the ready event missed the replay `ewm-start-module'
     ;; asks for, and PGTK drops the enter they get before their first roundtrip.
     ;; Once only: the replay costs a leave/enter for whatever holds focus.

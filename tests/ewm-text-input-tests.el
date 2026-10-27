@@ -60,8 +60,6 @@
   `(let ((old-mode ewm-text-input-mode)
          (ewm-text-input-auto-mode nil)
          (ewm--surfaces (make-hash-table))
-         (ewm-text-input-activated-hook nil)
-         (ewm-text-input-deactivated-hook nil)
          (input-method-activate-hook nil)
          (input-method-deactivate-hook nil)
          (ewm-text-input--client-active nil)

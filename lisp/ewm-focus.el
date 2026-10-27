@@ -88,7 +88,6 @@ window switching is handled by `ewm--handle-focus' from those events."
            (pointer (and (alist-get 'pointer event) x y)))
       (if-let* ((win (ewm--find-window-by-entry-id focus-id)))
           (progn
-            (select-frame (window-frame win))
             (select-window win)
             (setq ewm--mff-last-window win))
         (when-let* ((frame (ewm--find-frame-by-focus-id focus-id)))

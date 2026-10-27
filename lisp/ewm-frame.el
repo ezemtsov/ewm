@@ -361,8 +361,7 @@ own placements add `ewm-output' and `ewm-position' (top-left X . Y)."
       (select-frame-set-input-focus target))
     ;; pop-to-buffer lets Emacs reuse or split the target window on its own.
     (let ((ewm--inhibit-floating t))
-      (pop-to-buffer buffer))
-    (ewm-layout--refresh)))
+      (pop-to-buffer buffer))))
 
 (defun ewm--floating-attach-selected-buffer (floating-frame)
   "Absorb FLOATING-FRAME's buffer into the tiled window under its center."

@@ -57,7 +57,7 @@ flowchart TB
     focus_guard -->|Yes| focus_drop
     focus_guard -->|No| lookup["Lookup buffer +<br/>find window"]
     lookup --> winfound{"window<br/>found?"}
-    winfound -->|Yes| selwin["select-frame +<br/>select-window"]
+    winfound -->|Yes| selwin["select-window"]
     winfound -->|No| popbuf["pop-to-buffer-same-window"]
     selwin --> hooks["window hooks -><br/>ewm-layout--send-layouts"]
     popbuf --> hooks
@@ -72,7 +72,7 @@ flowchart TB
     target --> hooks
 
     hclose --> killbuf["kill-buffer"]:::muted
-    hout --> parity["apply-output-config +<br/>frames for empty outputs +<br/>delete stray frames +<br/>layout refresh"]:::muted
+    hout --> parity["apply-output-config +<br/>frames for empty outputs +<br/>delete stray frames"]:::muted
 
     hfs --> set_param["set ewm-fullscreen<br/>per-frame"]
     set_param --> refresh_fs["ewm-layout--refresh"]

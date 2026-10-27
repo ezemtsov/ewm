@@ -28,8 +28,7 @@
 (defun ewm-input-tests--under-capture-state (token command menu focused composing keys thunk)
   "Call THUNK with the capture module stubbed, return (CALLS . TOKEN-AFTER).
 CALLS are newest first."
-  (let ((ewm--module-mode t)
-        (ewm-input--keyboard-capture-token token)
+  (let ((ewm-input--keyboard-capture-token token)
         (this-command command)
         (prefix-arg nil)
         (ewm-text-input--composing composing)
@@ -62,7 +61,7 @@ CALLS are newest first."
 
 (ert-deftest ewm-input-tests/intercept-specs-carry-the-key-its-modifiers-and-flags ()
   "A spec names the key, raises its modifiers as flags and reads the binding's flags."
-  (let ((plain (ewm--event-to-intercept-spec ?a)))
+  (let ((plain (ewm--event-to-intercept-spec ?a (list #'ewm-frame-new))))
     (should (equal (plist-get plain :key) ?a))
     (should (equal (plist-get plain :description) "a"))
     (should (equal (plist-get plain :dispatch) 'command))
@@ -74,11 +73,6 @@ CALLS are newest first."
       (should (eq (plist-get spec flag) t))))
   (should (equal (plist-get (ewm--event-to-intercept-spec 'XF86AudioMute) :key)
                  "XF86AudioMute"))
-  ;; Intercepted Emacs keys enter the keyboard path, mode map commands stay commands.
-  (should (eq (ewm--event-dispatch ?\M-x nil t) 'keyboard))
-  (should (eq (ewm--event-dispatch (aref (key-parse "<AudioLowerVolume>") 0)
-                                   #'ewm-volume-lower t)
-              'command))
   (should (eq (plist-get (ewm--event-to-intercept-spec (aref (kbd "s-<left>") 0)) :repeat) t))
   (should-not (plist-get (ewm--event-to-intercept-spec (aref (kbd "s-f") 0)) :repeat)))
 
@@ -125,7 +119,8 @@ CALLS are newest first."
                        '(action focus-frame :delta 1)))
         (should (equal (plist-get (ewm--event-to-intercept-spec ?\C-\s-7) :dispatch)
                        '(action focus-nth-frame :n 7)))
-        (should (eq (plist-get (ewm--event-to-intercept-spec ?a) :dispatch) 'command))
+        (should (eq (plist-get (ewm--event-to-intercept-spec ?a (list #'ewm-frame-new)) :dispatch)
+                    'command))
         ;; `ewm-frame-select' bound to a swipe yields no action instead of an error.
         (should-not (ewm--frame-select-action 'swipe-4-up)))
     (define-key ewm-mode-map (kbd "s-<f9>") nil)
@@ -148,8 +143,7 @@ CALLS are newest first."
 
 (ert-deftest ewm-input-tests/send-intercept-keys-has-runtime-dispatch-contract ()
   "The actual module payload keeps M-x keyboard-routed and media keys on their action."
-  (let ((ewm--module-mode t)
-        (ewm-mode-map (make-sparse-keymap))
+  (let ((ewm-mode-map (make-sparse-keymap))
         captured)
     (keymap-set ewm-mode-map "M-x" (ewm-key :intercept))
     (keymap-set ewm-mode-map "C-u" (ewm-key :intercept))
@@ -217,8 +211,7 @@ CALLS are newest first."
 
 (ert-deftest ewm-input-tests/intercepted-commands-queue-in-order-without-touching-focus ()
   "Pipe events append to input already waiting, capture and layout are left to the command."
-  (let ((ewm--module-mode t)
-        (ewm-input--keyboard-capture-token 42)
+  (let ((ewm-input--keyboard-capture-token 42)
         (unread-command-events (list (cons t ?a)))
         calls)
     (cl-letf (((symbol-function 'ewm-keyboard-capture-end-module)
@@ -251,7 +244,7 @@ background, and never asks the layout to refresh."
                    (an-intercepted-command-captures nil ewm-launch-app nil 3 nil "s-d" on ((:begin "command-loop")) 42)
                    (a-click-popup-is-left-alone 42 nil nil 2 nil "" popup nil 42)
                    (leaving-the-read-ends-the-token 42 ignore nil 2 nil "" sync (:clear-redirect (:end 42)) nil)
-                   (a-forced-disable-clears-the-redirect nil ignore nil 2 nil "" force-off (:clear-redirect) nil)))
+))
     (ert-info ((symbol-name case))
       (ewm-input-tests--should-not-refresh-layout
         (should (equal (ewm-input-tests--under-capture-state
@@ -260,7 +253,6 @@ background, and never asks the layout to refresh."
                           (pcase action
                             ('sync (ewm-input--sync-keyboard-capture))
                             ('on (ewm-input--keyboard-capture-on))
-                            ('force-off (ewm-input--set-keyboard-capture nil t))
                             ('popup (cl-letf (((symbol-function 'menu-or-popup-active-p)
                                                (lambda () t)))
                                       (ewm-input--with-keyboard-capture #'ignore))))))

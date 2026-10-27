@@ -1172,8 +1172,8 @@ impl DrmBackendState {
         ewm.idle_notifier_state.notify_activity(&ewm.seat);
         ewm.reset_idle_timer();
 
-        // Always notify Emacs so it re-syncs layout and focus after resume,
-        // even if no output topology changed.
+        // Always notify Emacs so it applies output config and frames after
+        // resume, even if no output topology changed.
         if !lid_policy_handled {
             ewm.queue_event(crate::event::Event::OutputsComplete);
         }
@@ -1869,8 +1869,8 @@ impl DrmBackendState {
                 || (changed && self.lid_closed)
                 || self.closed_lid_settle_timer.is_some())
             && self.apply_lid_policy(ewm, LidPolicyReason::Hotplug);
-        // Signal Emacs that output topology is settled so it can
-        // re-sync layout, focus, and stray frames.
+        // Signal Emacs that output topology is settled so it can apply the
+        // output config and create or delete frames.
         if changed && !lid_handled {
             ewm.queue_event(crate::event::Event::OutputsComplete);
         }
