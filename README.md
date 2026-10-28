@@ -51,3 +51,5 @@ Join the Matrix room: [#ewm:matrix.org](https://matrix.to/#/#ewm:matrix.org)
 ## license
 
 GPL-3.0-or-later
+
+Portions copyright Ivan Molodetskikh and niri contributors.
