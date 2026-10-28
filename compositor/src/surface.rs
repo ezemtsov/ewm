@@ -51,6 +51,8 @@ pub struct SurfaceState {
     pub urgent: bool,
     /// When an activation was granted before a window showed it.
     pub pending_activation: Option<Instant>,
+    /// The activation token the client redeemed, echoed at map.
+    pub token: Option<String>,
     pub pending_title: Option<PendingTitle>,
     /// Outputs showing it.
     pub outputs: HashSet<String>,
@@ -92,6 +94,7 @@ impl SurfaceState {
             placed: false,
             urgent: false,
             pending_activation: None,
+            token: None,
             pending_title: None,
             outputs: HashSet::new(),
             suspended: false,

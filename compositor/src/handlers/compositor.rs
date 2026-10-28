@@ -185,6 +185,7 @@ impl CompositorHandler for State {
                     .filter(|s| working_area.is_none_or(|wa| s.w < wa.size.w && s.h < wa.size.h))
                     .map(|s| (s.w as f64, s.h as f64))
                     .unzip();
+                let token = self.ewm.surfaces[&id].token.clone();
                 self.ewm.queue_event(Event::Mapped {
                     id,
                     open_floating,
@@ -193,6 +194,7 @@ impl CompositorHandler for State {
                     frame_surface_id,
                     width,
                     height,
+                    token,
                 });
             }
 

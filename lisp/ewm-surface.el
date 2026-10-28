@@ -99,9 +99,12 @@ Similar to `exwm-title'.")
 (defvar-local ewm-surface-size nil
   "Client's natural size (W . H) in logical pixels at map, or nil.")
 
+(defvar-local ewm-surface-token nil
+  "Activation token the client redeemed, or nil.")
+
 ;; Surface state belongs to the buffer, not its major mode.
 (dolist (var '(ewm-surface-id ewm-surface-app ewm-surface-title
-               ewm-surface-pid ewm-surface-size))
+               ewm-surface-pid ewm-surface-size ewm-surface-token))
   (put var 'permanent-local t))
 
 (defun ewm-buffer-name (app title _id)

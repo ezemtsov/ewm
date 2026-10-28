@@ -376,26 +376,29 @@ impl XdgActivationHandler for State {
             surface.id()
         );
 
+        self.ewm.activation_state.remove_token(&token);
+        let Some(id) = self.ewm.surface_id(&surface) else {
+            debug!("xdg_activation: surface is not a toplevel");
+            return;
+        };
+        if let Some(state) = self.ewm.surfaces.get_mut(&id) {
+            state.token = Some(token.as_str().to_owned());
+        }
+
         if token_data.timestamp.elapsed() < XDG_ACTIVATION_TOKEN_TIMEOUT {
-            if let Some(id) = self.ewm.surface_id(&surface) {
-                // Lisp owns Emacs frame focus via select-frame-set-input-focus.
-                // honoring GTK's echo activation here would loop with our own
-                // ewm-focus calls.
-                if token_data.user_data.get::<UrgentOnlyMarker>().is_some() {
-                    if self.ewm.set_surface_urgent(id, true) {
-                        info!("xdg_activation: marked surface {} urgent", id);
-                    } else {
-                        debug!("xdg_activation: urgency ignored for surface {}", id);
-                    }
-                } else if self.ewm.layout.has_frame(id) {
-                    debug!("xdg_activation: ignored for Emacs frame {}", id);
+            if token_data.user_data.get::<UrgentOnlyMarker>().is_some() {
+                if self.ewm.set_surface_urgent(id, true) {
+                    info!("xdg_activation: marked surface {} urgent", id);
                 } else {
-                    self.ewm
-                        .activate_or_defer_surface(id, FocusSource::XdgActivation);
-                    info!("xdg_activation: granted for surface {}", id);
+                    debug!("xdg_activation: urgency ignored for surface {}", id);
                 }
+            } else if self.ewm.layout.has_frame(id) {
+                // Honoring the GTK echo of x-focus-frame would loop with the Lisp focus request.
+                debug!("xdg_activation: ignored for Emacs frame {}", id);
             } else {
-                debug!("xdg_activation: surface is not a toplevel");
+                self.ewm
+                    .activate_or_defer_surface(id, FocusSource::XdgActivation);
+                info!("xdg_activation: granted for surface {}", id);
             }
         } else {
             debug!(
@@ -403,9 +406,6 @@ impl XdgActivationHandler for State {
                 token_data.timestamp.elapsed()
             );
         }
-
-        // Always remove the token (single-use)
-        self.ewm.activation_state.remove_token(&token);
     }
 }
 

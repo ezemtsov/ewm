@@ -400,6 +400,7 @@ paired with it. Any other surface gets a buffer."
     (when-let* ((width (alist-get 'width event))
                 (height (alist-get 'height event)))
       (setq-local ewm-surface-size (cons width height)))
+    (setq-local ewm-surface-token (alist-get 'token event))
     (ewm--place-or-defer (current-buffer)
                          (alist-get 'open_floating event)
                          (alist-get 'output event)

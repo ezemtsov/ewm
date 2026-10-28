@@ -78,7 +78,7 @@ pub enum Event {
     /// App surface mapped: placed once, floating (`open_floating`) or tiled in `frame_surface_id`.
     /// `activate` asks Emacs to select it: a token or its focused parent wants it and no fullscreen
     /// surface holds focus. `width`/`height` carry the client's natural size, nil when it fills the
-    /// working area.
+    /// working area. `token` is the activation token the client redeemed before mapping.
     #[serde(rename = "mapped")]
     Mapped {
         id: u64,
@@ -88,6 +88,7 @@ pub enum Event {
         frame_surface_id: Option<u64>,
         width: Option<f64>,
         height: Option<f64>,
+        token: Option<String>,
     },
     /// Surface closed, or an Emacs frame the compositor dropped for Emacs to delete
     #[serde(rename = "close")]

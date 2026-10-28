@@ -89,6 +89,7 @@ fn every_event() -> Vec<Event> {
             frame_surface_id: Some(1),
             width: None,
             height: None,
+            token: Some("abc".into()),
         },
         Event::Mapped {
             id: 9,
@@ -98,6 +99,7 @@ fn every_event() -> Vec<Event> {
             frame_surface_id: None,
             width: Some(800.0),
             height: Some(600.0),
+            token: None,
         },
         Event::Close { id: 7 },
         Event::Minimize { id: 7 },
