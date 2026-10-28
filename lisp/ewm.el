@@ -439,27 +439,31 @@ paired with it. Any other surface gets a buffer."
       (process-put process 'ewm-launch-window nil)
       (and (window-live-p window) (not (window-dedicated-p window)) window))))
 
+(defvar ewm-place-surface-functions nil
+  "Functions tried with a mapped buffer, non-nil means one placed it.")
+
 (defun ewm--place-surface-buffer (buffer floating output host-id activate)
   "Display BUFFER on OUTPUT: floating in a new frame, else tiled in HOST-ID.
 A launch window beats HOST-ID and is never selected, ACTIVATE selects a float."
-  (let ((window (ewm--launch-window buffer))
-        (host (or (ewm--frame-by-surface-id host-id)
-                  (ewm-output-active-frame output))))
-    (cond
-     (floating
-      (when host (select-frame host))
-      (let ((action `(ewm-display-buffer-floating (ewm-output . ,output))))
-        (if activate
-            (pop-to-buffer buffer action)
-          (display-buffer buffer action))))
-     (window
-      (with-selected-window window
-        (display-buffer buffer '(display-buffer-same-window)))
-      (ewm-layout--refresh))
-     (host
-      (select-frame host)
-      (pop-to-buffer-same-window buffer)
-      (ewm-layout--refresh)))))
+  (unless (run-hook-with-args-until-success 'ewm-place-surface-functions buffer)
+    (let ((window (ewm--launch-window buffer))
+          (host (or (ewm--frame-by-surface-id host-id)
+                    (ewm-output-active-frame output))))
+      (cond
+       (floating
+        (when host (select-frame host))
+        (let ((action `(ewm-display-buffer-floating (ewm-output . ,output))))
+          (if activate
+              (pop-to-buffer buffer action)
+            (display-buffer buffer action))))
+       (window
+        (with-selected-window window
+          (display-buffer buffer '(display-buffer-same-window)))
+        (ewm-layout--refresh))
+       (host
+        (select-frame host)
+        (pop-to-buffer-same-window buffer)
+        (ewm-layout--refresh))))))
 
 (defun ewm--handle-close-surface (event)
   "Kill the surface buffer for EVENT, or delete a frame the compositor dropped."
@@ -652,6 +656,9 @@ Each function receives the event alist with symbol keys:
       (funcall thunk)
     (error (display-warning 'ewm (format "%s: %s" name (error-message-string err))))))
 
+(defvar ewm-output-populate-functions nil
+  "Functions called with an empty output, non-nil means one made its frames.")
+
 (defun ewm--handle-outputs-complete ()
   "Apply output config, then create any missing per-output frames."
   (ewm--apply-user-config "ewm-output-config" #'ewm--apply-output-config)
@@ -661,7 +668,9 @@ Each function receives the event alist with symbol keys:
   (let (created)
     (dolist (output (ewm-get-active-outputs))
       (unless (or (ewm--strip-frames output) (ewm--frame-in-flight-on-p output))
-        (ewm--create-frame-for-output output nil '((ewm-owner . compositor)))
+        (unless (with-demoted-errors "ewm-output-populate-functions: %S"
+                  (run-hook-with-args-until-success 'ewm-output-populate-functions output))
+          (ewm--create-frame-for-output output nil '((ewm-owner . compositor))))
         (setq created t)))
     (ewm--delete-stray-frames)
     ;; Frames created after the ready event missed the replay `ewm-start-module'
