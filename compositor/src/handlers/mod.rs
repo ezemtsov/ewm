@@ -318,8 +318,19 @@ impl VirtualPointerHandler for State {
 }
 
 pub const XDG_ACTIVATION_TOKEN_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a slow launch can still redeem its placement hint.
+pub const TOKEN_RETENTION: Duration = Duration::from_secs(180);
 
 struct UrgentOnlyMarker;
+
+/// Where a surface launched by Lisp lands, carried by its activation token.
+#[derive(Debug, Clone, Copy, Default, serde::Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct PlacementHint {
+    pub frame_surface_id: Option<u64>,
+    /// True keeps the surface from being selected.
+    pub quiet: bool,
+}
 
 // XDG Activation protocol (allows apps to request focus or attention)
 impl XdgActivationHandler for State {
@@ -381,30 +392,46 @@ impl XdgActivationHandler for State {
             debug!("xdg_activation: surface is not a toplevel");
             return;
         };
-        if let Some(state) = self.ewm.surfaces.get_mut(&id) {
-            state.token = Some(token.as_str().to_owned());
-        }
 
-        if token_data.timestamp.elapsed() < XDG_ACTIVATION_TOKEN_TIMEOUT {
-            if token_data.user_data.get::<UrgentOnlyMarker>().is_some() {
+        let fresh = token_data.timestamp.elapsed() < XDG_ACTIVATION_TOKEN_TIMEOUT;
+        let surface = self.ewm.surfaces.get_mut(&id).unwrap();
+        if token_data.user_data.get::<UrgentOnlyMarker>().is_some() {
+            if fresh && self.ewm.set_surface_urgent(id, true) {
+                info!("xdg_activation: marked surface {} urgent", id);
+            } else {
+                debug!("xdg_activation: urgency ignored for surface {}", id);
+            }
+        } else if !surface.mapped && !surface.emacs {
+            // Mapped judges it, a stale token still places.
+            surface.activation = Some((token.as_str().to_owned(), token_data));
+        } else if !fresh {
+            debug!(
+                "xdg_activation: token expired (age={:?})",
+                token_data.timestamp.elapsed()
+            );
+        } else if self.ewm.layout.has_frame(id) {
+            // Honoring the GTK echo of x-focus-frame would loop with the Lisp focus request.
+            debug!("xdg_activation: ignored for Emacs frame {}", id);
+        } else {
+            let hint = token_data
+                .user_data
+                .get::<PlacementHint>()
+                .copied()
+                .unwrap_or_default();
+            if hint.quiet {
+                debug!("xdg_activation: hint leaves surface {} unselected", id);
+            } else if hint.frame_surface_id.is_some_and(|frame| {
+                self.ewm.layout.frame_location(frame).is_some()
+                    && self.ewm.focused_frame_id() != Some(frame)
+            }) {
                 if self.ewm.set_surface_urgent(id, true) {
-                    info!("xdg_activation: marked surface {} urgent", id);
-                } else {
-                    debug!("xdg_activation: urgency ignored for surface {}", id);
+                    info!("xdg_activation: surface {} urgent away from its frame", id);
                 }
-            } else if self.ewm.layout.has_frame(id) {
-                // Honoring the GTK echo of x-focus-frame would loop with the Lisp focus request.
-                debug!("xdg_activation: ignored for Emacs frame {}", id);
             } else {
                 self.ewm
                     .activate_or_defer_surface(id, FocusSource::XdgActivation);
                 info!("xdg_activation: granted for surface {}", id);
             }
-        } else {
-            debug!(
-                "xdg_activation: token expired (age={:?})",
-                token_data.timestamp.elapsed()
-            );
         }
     }
 }

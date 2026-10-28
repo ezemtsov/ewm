@@ -242,18 +242,29 @@ Without a surface, describe the selected Emacs frame instead."
   (interactive)
   (ewm-power-on-monitors-module))
 
+(defvar ewm-launch-hint nil
+  "Plist (:frame-surface-id ID :quiet BOOL) placing the next spawn.")
+
+(defcustom ewm-launch-placement 'anchor
+  "Where a launched app opens, `anchor' its launch window, `focus' the focused one."
+  :type '(choice (const anchor) (const focus))
+  :group 'ewm)
+
 (defun ewm-launch-xdg-command (name)
-  "Launch XDG app NAME, stripping desktop field codes from its Exec line."
+  "Launch XDG app NAME where `ewm-launch-placement' says, unless a hint is bound."
   (let* ((cmd (cdr (assoc name (ewm-list-xdg-apps))))
          (cmd (replace-regexp-in-string "%[uUfFdDnNickvm]" "" cmd))
-         (cmd (string-trim cmd)))
+         (cmd (string-trim cmd))
+         (ewm-launch-hint (or ewm-launch-hint
+                              (and (eq ewm-launch-placement 'anchor)
+                                   (list :frame-surface-id
+                                         (frame-parameter nil 'ewm-surface-id))))))
     (start-process-shell-command name nil cmd)))
 
 (defun ewm-launch-app ()
-  "Launch an XDG desktop application via `completing-read'."
+  "Launch an XDG app chosen with `completing-read'."
   (interactive)
-  (ewm-launch-xdg-command
-   (completing-read "Launch app: " (ewm-list-xdg-apps) nil t)))
+  (ewm-launch-xdg-command (completing-read "Launch app: " (ewm-list-xdg-apps) nil t)))
 
 ;;; Diagnostics
 

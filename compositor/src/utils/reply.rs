@@ -51,6 +51,7 @@ impl<T> Drop for Reply<T> {
     }
 }
 
+#[derive(Debug)]
 pub enum ReplyError {
     Timeout,
     Disconnected,

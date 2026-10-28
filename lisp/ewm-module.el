@@ -17,6 +17,7 @@
      (declare-function ewm-get-frame-origin "ewm-core" (surface-id))
      (declare-function ewm-get-pointer-location "ewm-core" ())
      (declare-function ewm-create-activation-token "ewm-core" ())
+     (declare-function ewm-create-launch-token "ewm-core" (hint))
      (declare-function ewm-init-event-channel "ewm-core" (pipe-process))
      (declare-function ewm-drain-events "ewm-core" ())
      (declare-function ewm-hello "ewm-core" ())

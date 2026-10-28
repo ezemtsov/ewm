@@ -103,7 +103,7 @@ pub fn is_laptop_panel(connector_name: &str) -> bool {
     matches!(connector_name.get(..4), Some("eDP-" | "LVDS" | "DSI-"))
 }
 
-use crate::handlers::XDG_ACTIVATION_TOKEN_TIMEOUT;
+use crate::handlers::{TOKEN_RETENTION, XDG_ACTIVATION_TOKEN_TIMEOUT};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::mem;
@@ -888,7 +888,7 @@ impl Ewm {
                 Timer::from_duration(XDG_ACTIVATION_TOKEN_TIMEOUT),
                 |_, _, state| {
                     state.ewm.activation_state.retain_tokens(|_, token_data| {
-                        token_data.timestamp.elapsed() < XDG_ACTIVATION_TOKEN_TIMEOUT
+                        token_data.timestamp.elapsed() < TOKEN_RETENTION
                     });
                     smithay::reexports::calloop::timer::TimeoutAction::ToDuration(
                         XDG_ACTIVATION_TOKEN_TIMEOUT,

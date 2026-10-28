@@ -719,6 +719,21 @@ impl Fixture {
         self.state.handle_module_command(command);
     }
 
+    /// Mint a token as `ewm-create-launch-token` does.
+    pub fn create_activation_token(
+        &mut self,
+        hint: Option<crate::handlers::PlacementHint>,
+    ) -> String {
+        let (reply, receiver) = crate::utils::reply::reply_channel();
+        self.handle_module_command(crate::module::ModuleCommand::CreateActivationToken {
+            hint,
+            reply,
+        });
+        receiver
+            .recv_timeout(Duration::ZERO)
+            .expect("the compositor mints a token at once")
+    }
+
     /// Run `action` as a key or `ewm-action-module` would.
     pub fn do_action(&mut self, action: crate::Action) {
         self.handle_module_command(crate::module::ModuleCommand::Action { action });

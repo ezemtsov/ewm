@@ -54,6 +54,7 @@ use smithay::reexports::calloop::LoopSignal;
 use tracing::{debug, info};
 
 use crate::config::{self, Config};
+use crate::handlers::PlacementHint;
 use crate::im::TextInputProvider;
 use crate::layout::Placement;
 use crate::layout::strip::{self, Frame};
@@ -436,9 +437,11 @@ pub enum ModuleCommand {
         floating_frame_id: u64,
         reply: Reply<Option<LayoutEntryId>>,
     },
-    /// Request activation token creation. Compositor sends the token string back via the reply
-    /// channel.
-    CreateActivationToken(Reply<String>),
+    /// Create an activation token whose surface lands as `hint` says.
+    CreateActivationToken {
+        hint: Option<PlacementHint>,
+        reply: Reply<String>,
+    },
     /// Set clipboard selection from Emacs
     SetSelection {
         text: String,
@@ -599,8 +602,10 @@ impl State {
                     .tiled_entry_under_floating_center(floating_frame_id);
                 let _ = reply.send(entry);
             }
-            ModuleCommand::CreateActivationToken(reply) => {
-                let (token_ref, _) = self.ewm.activation_state.create_external_token(None);
+            ModuleCommand::CreateActivationToken { hint, reply } => {
+                let (token_ref, data) = self.ewm.activation_state.create_external_token(None);
+                data.user_data
+                    .insert_if_missing(|| hint.unwrap_or_default());
                 let token = token_ref.clone();
                 let token_str = token.as_str().to_string();
                 debug!("Created activation token for Emacs: {}", token_str);
@@ -702,8 +707,17 @@ pub static LOOP_SIGNAL: OnceLock<LoopSignal> = OnceLock::new();
 /// Returns the token string for use as `XDG_ACTIVATION_TOKEN`, or nil on timeout.
 #[defun]
 fn create_activation_token() -> Result<Option<String>> {
+    create_launch_token(Lisp(None))
+}
+
+/// An activation token whose surface lands as HINT says, a plist or nil. Nil on timeout.
+#[defun]
+fn create_launch_token(hint: Lisp<Option<PlacementHint>>) -> Result<Option<String>> {
     Ok(request_reply(
-        ModuleCommand::CreateActivationToken,
+        |reply| ModuleCommand::CreateActivationToken {
+            hint: hint.0,
+            reply,
+        },
         Duration::from_millis(200),
         "activation token",
     ))

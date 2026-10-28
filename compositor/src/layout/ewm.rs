@@ -1114,6 +1114,12 @@ impl Ewm {
         for (id, count) in primaries {
             assert_eq!(count, 1, "primary views of surface {id} on screen");
         }
+        for (id, surface) in &self.surfaces {
+            assert!(
+                surface.emacs || !surface.mapped || surface.activation.is_none(),
+                "mapped surface {id} still holds a redeemed token"
+            );
+        }
         let mut on: HashMap<u64, HashSet<String>> = HashMap::new();
         for monitor in self.layout.monitors() {
             assert!(

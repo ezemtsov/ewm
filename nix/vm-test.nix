@@ -143,6 +143,10 @@ let
           with subtest("the focused frame moves to the other output and back"):
               check("(ewm-session-tests-move)")
 
+          with subtest("a launch opens in its window, one hinted for the other head opens there unfocused"):
+              check("(ewm-session-tests-launch-anchor)")
+              check("(ewm-session-tests-launch-away)")
+
           with subtest("a head goes off and on under the session, the other changes scale"):
               check("(ewm-session-tests-reconfigure)")
               check("(ewm-session-tests-rescale)")

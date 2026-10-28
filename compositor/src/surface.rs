@@ -12,6 +12,7 @@ use smithay::utils::{Logical, Point, Rectangle, Serial, Size};
 use smithay::wayland::compositor::{HookId, remove_pre_commit_hook, with_states};
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::xdg::{ToplevelCachedState, ToplevelSurface, XdgToplevelSurfaceData};
+use smithay::wayland::xdg_activation::XdgActivationTokenData;
 
 use crate::animation::Animation;
 use crate::layout::resize_fade::{ResizeFade, resize_fades};
@@ -51,8 +52,8 @@ pub struct SurfaceState {
     pub urgent: bool,
     /// When an activation was granted before a window showed it.
     pub pending_activation: Option<Instant>,
-    /// The activation token the client redeemed, echoed at map.
-    pub token: Option<String>,
+    /// The token redeemed before the first buffer, judged at map.
+    pub activation: Option<(String, XdgActivationTokenData)>,
     pub pending_title: Option<PendingTitle>,
     /// Outputs showing it.
     pub outputs: HashSet<String>,
@@ -94,7 +95,7 @@ impl SurfaceState {
             placed: false,
             urgent: false,
             pending_activation: None,
-            token: None,
+            activation: None,
             pending_title: None,
             outputs: HashSet::new(),
             suspended: false,

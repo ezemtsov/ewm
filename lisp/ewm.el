@@ -422,19 +422,39 @@ paired with it. Any other surface gets a buffer."
       (when (buffer-live-p (car args))
         (apply #'ewm--place-surface-buffer args)))))
 
+(defun ewm--launch-window (buffer)
+  "The launch window of BUFFER's surface, matched once by token or pid."
+  (let ((token (buffer-local-value 'ewm-surface-token buffer))
+        (pids (ewm--cwd-ancestors (buffer-local-value 'ewm-surface-pid buffer))))
+    (when-let* ((process (seq-find (lambda (p)
+                                     (and (process-get p 'ewm-launch-window)
+                                          (or (equal (process-get p 'ewm-launch-token) token)
+                                              (memq (process-id p) pids))))
+                                   (process-list)))
+                (window (process-get process 'ewm-launch-window)))
+      (process-put process 'ewm-launch-window nil)
+      (and (window-live-p window) (not (window-dedicated-p window)) window))))
+
 (defun ewm--place-surface-buffer (buffer floating output host-id activate)
   "Display BUFFER on OUTPUT: floating in a new frame, else tiled in HOST-ID.
-A float is selected only when ACTIVATE."
-  (let ((host (or (ewm--frame-by-surface-id host-id)
+A launch window beats HOST-ID, only ACTIVATE selects a float or that window."
+  (let ((window (ewm--launch-window buffer))
+        (host (or (ewm--frame-by-surface-id host-id)
                   (ewm-output-active-frame output))))
-    (when host (select-frame host))
     (cond
      (floating
+      (when host (select-frame host))
       (let ((action `(ewm-display-buffer-floating (ewm-output . ,output))))
         (if activate
             (pop-to-buffer buffer action)
           (display-buffer buffer action))))
+     (window
+      (let ((shown (with-selected-window window
+                     (display-buffer buffer '(display-buffer-same-window)))))
+        (when (and activate shown) (select-window shown)))
+      (ewm-layout--refresh))
      (host
+      (select-frame host)
       (pop-to-buffer-same-window buffer)
       (ewm-layout--refresh)))))
 
@@ -826,16 +846,20 @@ Use the `ewm-mode' command to change this variable."
 ;;; Process spawning with activation tokens
 
 (defun ewm--inject-activation-token (orig-fun &rest args)
-  "Advice to inject XDG_ACTIVATION_TOKEN into spawned processes.
-This allows spawned GUI applications to request focus via xdg_activation."
-  (let* ((token (and ewm-mode (ewm-create-activation-token)))
+  "Advice on `make-process' minting a hinted token and noting the launch window."
+  (let* ((token (and ewm-mode (ewm-create-launch-token ewm-launch-hint)))
+         (frame (ewm--frame-by-surface-id (plist-get ewm-launch-hint :frame-surface-id)))
          (process-environment
           (if token
               (cons (format "XDG_ACTIVATION_TOKEN=%s" token)
                     (cons (format "DESKTOP_STARTUP_ID=%s" token)
                           process-environment))
-            process-environment)))
-    (apply orig-fun args)))
+            process-environment))
+         (process (apply orig-fun args)))
+    (when token
+      (process-put process 'ewm-launch-token token)
+      (process-put process 'ewm-launch-window (and frame (frame-selected-window frame))))
+    process))
 
 (defun ewm--enable-process-advice ()
   "Enable automatic activation token injection for spawned processes."

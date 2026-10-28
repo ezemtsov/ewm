@@ -584,6 +584,61 @@ whatever same-window rule would keep the buffer in its tile."
         (should (equal (list (ewm-layout--ensure-frame-focus-id f)) sent))
         (should-not (frame-parameter f 'ewm-focus-on-create))))))
 
+(ert-deftest ewm-focus/a-launch-opens-its-surface-in-the-launch-window ()
+  "A launch opens its surface in the window it ran from, by token or by pid."
+  (pcase-dolist (`(,by . ,activate) '((token . nil) (token . t) (pid . nil)))
+    (ewm-focus-tests--with-frame f
+      (let* ((ewm--surfaces (make-hash-table :test 'eql))
+             (ewm--module-mode t)
+             (ewm-mode t)
+             (origin (frame-selected-window f))
+             (target (split-window origin))
+             (ewm-launch-hint (list :frame-surface-id ewm-focus-tests--frame-surface-id))
+             minted env process created)
+        (unwind-protect
+            (cl-letf (((symbol-function 'ewm-create-launch-token)
+                       (lambda (hint) (push hint minted) "tok"))
+                      ((symbol-function 'ewm-layout) #'ignore)
+                      ((symbol-function 'ewm-get-strip-frame-ids)
+                       (lambda (_output) (list ewm-focus-tests--frame-surface-id))))
+              (select-window target)
+              (setq process (ewm--inject-activation-token
+                             (lambda (&rest args)
+                               (setq env process-environment)
+                               (apply #'make-process args))
+                             :name "ewm-test" :command '("sleep" "30") :noquery t))
+              (select-window origin)
+              (should (equal minted `((:frame-surface-id ,ewm-focus-tests--frame-surface-id))))
+              (should (member "XDG_ACTIVATION_TOKEN=tok" env))
+              (setq created (ewm--create-surface-buffer
+                             80 "app" (if (eq by 'pid) (process-id process) 1234)))
+              (ewm--handle-mapped-surface
+               `((id . 80) (output . ,ewm-focus-tests--output) (activate . ,activate)
+                 (frame_surface_id . ,ewm-focus-tests--frame-surface-id)
+                 ,@(and (eq by 'token) '((token . "tok")))))
+              (should (eq (window-buffer target) created))
+              (should (eq (selected-window) (if activate target origin))))
+          (when process (delete-process process))
+          (select-window origin)
+          (delete-window target)
+          (when (buffer-live-p created) (kill-buffer created)))))))
+
+(ert-deftest ewm-focus/an-xdg-launch-hints-the-selected-frame ()
+  "A bound `ewm-launch-hint' wins, else `anchor' hints the selected frame."
+  (ewm-focus-tests--with-frame _f
+    (let (hints)
+      (cl-letf (((symbol-function 'ewm-list-xdg-apps) (lambda () '(("App" . "app %U"))))
+                ((symbol-function 'start-process-shell-command)
+                 (lambda (&rest _) (push ewm-launch-hint hints) nil)))
+        (ewm-launch-xdg-command "App")
+        (let ((ewm-launch-hint '(:quiet t)))
+          (ewm-launch-xdg-command "App"))
+        (let ((ewm-launch-placement 'focus))
+          (ewm-launch-xdg-command "App"))
+        (should (equal hints
+                       (list nil '(:quiet t)
+                             (list :frame-surface-id ewm-focus-tests--frame-surface-id))))))))
+
 (ert-deftest ewm-focus/delete-frame-advice-resolves-the-frame-and-keeps-the-last ()
   "A nil FRAME resolves once before close handling, and the only frame on an
 output is deleted only with FORCE."

@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use smithay::desktop::Window;
 use smithay::input::pointer::{CursorImageStatus, CursorImageSurfaceData};
 use smithay::output::Output;
@@ -11,6 +13,7 @@ use smithay::wayland::compositor::{
 use smithay::wayland::shell::xdg::{SurfaceCachedState, ToplevelSurface};
 use smithay::wayland::shm::{ShmHandler, ShmState};
 
+use crate::handlers::{PlacementHint, XDG_ACTIVATION_TOKEN_TIMEOUT};
 use crate::utils::ensure_min_max_size;
 use crate::{Event, Ewm, LockState, State, client_state, is_portal_surface, surface_root};
 
@@ -168,13 +171,33 @@ impl CompositorHandler for State {
                 let parent_id = parent.and_then(|wl| self.ewm.surface_id(&wl));
                 // Select it for its token or its focused parent, never over a fullscreen surface.
                 let focused = self.ewm.focused_surface_id();
-                let activate = self.ewm.surfaces[&id].activation_pending()
+                let surface = self.ewm.surfaces.get_mut(&id).unwrap();
+                let (token, data) = surface.activation.take().unzip();
+                let granted = data
+                    .as_ref()
+                    .is_some_and(|d| d.timestamp.elapsed() < XDG_ACTIVATION_TOKEN_TIMEOUT)
+                    || surface.activation_pending();
+                let activate = granted
                     || match parent_id {
                         Some(parent) => focused == Some(parent),
                         None => !focused.is_some_and(|id| self.ewm.pending_fullscreen(id)),
                     };
-                let output = self.ewm.active_output();
-                let frame_surface_id = self.ewm.resolve_app_host_frame(parent_id, output);
+                let hint = data
+                    .and_then(|d| d.user_data.get::<PlacementHint>().copied())
+                    .unwrap_or_default();
+                let location = hint
+                    .frame_surface_id
+                    .and_then(|f| self.ewm.layout.frame_location(f));
+                let host = location.filter(|l| !l.floating).map(|l| l.frame.surface_id);
+                let open_floating = open_floating && host.is_none();
+                let away = location
+                    .is_some_and(|l| self.ewm.focused_frame_id() != Some(l.frame.surface_id));
+                let activate = activate && !hint.quiet && !away;
+                let output = location
+                    .map(|l| l.monitor.output())
+                    .or_else(|| self.ewm.active_output());
+                let frame_surface_id =
+                    host.or_else(|| self.ewm.resolve_app_host_frame(parent_id, output));
                 // Size hint for floating placement, dropped when it fills the working area.
                 let working_area = output.map(|o| self.ewm.get_working_area(o));
                 let output = output.map(Output::name);
@@ -185,7 +208,6 @@ impl CompositorHandler for State {
                     .filter(|s| working_area.is_none_or(|wa| s.w < wa.size.w && s.h < wa.size.h))
                     .map(|s| (s.w as f64, s.h as f64))
                     .unzip();
-                let token = self.ewm.surfaces[&id].token.clone();
                 self.ewm.queue_event(Event::Mapped {
                     id,
                     open_floating,
@@ -196,6 +218,12 @@ impl CompositorHandler for State {
                     height,
                     token,
                 });
+                // A granted surface keeps its grant until a layout shows it.
+                self.ewm.surfaces.get_mut(&id).unwrap().pending_activation =
+                    (granted && activate).then(Instant::now);
+                if away && !hint.quiet {
+                    self.ewm.set_surface_urgent(id, true);
+                }
             }
 
             self.ewm.queue_redraw_for_surface(id);

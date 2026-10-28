@@ -9,8 +9,10 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use ewm_core::event::Event;
+use ewm_core::handlers::PlacementHint;
 use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{
     ClientEvent, Fixture, TestClient, Toplevel, clear_pending_frames, mark_active_frame_close, nz,
@@ -21,6 +23,7 @@ use ewm_core::{
 };
 use proptest::prelude::*;
 use smithay::utils::Size;
+use smithay::wayland::xdg_activation::XdgActivationTokenData;
 use wayland_client::Proxy as _;
 
 const OUTPUTS: [&str; 2] = ["HEAD-A", "HEAD-B"];
@@ -53,6 +56,15 @@ enum Op {
     ActivateSurface(u64),
     /// A bell marks the frame.
     MarkUrgent(u64),
+    /// Lisp launches an app with a hint in its token and the app redeems it on
+    /// `LAUNCH_SIDS[slot]`, before or after mapping. `stale` ages the token past the grant.
+    Launch {
+        slot: usize,
+        hint: Option<(HintFrame, bool)>,
+        stale: bool,
+    },
+    /// The next launched app commits its first buffer, a redeemed one first.
+    MapLaunch,
     /// A compositor action, as a key or `ewm-action-module` runs it.
     Action(Action),
 }
@@ -75,6 +87,20 @@ struct EntrySpec {
 const ENTRY_SID_RANGE: std::ops::RangeInclusive<u64> = 1001..=1008;
 const FRAME_SID_RANGE: std::ops::RangeInclusive<u64> = 100..=102;
 const MAX_ENTRIES_PER_LAYOUT: usize = 8;
+/// Layout-only ids that name the app windows `Op::Launch` routes, once they mapped.
+const LAUNCH_SIDS: [u64; 3] = [1006, 1007, 1008];
+/// A frame id no toplevel ever gets.
+const GONE_FRAME: u64 = 999;
+
+/// The frame a launch hint names, resolved against the state at launch.
+#[derive(Debug, Clone, Copy)]
+enum HintFrame {
+    None,
+    Focused,
+    /// The nth other Emacs frame, gone when there is none.
+    Other(usize),
+    Gone,
+}
 
 #[derive(Debug, Clone)]
 struct EntrySeed {
@@ -165,35 +191,106 @@ fn action_strategy() -> impl Strategy<Value = Action> {
     ]
 }
 
+/// No hint, or a quiet or loud one for the focused frame, another one, a gone one or none.
+fn hint_strategy() -> impl Strategy<Value = Option<(HintFrame, bool)>> {
+    prop::option::weighted(
+        0.8,
+        (
+            prop_oneof![
+                Just(HintFrame::None),
+                Just(HintFrame::Focused),
+                (0..MAX_FRAMES).prop_map(HintFrame::Other),
+                Just(HintFrame::Gone),
+            ],
+            any::<bool>(),
+        ),
+    )
+}
+
 fn op_strategy() -> impl Strategy<Value = Op> {
     prop_oneof![
-        action_strategy().prop_map(Op::Action),
-        (0..OUTPUTS.len(), FRAME_SID_RANGE)
+        1 => action_strategy().prop_map(Op::Action),
+        1 => (0..OUTPUTS.len(), FRAME_SID_RANGE)
             .prop_map(|(output, surface_id)| Op::CreateEmacsFrame { output, surface_id }),
-        layout_strategy().prop_map(|frames| Op::ApplyLayout { frames }),
-        entry_view_strategy().prop_map(Op::FocusView),
-        FRAME_SID_RANGE.prop_map(Op::FocusFrame),
-        (0..OUTPUTS.len()).prop_map(Op::DisableOutput),
-        (0..OUTPUTS.len()).prop_map(Op::EnableOutput),
-        (0..OUTPUTS.len()).prop_map(Op::RemoveOutput),
-        (0..OUTPUTS.len()).prop_map(Op::AddOutput),
-        FRAME_SID_RANGE.prop_map(Op::DestroyFrame),
-        ENTRY_SID_RANGE.prop_map(Op::DestroySurface),
-        ENTRY_SID_RANGE.prop_map(Op::ActivateSurface),
-        FRAME_SID_RANGE.prop_map(Op::MarkUrgent),
+        1 => layout_strategy().prop_map(|frames| Op::ApplyLayout { frames }),
+        1 => entry_view_strategy().prop_map(Op::FocusView),
+        1 => FRAME_SID_RANGE.prop_map(Op::FocusFrame),
+        1 => (0..OUTPUTS.len()).prop_map(Op::DisableOutput),
+        1 => (0..OUTPUTS.len()).prop_map(Op::EnableOutput),
+        1 => (0..OUTPUTS.len()).prop_map(Op::RemoveOutput),
+        1 => (0..OUTPUTS.len()).prop_map(Op::AddOutput),
+        1 => FRAME_SID_RANGE.prop_map(Op::DestroyFrame),
+        1 => ENTRY_SID_RANGE.prop_map(Op::DestroySurface),
+        1 => ENTRY_SID_RANGE.prop_map(Op::ActivateSurface),
+        1 => FRAME_SID_RANGE.prop_map(Op::MarkUrgent),
+        1 => launch_strategy(),
+        1 => Just(Op::MapLaunch),
     ]
 }
 
-/// The Emacs frames the ops created, by logical id.
+fn launch_strategy() -> impl Strategy<Value = Op> {
+    (0..LAUNCH_SIDS.len(), hint_strategy(), any::<bool>())
+        .prop_map(|(slot, hint, stale)| Op::Launch { slot, hint, stale })
+}
+
+/// Launches, maps and the focus moves between them, over the frames and layouts they land in.
+fn launch_op_strategy() -> impl Strategy<Value = Op> {
+    prop_oneof![
+        3 => launch_strategy(),
+        3 => Just(Op::MapLaunch),
+        2 => FRAME_SID_RANGE.prop_map(Op::FocusFrame),
+        2 => layout_strategy().prop_map(|frames| Op::ApplyLayout { frames }),
+        1 => (0..OUTPUTS.len(), FRAME_SID_RANGE)
+            .prop_map(|(output, surface_id)| Op::CreateEmacsFrame { output, surface_id }),
+        1 => FRAME_SID_RANGE.prop_map(Op::DestroyFrame),
+        1 => ENTRY_SID_RANGE.prop_map(Op::ActivateSurface),
+        1 => action_strategy().prop_map(Op::Action),
+    ]
+}
+
+/// The Emacs frames the ops created, by logical id, and the app windows a launch may route.
 struct Frames {
     client: TestClient,
     toplevels: HashMap<u64, (Toplevel, u64)>,
     next_seq: u64,
+    apps: TestClient,
+    launches: Vec<Launch>,
+}
+
+/// An app window of `LAUNCH_SIDS`, opened unmapped so a token can reach it first.
+struct Launch {
+    toplevel: Toplevel,
+    sid: u64,
+    redeemed: Option<Redeemed>,
+    mapped: bool,
+}
+
+/// What a launch redeemed before mapping, for the map to answer.
+struct Redeemed {
+    token: String,
+    hint: PlacementHint,
+    fresh: bool,
 }
 
 impl Frames {
     fn new(fix: &mut Fixture) -> Self {
         clear_pending_frames();
+        // Opened before Emacs's pid is known, so these are app windows.
+        let mut apps = fix.new_client().unwrap();
+        fix.roundtrip(&mut apps);
+        let launches = LAUNCH_SIDS
+            .iter()
+            .map(|_| {
+                let toplevel = fix.open_toplevel_unmapped(&mut apps, "launch", None);
+                let sid = fix.find_surface_id(&apps, &toplevel.surface).unwrap();
+                Launch {
+                    toplevel,
+                    sid,
+                    redeemed: None,
+                    mapped: false,
+                }
+            })
+            .collect();
         fix.ewm().set_emacs_pid(std::process::id());
         let mut client = fix.new_client().unwrap();
         fix.roundtrip(&mut client);
@@ -201,12 +298,20 @@ impl Frames {
             client,
             toplevels: HashMap::new(),
             next_seq: 0,
+            apps,
+            launches,
         }
     }
 
     /// The surface id of logical frame `id`, or `id` itself for a frame that never existed.
     fn real(&self, id: u64) -> u64 {
         self.toplevels.get(&id).map_or(id, |(_, sid)| *sid)
+    }
+
+    /// The launch a layout-only id stands for.
+    fn launched(&self, id: u64) -> Option<&Launch> {
+        let slot = LAUNCH_SIDS.iter().position(|&sid| sid == id)?;
+        Some(&self.launches[slot])
     }
 }
 
@@ -218,15 +323,12 @@ fn to_frame(spec: &FrameSpec, frames: &Frames) -> Frame {
             .entries
             .iter()
             .map(|e| {
-                LayoutEntry::surface(
-                    e.entry_id,
-                    "entry".to_string(),
-                    e.surface_id,
-                    0,
-                    0,
-                    100,
-                    100,
-                )
+                // Lisp places a launched window once it mapped, never before.
+                let surface_id = frames
+                    .launched(e.surface_id)
+                    .filter(|launch| launch.mapped)
+                    .map_or(e.surface_id, |launch| launch.sid);
+                LayoutEntry::surface(e.entry_id, "entry".to_string(), surface_id, 0, 0, 100, 100)
             })
             .collect(),
         selected_entry_id: spec.selected_entry_id,
@@ -398,6 +500,7 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
             }
         }
         Op::ActivateSurface(id) => {
+            let id = frames.launched(id).map_or(id, |launch| launch.sid);
             let prev = (
                 fix.ewm_ref().focused_frame_id(),
                 fix.ewm_ref().focused_entry_id(),
@@ -430,6 +533,220 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
         }
         Op::MarkUrgent(f) => {
             fix.ewm().mark_workspace_urgent(Some(frames.real(f)));
+        }
+        Op::Launch { slot, hint, stale } => {
+            let focused = fix.ewm_ref().focused_frame_id();
+            let frame_surface_id = match hint.map(|(frame, _)| frame) {
+                None | Some(HintFrame::None) => None,
+                Some(HintFrame::Focused) => focused,
+                Some(HintFrame::Other(n)) => {
+                    let mut others: Vec<u64> = frames
+                        .toplevels
+                        .values()
+                        .map(|(_, sid)| *sid)
+                        .filter(|sid| Some(*sid) != focused)
+                        .collect();
+                    others.sort_unstable();
+                    others
+                        .get(n % others.len().max(1))
+                        .copied()
+                        .or(Some(GONE_FRAME))
+                }
+                Some(HintFrame::Gone) => Some(GONE_FRAME),
+            };
+            let hint = PlacementHint {
+                frame_surface_id,
+                quiet: hint.is_some_and(|(_, quiet)| quiet),
+            };
+            let token = if stale {
+                let data = XdgActivationTokenData {
+                    timestamp: Instant::now() - Duration::from_secs(11),
+                    ..Default::default()
+                };
+                data.user_data.insert_if_missing(|| hint);
+                fix.ewm()
+                    .activation_state
+                    .create_external_token(data)
+                    .0
+                    .as_str()
+                    .to_owned()
+            } else {
+                fix.create_activation_token(Some(hint))
+            };
+            let sid = frames.launches[slot].sid;
+            let before = focus(fix);
+            let pending_before = pending(fix, sid);
+            let urgent_before = fix.ewm_ref().surfaces[&sid].urgent;
+            frames
+                .apps
+                .activate(&token, &frames.launches[slot].toplevel.surface);
+            fix.roundtrip(&mut frames.apps);
+            let launch = &mut frames.launches[slot];
+            let ewm = fix.ewm_ref();
+            if !launch.mapped {
+                // Before the first buffer the token waits on the record and nothing is judged.
+                assert!(
+                    ewm.surfaces[&sid].activation.is_some(),
+                    "redeem on unmapped {sid} stored no token",
+                );
+                assert_eq!(
+                    (focus(fix), pending(fix, sid), ewm.surfaces[&sid].urgent),
+                    (before, pending_before, urgent_before),
+                    "redeem on unmapped {sid} acted before map",
+                );
+                launch.redeemed = Some(Redeemed {
+                    token,
+                    hint,
+                    fresh: !stale,
+                });
+                return;
+            }
+            // A mapped surface is judged at once: a stale or quiet token does nothing, a hinted
+            // frame without the keyboard flags it, anything else focuses it or defers the grant.
+            let away = hint.frame_surface_id.is_some_and(|frame| {
+                ewm.layout.frame_location(frame).is_some() && before.frame != Some(frame)
+            });
+            let focused = ewm.focused_surface_id() == Some(sid);
+            let pending_now = pending(fix, sid);
+            if stale || hint.quiet {
+                assert_eq!(
+                    (focus(fix), pending_now, ewm.surfaces[&sid].urgent),
+                    (before, pending_before, urgent_before),
+                    "a stale or quiet redeem on mapped {sid} acted",
+                );
+            } else if away {
+                assert_eq!(focus(fix), before, "away redeem on {sid} moved focus");
+                // Whatever holds the keyboard has been seen, so only an unfocused one stays flagged.
+                assert!(
+                    focused || ewm.surfaces[&sid].urgent,
+                    "away redeem left {sid} unflagged"
+                );
+                assert_eq!(
+                    pending_now, pending_before,
+                    "away redeem on {sid} touched the grant"
+                );
+            } else {
+                assert_eq!(
+                    pending_now, !focused,
+                    "redeem on {sid} must focus the surface or defer it",
+                );
+                if pending_now {
+                    assert_eq!(focus(fix), before, "deferred redeem on {sid} moved focus");
+                }
+                if focused && let Some(frame) = before.frame {
+                    assert_focused_frame_view(fix, sid, frame);
+                }
+            }
+        }
+        Op::MapLaunch => {
+            let Some(slot) = frames
+                .launches
+                .iter()
+                .position(|launch| !launch.mapped && launch.redeemed.is_some())
+                .or_else(|| frames.launches.iter().position(|launch| !launch.mapped))
+            else {
+                return;
+            };
+            let sid = frames.launches[slot].sid;
+            let redeemed = frames.launches[slot].redeemed.take();
+            let hint = redeemed.as_ref().map(|r| r.hint).unwrap_or_default();
+            let before = focus(fix);
+            let pending_before = pending(fix, sid);
+            let ewm = fix.ewm_ref();
+            let active_output = ewm.active_output().map(|output| output.name());
+            let hinted = hint.frame_surface_id.and_then(|frame| {
+                ewm.layout
+                    .frame_location(frame)
+                    .map(|location| (location.monitor.name().to_owned(), location.floating))
+            });
+            let away = hinted.is_some() && before.frame != hint.frame_surface_id;
+            let over_fullscreen = before
+                .surface
+                .is_some_and(|surface| ewm.pending_fullscreen(surface));
+            let seen = ewm.captured_events.as_ref().map_or(0, Vec::len);
+            fix.map_toplevel(
+                &mut frames.apps,
+                &frames.launches[slot].toplevel,
+                Size::from((400, 300)),
+            );
+            frames.launches[slot].mapped = true;
+            let ewm = fix.ewm_ref();
+            let mapped = ewm.captured_events.as_deref().unwrap_or(&[])[seen..]
+                .iter()
+                .find_map(|event| match event {
+                    Event::Mapped {
+                        id,
+                        activate,
+                        output,
+                        frame_surface_id,
+                        token,
+                        ..
+                    } if *id == sid => {
+                        Some((*activate, output.clone(), *frame_surface_id, token.clone()))
+                    }
+                    _ => None,
+                });
+            let Some((activate, output, host, token)) = mapped else {
+                panic!("launch {sid} mapped without a Mapped event");
+            };
+            // One shot: the record no longer holds the token and the map itself moves nothing.
+            assert!(
+                ewm.surfaces[&sid].activation.is_none(),
+                "mapped {sid} still holds its token",
+            );
+            assert_eq!(focus(fix), before, "map of {sid} moved focus");
+            // Lisp learns which launch the surface came from, from a stale token too.
+            assert_eq!(
+                token,
+                redeemed.as_ref().map(|r| r.token.clone()),
+                "launch {sid} echoed the wrong token",
+            );
+            // The hint places: its frame while that is tiled, its output while the frame exists.
+            match &hinted {
+                Some((name, floating)) => {
+                    assert_eq!(
+                        output.as_deref(),
+                        Some(name.as_str()),
+                        "launch {sid} missed the hinted output",
+                    );
+                    if !floating {
+                        assert_eq!(host, hint.frame_surface_id, "launch {sid} missed its frame");
+                    }
+                }
+                None => assert_eq!(
+                    output, active_output,
+                    "launch {sid} without a usable hint left the active output",
+                ),
+            }
+            if let Some(host) = host {
+                assert!(
+                    ewm.layout.frame_location(host).is_some_and(|location| {
+                        !location.floating && Some(location.monitor.name()) == output.as_deref()
+                    }),
+                    "host {host} of launch {sid} is not a tiled frame on {output:?}",
+                );
+            }
+            // The hint only vetoes: quiet or away never selects, a grant always does, a plain
+            // window follows the fullscreen rule. The grant waits for a layout only if it selects.
+            let granted = redeemed.as_ref().is_some_and(|r| r.fresh) || pending_before;
+            if hint.quiet || away {
+                assert!(!activate, "vetoed launch {sid} asked Lisp to select it");
+            } else if granted {
+                assert!(activate, "granted launch {sid} was not selected");
+            } else {
+                assert_eq!(activate, !over_fullscreen, "plain launch {sid} selection");
+            }
+            assert_eq!(
+                pending(fix, sid),
+                granted && activate,
+                "the grant of launch {sid} does not match its selection",
+            );
+            // A denied loud launch is flagged, nothing else is.
+            assert_eq!(
+                ewm.surfaces[&sid].urgent,
+                away && !hint.quiet,
+                "urgency of launch {sid}",
+            );
         }
         Op::DestroySurface(id) => {
             let was_present = layout_surface_ids(fix).contains(&id);
@@ -521,6 +838,28 @@ fn assert_focused_frame_view(fix: &Fixture, surface: u64, frame: u64) {
         chosen.is_some_and(|entry| views.contains(&entry)),
         "invariant 13: activate({surface}) left focused frame {frame} which shows it",
     );
+}
+
+/// Where the keyboard is, as frame, view and surface.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Focus {
+    frame: Option<u64>,
+    entry: Option<LayoutEntryId>,
+    surface: Option<u64>,
+}
+
+fn focus(fix: &Fixture) -> Focus {
+    let ewm = fix.ewm_ref();
+    Focus {
+        frame: ewm.focused_frame_id(),
+        entry: ewm.focused_entry_id(),
+        surface: ewm.focused_surface_id(),
+    }
+}
+
+/// Whether a grant for `sid` waits for a layout to show it.
+fn pending(fix: &Fixture, sid: u64) -> bool {
+    fix.ewm_ref().pending_activations().any(|id| id == sid)
 }
 
 fn strip_frame_ids(fix: &Fixture) -> HashSet<u64> {
@@ -731,6 +1070,7 @@ fn check_show_hide_ops(ops: Vec<Op>) -> Result<(), TestCaseError> {
 fn check_urgency_ops(ops: Vec<Op>) -> Result<(), TestCaseError> {
     let _serial = SERIAL.lock().unwrap();
     let mut fix = Fixture::new().unwrap();
+    fix.enable_event_capture();
     for name in OUTPUTS {
         fix.add_output(name, 1920, 1080);
     }
@@ -772,10 +1112,39 @@ fn check_urgency_ops(ops: Vec<Op>) -> Result<(), TestCaseError> {
     Ok(())
 }
 
+/// A launch lands as its hint says, selects only when granted and not vetoed, and flags a
+/// denied loud one. A frame per output gives the hints somewhere to point.
+fn check_launch_ops(ops: Vec<Op>) -> Result<(), TestCaseError> {
+    let _serial = SERIAL.lock().unwrap();
+    let mut fix = Fixture::new().unwrap();
+    fix.enable_event_capture();
+    for name in OUTPUTS {
+        fix.add_output(name, 1920, 1080);
+    }
+    let mut frames = Frames::new(&mut fix);
+    for (output, surface_id) in [(0, 100), (1, 101)] {
+        apply_op(
+            &mut fix,
+            &mut frames,
+            Op::CreateEmacsFrame { output, surface_id },
+        );
+    }
+    for op in ops {
+        apply_op(&mut fix, &mut frames, op);
+        fix.ewm_ref().verify_invariants();
+    }
+    Ok(())
+}
+
 proptest! {
     #[test]
     fn focus_invariants_hold(ops in prop::collection::vec(op_strategy(), 1..30)) {
         check_focus_ops(ops)?;
+    }
+
+    #[test]
+    fn launches_follow_their_hints(ops in prop::collection::vec(launch_op_strategy(), 1..30)) {
+        check_launch_ops(ops)?;
     }
 }
 
@@ -926,12 +1295,18 @@ proptest! {
             fix.ewm_ref().verify_invariants();
             fix.dispatch();
             fix.roundtrip(&mut frames.client);
+            fix.roundtrip(&mut frames.apps);
             fix.roundtrip(&mut apps);
             // Proxies of different clients can share an id, so match each client's own.
-            let frame_sids = frames.toplevels.values();
+            let frame_sids = frames.toplevels.values().map(|(top, sid)| (top, *sid));
+            let launch_sids = frames
+                .launches
+                .iter()
+                .map(|launch| (&launch.toplevel, launch.sid));
             for (client, toplevels) in [
                 (&mut frames.client, frame_sids.collect::<Vec<_>>()),
-                (&mut apps, app_windows.iter().collect()),
+                (&mut frames.apps, launch_sids.collect()),
+                (&mut apps, app_windows.iter().map(|(top, sid)| (top, *sid)).collect()),
             ] {
                 for event in client.drain_events() {
                     if let ClientEvent::ToplevelConfigure { toplevel, suspended, .. } = event
