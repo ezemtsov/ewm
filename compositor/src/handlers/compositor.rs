@@ -13,7 +13,7 @@ use smithay::wayland::compositor::{
 use smithay::wayland::shell::xdg::{SurfaceCachedState, ToplevelSurface};
 use smithay::wayland::shm::{ShmHandler, ShmState};
 
-use crate::handlers::{PlacementHint, XDG_ACTIVATION_TOKEN_TIMEOUT};
+use crate::handlers::{PlacementHint, Verdict, XDG_ACTIVATION_TOKEN_TIMEOUT};
 use crate::utils::ensure_min_max_size;
 use crate::{Event, Ewm, LockState, State, client_state, is_portal_surface, surface_root};
 
@@ -190,9 +190,8 @@ impl CompositorHandler for State {
                     .and_then(|f| self.ewm.layout.frame_location(f));
                 let host = location.filter(|l| !l.floating).map(|l| l.frame.surface_id);
                 let open_floating = open_floating && host.is_none();
-                let away = location
-                    .is_some_and(|l| self.ewm.focused_frame_id() != Some(l.frame.surface_id));
-                let activate = activate && !hint.quiet && !away;
+                let verdict = hint.verdict(&self.ewm);
+                let activate = activate && verdict == Verdict::Select;
                 let output = location
                     .map(|l| l.monitor.output())
                     .or_else(|| self.ewm.active_output());
@@ -221,7 +220,7 @@ impl CompositorHandler for State {
                 // A granted surface keeps its grant until a layout shows it.
                 self.ewm.surfaces.get_mut(&id).unwrap().pending_activation =
                     (granted && activate).then(Instant::now);
-                if away && !hint.quiet {
+                if verdict == Verdict::Bell {
                     self.ewm.set_surface_urgent(id, true);
                 }
             }

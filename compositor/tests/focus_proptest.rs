@@ -601,8 +601,9 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
                 });
                 return;
             }
-            // A mapped surface is judged at once: a stale or quiet token does nothing, a hinted
-            // frame without the keyboard flags it, anything else focuses it or defers the grant.
+            // A mapped surface is judged at once: a stale or quiet token does nothing, an anchored
+            // one never selects and only flags it away from its frame, anything else focuses it
+            // or defers the grant.
             let away = hint.frame_surface_id.is_some_and(|frame| {
                 ewm.layout.frame_location(frame).is_some() && before.frame != Some(frame)
             });
@@ -614,17 +615,24 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
                     (before, pending_before, urgent_before),
                     "a stale or quiet redeem on mapped {sid} acted",
                 );
-            } else if away {
-                assert_eq!(focus(fix), before, "away redeem on {sid} moved focus");
-                // Whatever holds the keyboard has been seen, so only an unfocused one stays flagged.
-                assert!(
-                    focused || ewm.surfaces[&sid].urgent,
-                    "away redeem left {sid} unflagged"
-                );
+            } else if hint.frame_surface_id.is_some() {
+                assert_eq!(focus(fix), before, "anchored redeem on {sid} moved focus");
                 assert_eq!(
                     pending_now, pending_before,
-                    "away redeem on {sid} touched the grant"
+                    "anchored redeem on {sid} touched the grant"
                 );
+                if away {
+                    // Whatever holds the keyboard has been seen, so only an unfocused one stays flagged.
+                    assert!(
+                        focused || ewm.surfaces[&sid].urgent,
+                        "away redeem left {sid} unflagged"
+                    );
+                } else {
+                    assert_eq!(
+                        ewm.surfaces[&sid].urgent, urgent_before,
+                        "anchored redeem on {sid} rang the bell at home"
+                    );
+                }
             } else {
                 assert_eq!(
                     pending_now, !focused,
@@ -726,10 +734,10 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
                     "host {host} of launch {sid} is not a tiled frame on {output:?}",
                 );
             }
-            // The hint only vetoes: quiet or away never selects, a grant always does, a plain
+            // The hint only vetoes: quiet or anchored never selects, a grant always does, a plain
             // window follows the fullscreen rule. The grant waits for a layout only if it selects.
             let granted = redeemed.as_ref().is_some_and(|r| r.fresh) || pending_before;
-            if hint.quiet || away {
+            if hint.quiet || hint.frame_surface_id.is_some() {
                 assert!(!activate, "vetoed launch {sid} asked Lisp to select it");
             } else if granted {
                 assert!(activate, "granted launch {sid} was not selected");

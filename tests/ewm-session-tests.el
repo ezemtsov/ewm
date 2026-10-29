@@ -264,21 +264,25 @@ It echoes nothing, hides its cursor and paints four cells white near its top rig
     (ewm-session-tests--check (if on "key fullscreen" "key tiled") (car held)
                               (format "%.2f red over the output" (cadr held)))))
 
-(defun ewm-session-tests--launch (hint)
-  "Launch foot as an XDG app under HINT, return its surface buffer once placed."
+(defun ewm-session-tests--launch (hint &optional then)
+  "Launch foot under HINT, run THEN, return its surface buffer once placed."
   (let ((known (buffer-list))
         (name (car (rassoc "foot" (ewm-list-xdg-apps))))
         (ewm-launch-hint hint))
     (unless name (error "FAIL launch — foot is not an XDG app here"))
     (push (ewm-launch-xdg-command name) ewm-session-tests--launched)
-    (or (ewm-session-tests--wait
-         (lambda ()
-           (seq-find (lambda (buffer)
-                       (and (not (memq buffer known))
-                            (equal (buffer-local-value 'ewm-surface-app buffer) "foot")
-                            (get-buffer-window buffer t)))
-                     (buffer-list))))
-        (error "FAIL launch — no foot surface was placed"))))
+    (when then (funcall then))
+    (let ((buffer (or (ewm-session-tests--wait
+                       (lambda ()
+                         (seq-find (lambda (buffer)
+                                     (and (not (memq buffer known))
+                                          (equal (buffer-local-value 'ewm-surface-app buffer) "foot")
+                                          (get-buffer-window buffer t)))
+                                   (buffer-list))))
+                      (error "FAIL launch — no foot surface was placed"))))
+      ;; A wrong selection or grant would arrive with the next layout, give it a moment.
+      (ewm-session-tests--sit-for 1)
+      buffer)))
 
 (defun ewm-session-tests--close-launched ()
   (dolist (process ewm-session-tests--launched)
@@ -286,17 +290,19 @@ It echoes nothing, hides its cursor and paints four cells white near its top rig
   (setq ewm-session-tests--launched nil))
 
 (defun ewm-session-tests-launch-anchor ()
-  "An app launched from a window opens in it and takes the keyboard."
+  "An app launched from a window opens there, the keyboard stays put."
   (ewm-session-tests--focus)
   (let* ((window (frame-selected-window ewm-session-tests--frame))
-         (buffer (ewm-session-tests--launch nil))
+         (other (split-window window))
+         (buffer (ewm-session-tests--launch nil (lambda () (select-window other))))
          (there (eq (window-buffer window) buffer))
-         (selected (ewm-session-tests--wait (lambda () (eq (selected-window) window)) 10)))
+         (stayed (eq (selected-window) other)))
     (ewm-session-tests--shot "launch-anchor" (ewm--frame-output ewm-session-tests--frame))
     (ewm-session-tests--close-launched)
-    (ewm-session-tests--check "launch anchor" (and there selected)
-                              (format "%s in the launch window %s, selected %s"
-                                      (buffer-name buffer) there selected))))
+    (delete-window other)
+    (ewm-session-tests--check "launch anchor" (and there stayed)
+                              (format "%s in the launch window %s, keyboard stayed in the other window %s"
+                                      (buffer-name buffer) there stayed))))
 
 (defun ewm-session-tests-launch-away ()
   "An app launched for an unfocused frame opens there, the keyboard stays put."
@@ -310,8 +316,6 @@ It echoes nothing, hides its cursor and paints four cells white near its top rig
       (let* ((before (list (selected-frame) (selected-window)))
              (buffer (ewm-session-tests--launch
                       (list :frame-surface-id (frame-parameter ewm-session-tests--frame 'ewm-surface-id)))))
-        ;; A wrong grant would arrive with the next layout, give it a moment.
-        (ewm-session-tests--sit-for 1)
         (let ((there (eq (window-buffer window) buffer))
               (stayed (and (equal (list (selected-frame) (selected-window)) before)
                            (eq (ewm--current-frame) away))))

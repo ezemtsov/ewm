@@ -437,7 +437,7 @@ paired with it. Any other surface gets a buffer."
 
 (defun ewm--place-surface-buffer (buffer floating output host-id activate)
   "Display BUFFER on OUTPUT: floating in a new frame, else tiled in HOST-ID.
-A launch window beats HOST-ID, only ACTIVATE selects a float or that window."
+A launch window beats HOST-ID and is never selected, ACTIVATE selects a float."
   (let ((window (ewm--launch-window buffer))
         (host (or (ewm--frame-by-surface-id host-id)
                   (ewm-output-active-frame output))))
@@ -449,9 +449,8 @@ A launch window beats HOST-ID, only ACTIVATE selects a float or that window."
             (pop-to-buffer buffer action)
           (display-buffer buffer action))))
      (window
-      (let ((shown (with-selected-window window
-                     (display-buffer buffer '(display-buffer-same-window)))))
-        (when (and activate shown) (select-window shown)))
+      (with-selected-window window
+        (display-buffer buffer '(display-buffer-same-window)))
       (ewm-layout--refresh))
      (host
       (select-frame host)

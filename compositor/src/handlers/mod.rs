@@ -327,9 +327,35 @@ struct UrgentOnlyMarker;
 #[derive(Debug, Clone, Copy, Default, serde::Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub struct PlacementHint {
+    /// The frame the surface is anchored to, where it opens without the keyboard.
     pub frame_surface_id: Option<u64>,
-    /// True keeps the surface from being selected.
+    /// True keeps the surface unselected and the bell silent.
     pub quiet: bool,
+}
+
+/// What a hint allows the surface once mapped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    Select,
+    Bell,
+    Silent,
+}
+
+impl PlacementHint {
+    /// The keyboard without a frame, the bell for a frame that exists without it, else nothing.
+    pub fn verdict(&self, ewm: &crate::Ewm) -> Verdict {
+        match self.frame_surface_id {
+            _ if self.quiet => Verdict::Silent,
+            None => Verdict::Select,
+            Some(frame)
+                if ewm.layout.frame_location(frame).is_some()
+                    && ewm.focused_frame_id() != Some(frame) =>
+            {
+                Verdict::Bell
+            }
+            Some(_) => Verdict::Silent,
+        }
+    }
 }
 
 // XDG Activation protocol (allows apps to request focus or attention)
@@ -418,19 +444,20 @@ impl XdgActivationHandler for State {
                 .get::<PlacementHint>()
                 .copied()
                 .unwrap_or_default();
-            if hint.quiet {
-                debug!("xdg_activation: hint leaves surface {} unselected", id);
-            } else if hint.frame_surface_id.is_some_and(|frame| {
-                self.ewm.layout.frame_location(frame).is_some()
-                    && self.ewm.focused_frame_id() != Some(frame)
-            }) {
-                if self.ewm.set_surface_urgent(id, true) {
-                    info!("xdg_activation: surface {} urgent away from its frame", id);
+            match hint.verdict(&self.ewm) {
+                Verdict::Silent => {
+                    debug!("xdg_activation: hint leaves surface {} unselected", id);
                 }
-            } else {
-                self.ewm
-                    .activate_or_defer_surface(id, FocusSource::XdgActivation);
-                info!("xdg_activation: granted for surface {}", id);
+                Verdict::Bell => {
+                    if self.ewm.set_surface_urgent(id, true) {
+                        info!("xdg_activation: surface {} urgent away from its frame", id);
+                    }
+                }
+                Verdict::Select => {
+                    self.ewm
+                        .activate_or_defer_surface(id, FocusSource::XdgActivation);
+                    info!("xdg_activation: granted for surface {}", id);
+                }
             }
         }
     }

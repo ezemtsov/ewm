@@ -585,8 +585,8 @@ whatever same-window rule would keep the buffer in its tile."
         (should-not (frame-parameter f 'ewm-focus-on-create))))))
 
 (ert-deftest ewm-focus/a-launch-opens-its-surface-in-the-launch-window ()
-  "A launch opens its surface in the window it ran from, by token or by pid."
-  (pcase-dolist (`(,by . ,activate) '((token . nil) (token . t) (pid . nil)))
+  "A launch fills its window by token or by pid and never selects it."
+  (dolist (by '(token pid))
     (ewm-focus-tests--with-frame f
       (let* ((ewm--surfaces (make-hash-table :test 'eql))
              (ewm--module-mode t)
@@ -613,11 +613,11 @@ whatever same-window rule would keep the buffer in its tile."
               (setq created (ewm--create-surface-buffer
                              80 "app" (if (eq by 'pid) (process-id process) 1234)))
               (ewm--handle-mapped-surface
-               `((id . 80) (output . ,ewm-focus-tests--output) (activate . ,activate)
+               `((id . 80) (output . ,ewm-focus-tests--output) (activate . t)
                  (frame_surface_id . ,ewm-focus-tests--frame-surface-id)
                  ,@(and (eq by 'token) '((token . "tok")))))
               (should (eq (window-buffer target) created))
-              (should (eq (selected-window) (if activate target origin))))
+              (should (eq (selected-window) origin)))
           (when process (delete-process process))
           (select-window origin)
           (delete-window target)

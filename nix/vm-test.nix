@@ -143,7 +143,7 @@ let
           with subtest("the focused frame moves to the other output and back"):
               check("(ewm-session-tests-move)")
 
-          with subtest("a launch opens in its window, one hinted for the other head opens there unfocused"):
+          with subtest("a launch opens in its window and leaves the keyboard, one hinted for the other head opens there unfocused"):
               check("(ewm-session-tests-launch-anchor)")
               check("(ewm-session-tests-launch-away)")
 
