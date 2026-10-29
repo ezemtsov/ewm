@@ -1,3 +1,4 @@
+// Ported from niri's render_helpers/shaders/rounding_alpha.frag.
 float ewm_rounding_alpha(vec2 coords, vec2 size, vec4 corner_radius) {
     vec2 center;
     float radius;

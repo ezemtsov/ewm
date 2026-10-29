@@ -1,4 +1,5 @@
 #version 100
+// Ported from niri's render_helpers/shaders/clipped_surface.frag.
 
 //_DEFINES_
 

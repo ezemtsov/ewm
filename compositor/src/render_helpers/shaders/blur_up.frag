@@ -1,4 +1,5 @@
 #version 100
+// Ported from niri's render_helpers/shaders/blur_up.frag.
 
 precision highp float;
 

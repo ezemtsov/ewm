@@ -1,3 +1,5 @@
+//! Ported from niri's `protocols/gamma_control.rs`.
+
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;

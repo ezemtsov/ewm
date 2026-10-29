@@ -1,3 +1,4 @@
+// Ported from niri's render_helpers/shaders/shadow.frag.
 precision highp float;
 
 #if defined(DEBUG_FLAGS)

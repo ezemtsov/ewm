@@ -1,3 +1,5 @@
+//! Ported from niri's `input/resize_grab.rs`.
+
 use smithay::input::SeatHandler;
 use smithay::input::pointer::{
     AxisFrame, ButtonEvent, CursorImageStatus, GestureHoldBeginEvent, GestureHoldEndEvent,

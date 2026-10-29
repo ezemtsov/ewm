@@ -5,6 +5,8 @@
 //! Emacs tracks a drag source, motion over another client's surface is
 //! reported mirrored past the frame's top-left corner, so both coordinates
 //! go negative and Emacs hands the drag to the compositor.
+//!
+//! Ported from niri's `input/pick_window_grab.rs`, the grab plumbing.
 
 use smithay::input::SeatHandler;
 use smithay::input::pointer::{

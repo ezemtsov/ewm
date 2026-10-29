@@ -1,3 +1,4 @@
+// Ported from niri's render_helpers/shaders/postprocess.frag.
 uniform float noise;
 uniform float saturation;
 uniform vec4 bg_color;

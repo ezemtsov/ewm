@@ -1,3 +1,5 @@
+//! Ported from niri's `cursor.rs`, the theme loading and image cache.
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::env;

@@ -1,4 +1,5 @@
 #version 100
+// Ported from niri's render_helpers/shaders/blur.vert.
 
 attribute vec2 vert;
 varying vec2 v_coords;

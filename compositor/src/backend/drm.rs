@@ -1,8 +1,8 @@
 //! DRM/libinput backend for running EWM as a standalone Wayland session
 //!
-//! Inspired by niri's `backend/tty.rs` for DRM initialization, VBlank
-//! synchronization, and session pause/resume patterns. This module provides
-//! the backend for running directly on hardware without another compositor.
+//! Parts ported from niri's `backend/tty.rs`: DRM initialization, VBlank
+//! synchronization, and session pause/resume. This module provides the
+//! backend for running directly on hardware without another compositor.
 //!
 //! # Design Invariants
 //!

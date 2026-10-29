@@ -1,3 +1,5 @@
+//! Ported from niri's `render_helpers/shaders/mod.rs`.
+
 use glam::Mat3;
 use smithay::backend::renderer::gles::{
     GlesFrame, GlesRenderer, GlesTexProgram, Uniform, UniformName, UniformType, UniformValue,

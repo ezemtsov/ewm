@@ -1,3 +1,5 @@
+//! Ported from niri's `render_helpers/shader_element.rs`.
+
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::rc::Rc;

@@ -1,4 +1,5 @@
 #version 100
+// Ported from niri's render_helpers/shaders/texture.vert.
 
 uniform mat3 matrix;
 uniform mat3 tex_matrix;

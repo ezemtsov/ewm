@@ -1,3 +1,5 @@
+//! Ported from niri's `render_helpers/resources.rs`.
+
 use std::cell::RefCell;
 use std::rc::Rc;
 

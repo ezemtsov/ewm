@@ -7,6 +7,8 @@
 //! API but uses `Scale<f64>` and resolves `src` directly from the
 //! texture's own dimensions, so fractional-scale outputs render
 //! pixel-for-pixel correct.
+//!
+//! Ported from niri's `render_helpers/texture.rs`.
 
 use smithay::backend::renderer::element::{Element, Id, Kind, RenderElement, UnderlyingStorage};
 use smithay::backend::renderer::utils::{CommitCounter, OpaqueRegions};

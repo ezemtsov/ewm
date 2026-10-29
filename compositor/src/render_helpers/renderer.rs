@@ -1,3 +1,5 @@
+//! Ported from niri's `render_helpers/renderer.rs`.
+
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::renderer::gles::{GlesFrame, GlesRenderer, GlesTexture};
 use smithay::backend::renderer::{

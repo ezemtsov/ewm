@@ -1,3 +1,5 @@
+//! Ported from niri's `render_helpers/shadow.rs`.
+
 use std::collections::HashMap;
 use std::rc::Rc;
 

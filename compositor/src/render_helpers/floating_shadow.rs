@@ -1,3 +1,5 @@
+//! Ported from niri's `layout/shadow.rs`.
+
 use std::iter::zip;
 
 use smithay::utils::{Logical, Point, Rectangle, Size};

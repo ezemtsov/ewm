@@ -1,3 +1,5 @@
+//! Ported from niri's `niri-config/src/appearance.rs`, the shadow types.
+
 use std::ops::{Mul, MulAssign};
 
 use serde::Deserialize;
