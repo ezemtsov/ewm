@@ -977,7 +977,7 @@ fn layout_omission_empties_the_frame() {
 
 /// Every op keeps the focus invariants, and none asks Emacs to run a command (invariant 15).
 fn check_focus_ops(ops: Vec<Op>) -> Result<(), TestCaseError> {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let mut fix = Fixture::new().unwrap();
     fix.enable_event_capture();
     for name in OUTPUTS {
@@ -1001,7 +1001,7 @@ fn check_focus_ops(ops: Vec<Op>) -> Result<(), TestCaseError> {
 /// Lisp freezes on `FrameHidden` and thaws on `FrameShown`, so a placed frame's last event must
 /// say shown iff it is its strip's active frame or the overview is active.
 fn check_show_hide_ops(ops: Vec<Op>) -> Result<(), TestCaseError> {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let mut fix = Fixture::new().unwrap();
     fix.ewm().animations_clock.set_complete_instantly(true);
     fix.enable_event_capture();
@@ -1068,7 +1068,7 @@ fn check_show_hide_ops(ops: Vec<Op>) -> Result<(), TestCaseError> {
 /// Inside the overview no op clears a mark. Outside it, once refreshed, whatever holds focus is
 /// not urgent (invariant 20).
 fn check_urgency_ops(ops: Vec<Op>) -> Result<(), TestCaseError> {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let mut fix = Fixture::new().unwrap();
     fix.enable_event_capture();
     for name in OUTPUTS {
@@ -1115,7 +1115,7 @@ fn check_urgency_ops(ops: Vec<Op>) -> Result<(), TestCaseError> {
 /// A launch lands as its hint says, selects only when granted and not vetoed, and flags a
 /// denied loud one. A frame per output gives the hints somewhere to point.
 fn check_launch_ops(ops: Vec<Op>) -> Result<(), TestCaseError> {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let mut fix = Fixture::new().unwrap();
     fix.enable_event_capture();
     for name in OUTPUTS {
@@ -1131,6 +1131,8 @@ fn check_launch_ops(ops: Vec<Op>) -> Result<(), TestCaseError> {
     }
     for op in ops {
         apply_op(&mut fix, &mut frames, op);
+        // A tick settles what the op changed before the next snapshot.
+        fix.dispatch();
         fix.ewm_ref().verify_invariants();
     }
     Ok(())
@@ -1254,7 +1256,7 @@ proptest! {
             1..30,
         )
     ) {
-        let _serial = SERIAL.lock().unwrap();
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let mut fix = Fixture::new().unwrap();
         fix.ewm().animations_clock.set_complete_instantly(true);
         for name in OUTPUTS {
