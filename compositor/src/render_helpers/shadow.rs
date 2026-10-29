@@ -1,25 +1,27 @@
-//! Ported from niri's `render_helpers/shadow.rs`.
+//! Ported from niri's `render_helpers/shadow.rs`, drawn with the renderer's pixel shader API.
 
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use glam::{Mat3, Vec2};
-use smithay::backend::renderer::element::{Element, Id, Kind, RenderElement, UnderlyingStorage};
+use smithay::backend::renderer::element::{Element, Id, RenderElement, UnderlyingStorage};
 use smithay::backend::renderer::gles::{GlesError, GlesFrame, GlesRenderer, Uniform};
-use smithay::backend::renderer::utils::{CommitCounter, DamageSet, OpaqueRegions};
+use smithay::backend::renderer::utils::CommitCounter;
 use smithay::gpu_span_location;
 use smithay::utils::user_data::UserDataMap;
-use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Size, Transform};
+use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Size};
 
 use super::renderer::EwmRenderer;
-use super::shader_element::ShaderRenderElement;
-use super::shaders::{ProgramType, Shaders, mat3_uniform};
+use super::shaders::{Shaders, mat3_uniform};
 use crate::render_helpers::shadow_style::{Color, CornerRadius};
 
 /// Renders a rounded rectangle shadow.
 #[derive(Debug, Clone)]
 pub struct ShadowRenderElement {
-    inner: ShaderRenderElement,
+    id: Id,
+    commit_counter: CommitCounter,
+    area: Rectangle<f64, Logical>,
+    alpha: f32,
+    uniforms: Rc<[Uniform<'static>]>,
     params: Parameters,
 }
 
@@ -51,9 +53,12 @@ impl ShadowRenderElement {
         window_corner_radius: CornerRadius,
         alpha: f32,
     ) -> Self {
-        let inner = ShaderRenderElement::empty(ProgramType::Shadow, Kind::Unspecified);
         let mut rv = Self {
-            inner,
+            id: Id::new(),
+            commit_counter: CommitCounter::default(),
+            area: Rectangle::default(),
+            alpha: 1.,
+            uniforms: Rc::new([]),
             params: Parameters {
                 size,
                 geometry,
@@ -71,9 +76,12 @@ impl ShadowRenderElement {
     }
 
     pub fn empty() -> Self {
-        let inner = ShaderRenderElement::empty(ProgramType::Shadow, Kind::Unspecified);
         Self {
-            inner,
+            id: Id::new(),
+            commit_counter: CommitCounter::default(),
+            area: Rectangle::default(),
+            alpha: 1.,
+            uniforms: Rc::new([]),
             params: Parameters {
                 size: Default::default(),
                 geometry: Default::default(),
@@ -89,7 +97,7 @@ impl ShadowRenderElement {
     }
 
     pub fn damage_all(&mut self) {
-        self.inner.damage_all();
+        self.commit_counter.increment();
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -152,42 +160,37 @@ impl ShadowRenderElement {
         let window_input_to_geo =
             Mat3::from_scale(area_size) * Mat3::from_translation(-window_geo_loc / area_size);
 
-        self.inner.update(
-            size,
-            None,
-            scale,
-            alpha,
-            Rc::new([
-                Uniform::new("shadow_color", color.to_array_premul()),
-                Uniform::new("sigma", sigma),
-                mat3_uniform("input_to_geo", input_to_geo),
-                Uniform::new("geo_size", geo_size.to_array()),
-                Uniform::new("corner_radius", <[f32; 4]>::from(corner_radius)),
-                mat3_uniform("window_input_to_geo", window_input_to_geo),
-                Uniform::new("window_geo_size", window_geo_size.to_array()),
-                Uniform::new(
-                    "window_corner_radius",
-                    <[f32; 4]>::from(window_corner_radius),
-                ),
-            ]),
-            HashMap::new(),
-        );
+        self.area.size = size;
+        self.alpha = alpha;
+        self.uniforms = Rc::new([
+            Uniform::new("ewm_scale", scale),
+            Uniform::new("shadow_color", color.to_array_premul()),
+            Uniform::new("sigma", sigma),
+            mat3_uniform("input_to_geo", input_to_geo),
+            Uniform::new("geo_size", geo_size.to_array()),
+            Uniform::new("corner_radius", <[f32; 4]>::from(corner_radius)),
+            mat3_uniform("window_input_to_geo", window_input_to_geo),
+            Uniform::new("window_geo_size", window_geo_size.to_array()),
+            Uniform::new(
+                "window_corner_radius",
+                <[f32; 4]>::from(window_corner_radius),
+            ),
+        ]);
+        self.commit_counter.increment();
     }
 
     pub fn with_location(mut self, location: Point<f64, Logical>) -> Self {
-        self.inner = self.inner.with_location(location);
+        self.area.loc = location;
         self
     }
 
     pub fn with_alpha(mut self, alpha: f32) -> Self {
-        self.inner = self.inner.with_alpha(alpha);
+        self.alpha = alpha;
         self
     }
 
     pub fn has_shader(renderer: &mut impl EwmRenderer) -> bool {
-        Shaders::get(renderer)
-            .program(ProgramType::Shadow)
-            .is_some()
+        Shaders::get(renderer).shadow.is_some()
     }
 }
 
@@ -199,43 +202,23 @@ impl Default for ShadowRenderElement {
 
 impl Element for ShadowRenderElement {
     fn id(&self) -> &Id {
-        self.inner.id()
+        &self.id
     }
 
     fn current_commit(&self) -> CommitCounter {
-        self.inner.current_commit()
-    }
-
-    fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
-        self.inner.geometry(scale)
-    }
-
-    fn transform(&self) -> Transform {
-        self.inner.transform()
+        self.commit_counter
     }
 
     fn src(&self) -> Rectangle<f64, Buffer> {
-        self.inner.src()
+        Rectangle::from_size(Size::from((1., 1.)))
     }
 
-    fn damage_since(
-        &self,
-        scale: Scale<f64>,
-        commit: Option<CommitCounter>,
-    ) -> DamageSet<i32, Physical> {
-        self.inner.damage_since(scale, commit)
-    }
-
-    fn opaque_regions(&self, scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
-        self.inner.opaque_regions(scale)
+    fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
+        self.area.to_physical_precise_round(scale)
     }
 
     fn alpha(&self) -> f32 {
-        self.inner.alpha()
-    }
-
-    fn kind(&self) -> Kind {
-        self.inner.kind()
+        self.alpha
     }
 }
 
@@ -246,24 +229,28 @@ impl RenderElement<GlesRenderer> for ShadowRenderElement {
         src: Rectangle<f64, Buffer>,
         dst: Rectangle<i32, Physical>,
         damage: &[Rectangle<i32, Physical>],
-        opaque_regions: &[Rectangle<i32, Physical>],
-        cache: Option<&UserDataMap>,
+        _opaque_regions: &[Rectangle<i32, Physical>],
+        _cache: Option<&UserDataMap>,
     ) -> Result<(), GlesError> {
         crate::tracy_span!("ShadowRenderElement::draw");
+        let Some(program) = Shaders::get_from_frame(frame).shadow.clone() else {
+            return Ok(());
+        };
         frame.with_gpu_span(gpu_span_location!("ShadowRenderElement::draw"), |frame| {
-            RenderElement::<GlesRenderer>::draw(
-                &self.inner,
-                frame,
+            // A unit source over a unit texture spreads `v_coords` across the whole destination.
+            frame.render_pixel_shader_to(
+                &program,
                 src,
                 dst,
-                damage,
-                opaque_regions,
-                cache,
+                Size::from((1, 1)),
+                Some(damage),
+                self.alpha,
+                &self.uniforms,
             )
         })
     }
 
-    fn underlying_storage(&self, renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
-        self.inner.underlying_storage(renderer)
+    fn underlying_storage(&self, _renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
+        None
     }
 }

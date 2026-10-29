@@ -2,51 +2,46 @@
 
 use glam::Mat3;
 use smithay::backend::renderer::gles::{
-    GlesFrame, GlesRenderer, GlesTexProgram, Uniform, UniformName, UniformType, UniformValue,
+    GlesFrame, GlesPixelProgram, GlesRenderer, GlesTexProgram, Uniform, UniformName, UniformType,
+    UniformValue,
 };
 use tracing::{error, warn};
 
 use super::renderer::EwmRenderer;
-use super::shader_element::ShaderProgram;
 use crate::render_helpers::blur::BlurProgram;
 
 pub struct Shaders {
-    pub shadow: Option<ShaderProgram>,
+    pub shadow: Option<GlesPixelProgram>,
     pub postprocess_and_clip: Option<GlesTexProgram>,
     pub blur: Option<BlurProgram>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum ProgramType {
-    Shadow,
 }
 
 impl Shaders {
     fn compile(renderer: &mut GlesRenderer) -> Self {
         crate::tracy_span!("Shaders::compile");
 
-        let shadow = ShaderProgram::compile(
-            renderer,
-            concat!(
-                include_str!("shadow.frag"),
-                include_str!("rounding_alpha.frag")
-            ),
-            &[
-                UniformName::new("shadow_color", UniformType::_4f),
-                UniformName::new("sigma", UniformType::_1f),
-                UniformName::new("input_to_geo", UniformType::Matrix3x3),
-                UniformName::new("geo_size", UniformType::_2f),
-                UniformName::new("corner_radius", UniformType::_4f),
-                UniformName::new("window_input_to_geo", UniformType::Matrix3x3),
-                UniformName::new("window_geo_size", UniformType::_2f),
-                UniformName::new("window_corner_radius", UniformType::_4f),
-            ],
-            &[],
-        )
-        .map_err(|err| {
-            warn!("error compiling shadow shader: {err:?}");
-        })
-        .ok();
+        let shadow = renderer
+            .compile_custom_pixel_shader(
+                concat!(
+                    include_str!("shadow.frag"),
+                    include_str!("rounding_alpha.frag")
+                ),
+                &[
+                    UniformName::new("ewm_scale", UniformType::_1f),
+                    UniformName::new("shadow_color", UniformType::_4f),
+                    UniformName::new("sigma", UniformType::_1f),
+                    UniformName::new("input_to_geo", UniformType::Matrix3x3),
+                    UniformName::new("geo_size", UniformType::_2f),
+                    UniformName::new("corner_radius", UniformType::_4f),
+                    UniformName::new("window_input_to_geo", UniformType::Matrix3x3),
+                    UniformName::new("window_geo_size", UniformType::_2f),
+                    UniformName::new("window_corner_radius", UniformType::_4f),
+                ],
+            )
+            .map_err(|err| {
+                warn!("error compiling shadow shader: {err:?}");
+            })
+            .ok();
 
         let postprocess_and_clip = renderer
             .compile_custom_texture_shader(
@@ -94,12 +89,6 @@ impl Shaders {
         let data = renderer.egl_context().user_data();
         data.get()
             .expect("shaders::init() must be called when creating the renderer")
-    }
-
-    pub fn program(&self, program: ProgramType) -> Option<ShaderProgram> {
-        match program {
-            ProgramType::Shadow => self.shadow.clone(),
-        }
     }
 }
 

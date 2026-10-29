@@ -1,7 +1,7 @@
 //! Ported from niri's `render_helpers/renderer.rs`.
 
 use smithay::backend::allocator::dmabuf::Dmabuf;
-use smithay::backend::renderer::gles::{GlesFrame, GlesRenderer, GlesTexture};
+use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
 use smithay::backend::renderer::{
     Bind, ExportMem, ImportAll, ImportMem, Offscreen, Renderer, RendererSuper, Texture,
 };
@@ -43,20 +43,6 @@ pub trait AsGlesRenderer {
 
 impl AsGlesRenderer for GlesRenderer {
     fn as_gles_renderer(&mut self) -> &mut GlesRenderer {
-        self
-    }
-}
-
-/// Trait for getting the underlying `GlesFrame`.
-pub trait AsGlesFrame<'frame, 'buffer>
-where
-    Self: 'frame,
-{
-    fn as_gles_frame(&mut self) -> &mut GlesFrame<'frame, 'buffer>;
-}
-
-impl<'frame, 'buffer> AsGlesFrame<'frame, 'buffer> for GlesFrame<'frame, 'buffer> {
-    fn as_gles_frame(&mut self) -> &mut GlesFrame<'frame, 'buffer> {
         self
     }
 }

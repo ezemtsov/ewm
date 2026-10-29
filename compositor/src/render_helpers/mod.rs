@@ -21,8 +21,6 @@ pub mod blur;
 pub mod floating_shadow;
 pub mod framebuffer_effect;
 pub mod renderer;
-pub mod resources;
-pub mod shader_element;
 pub mod shaders;
 pub mod shadow;
 pub mod shadow_style;
@@ -30,7 +28,6 @@ pub mod texture;
 pub mod zoom;
 
 pub fn init(renderer: &mut GlesRenderer) {
-    resources::init(renderer);
     shaders::init(renderer);
 }
 
