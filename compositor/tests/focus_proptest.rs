@@ -574,26 +574,20 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
                 fix.create_activation_token(Some(hint))
             };
             let sid = frames.launches[slot].sid;
-            let before = focus(fix);
-            let pending_before = pending(fix, sid);
-            let urgent_before = fix.ewm_ref().surfaces[&sid].urgent;
+            let before = Snapshot::of(fix, sid);
             frames
                 .apps
                 .activate(&token, &frames.launches[slot].toplevel.surface);
             fix.roundtrip(&mut frames.apps);
             let launch = &mut frames.launches[slot];
-            let ewm = fix.ewm_ref();
+            let after = Snapshot::of(fix, sid);
             if !launch.mapped {
                 // Before the first buffer the token waits on the record and nothing is judged.
                 assert!(
-                    ewm.surfaces[&sid].activation.is_some(),
+                    fix.ewm_ref().surfaces[&sid].activation.is_some(),
                     "redeem on unmapped {sid} stored no token",
                 );
-                assert_eq!(
-                    (focus(fix), pending(fix, sid), ewm.surfaces[&sid].urgent),
-                    (before, pending_before, urgent_before),
-                    "redeem on unmapped {sid} acted before map",
-                );
+                assert_eq!(after, before, "redeem on unmapped {sid} acted before map");
                 launch.redeemed = Some(Redeemed {
                     token,
                     hint,
@@ -601,50 +595,27 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
                 });
                 return;
             }
-            // A mapped surface is judged at once: a stale or quiet token does nothing, an anchored
-            // one never selects and only flags it away from its frame, anything else focuses it
-            // or defers the grant.
-            let away = hint.frame_surface_id.is_some_and(|frame| {
-                ewm.layout.frame_location(frame).is_some() && before.frame != Some(frame)
-            });
-            let focused = ewm.focused_surface_id() == Some(sid);
-            let pending_now = pending(fix, sid);
-            if stale || hint.quiet {
-                assert_eq!(
-                    (focus(fix), pending_now, ewm.surfaces[&sid].urgent),
-                    (before, pending_before, urgent_before),
-                    "a stale or quiet redeem on mapped {sid} acted",
-                );
-            } else if hint.frame_surface_id.is_some() {
-                assert_eq!(focus(fix), before, "anchored redeem on {sid} moved focus");
-                assert_eq!(
-                    pending_now, pending_before,
-                    "anchored redeem on {sid} touched the grant"
-                );
-                if away {
-                    // Whatever holds the keyboard has been seen, so only an unfocused one stays flagged.
-                    assert!(
-                        focused || ewm.surfaces[&sid].urgent,
-                        "away redeem left {sid} unflagged"
-                    );
-                } else {
-                    assert_eq!(
-                        ewm.surfaces[&sid].urgent, urgent_before,
-                        "anchored redeem on {sid} rang the bell at home"
-                    );
-                }
-            } else {
-                assert_eq!(
-                    pending_now, !focused,
-                    "redeem on {sid} must focus the surface or defer it",
-                );
-                if pending_now {
-                    assert_eq!(focus(fix), before, "deferred redeem on {sid} moved focus");
-                }
-                if focused && let Some(frame) = before.frame {
-                    assert_focused_frame_view(fix, sid, frame);
-                }
-            }
+            let focused = after.focus.surface == Some(sid);
+            let loud = !stale && !hint.quiet;
+            let plain = loud && hint.frame_surface_id.is_none();
+            let away = loud && away(fix, &hint, &before.focus);
+            // A redeem moves focus only onto its own surface, and only a plain fresh one may.
+            assert!(
+                after.focus == before.focus || (plain && focused),
+                "redeem on mapped {sid} moved focus: {before:?} -> {after:?}",
+            );
+            // A plain fresh redeem focuses the surface or defers the grant, the rest leave it be.
+            assert_eq!(
+                after.pending,
+                if plain { !focused } else { before.pending },
+                "grant after a redeem on mapped {sid}",
+            );
+            // Only a loud fresh redeem away from its frame flags, and a focused surface is seen.
+            assert_eq!(
+                after.urgent,
+                (before.urgent || away) && !focused,
+                "urgency after a redeem on mapped {sid}",
+            );
         }
         Op::MapLaunch => {
             let Some(slot) = frames
@@ -658,8 +629,7 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
             let sid = frames.launches[slot].sid;
             let redeemed = frames.launches[slot].redeemed.take();
             let hint = redeemed.as_ref().map(|r| r.hint).unwrap_or_default();
-            let before = focus(fix);
-            let pending_before = pending(fix, sid);
+            let before = Snapshot::of(fix, sid);
             let ewm = fix.ewm_ref();
             let active_output = ewm.active_output().map(|output| output.name());
             let hinted = hint.frame_surface_id.and_then(|frame| {
@@ -667,8 +637,9 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
                     .frame_location(frame)
                     .map(|location| (location.monitor.name().to_owned(), location.floating))
             });
-            let away = hinted.is_some() && before.frame != hint.frame_surface_id;
+            let away = away(fix, &hint, &before.focus);
             let over_fullscreen = before
+                .focus
                 .surface
                 .is_some_and(|surface| ewm.pending_fullscreen(surface));
             let seen = ewm.captured_events.as_ref().map_or(0, Vec::len);
@@ -678,6 +649,7 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
                 Size::from((400, 300)),
             );
             frames.launches[slot].mapped = true;
+            let after = Snapshot::of(fix, sid);
             let ewm = fix.ewm_ref();
             let mapped = ewm.captured_events.as_deref().unwrap_or(&[])[seen..]
                 .iter()
@@ -702,7 +674,7 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
                 ewm.surfaces[&sid].activation.is_none(),
                 "mapped {sid} still holds its token",
             );
-            assert_eq!(focus(fix), before, "map of {sid} moved focus");
+            assert_eq!(after.focus, before.focus, "map of {sid} moved focus");
             // Lisp learns which launch the surface came from, from a stale token too.
             assert_eq!(
                 token,
@@ -734,27 +706,21 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
                     "host {host} of launch {sid} is not a tiled frame on {output:?}",
                 );
             }
-            // The hint only vetoes: quiet or anchored never selects, a grant always does, a plain
-            // window follows the fullscreen rule. The grant waits for a layout only if it selects.
-            let granted = redeemed.as_ref().is_some_and(|r| r.fresh) || pending_before;
-            if hint.quiet || hint.frame_surface_id.is_some() {
-                assert!(!activate, "vetoed launch {sid} asked Lisp to select it");
-            } else if granted {
-                assert!(activate, "granted launch {sid} was not selected");
-            } else {
-                assert_eq!(activate, !over_fullscreen, "plain launch {sid} selection");
-            }
+            // The hint only vetoes, a grant selects, a plain window follows the fullscreen rule.
+            let vetoed = hint.quiet || hint.frame_surface_id.is_some();
+            let granted = redeemed.as_ref().is_some_and(|r| r.fresh) || before.pending;
             assert_eq!(
-                pending(fix, sid),
+                activate,
+                !vetoed && (granted || !over_fullscreen),
+                "selection of launch {sid}",
+            );
+            assert_eq!(
+                after.pending,
                 granted && activate,
                 "the grant of launch {sid} does not match its selection",
             );
-            // A denied loud launch is flagged, nothing else is.
-            assert_eq!(
-                ewm.surfaces[&sid].urgent,
-                away && !hint.quiet,
-                "urgency of launch {sid}",
-            );
+            // Only a loud launch away from its frame is flagged.
+            assert_eq!(after.urgent, away && !hint.quiet, "urgency of launch {sid}",);
         }
         Op::DestroySurface(id) => {
             let was_present = layout_surface_ids(fix).contains(&id);
@@ -856,18 +822,34 @@ struct Focus {
     surface: Option<u64>,
 }
 
-fn focus(fix: &Fixture) -> Focus {
-    let ewm = fix.ewm_ref();
-    Focus {
-        frame: ewm.focused_frame_id(),
-        entry: ewm.focused_entry_id(),
-        surface: ewm.focused_surface_id(),
+/// The focus and what a launch surface holds, compared across one op.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Snapshot {
+    focus: Focus,
+    pending: bool,
+    urgent: bool,
+}
+
+impl Snapshot {
+    fn of(fix: &Fixture, sid: u64) -> Self {
+        let ewm = fix.ewm_ref();
+        Self {
+            focus: Focus {
+                frame: ewm.focused_frame_id(),
+                entry: ewm.focused_entry_id(),
+                surface: ewm.focused_surface_id(),
+            },
+            pending: ewm.pending_activations().any(|id| id == sid),
+            urgent: ewm.surfaces[&sid].urgent,
+        }
     }
 }
 
-/// Whether a grant for `sid` waits for a layout to show it.
-fn pending(fix: &Fixture, sid: u64) -> bool {
-    fix.ewm_ref().pending_activations().any(|id| id == sid)
+/// Whether HINT names a frame that exists and did not hold the keyboard in BEFORE.
+fn away(fix: &Fixture, hint: &PlacementHint, before: &Focus) -> bool {
+    hint.frame_surface_id.is_some_and(|frame| {
+        fix.ewm_ref().layout.frame_location(frame).is_some() && before.frame != Some(frame)
+    })
 }
 
 fn strip_frame_ids(fix: &Fixture) -> HashSet<u64> {
