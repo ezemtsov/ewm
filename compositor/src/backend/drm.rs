@@ -899,8 +899,6 @@ pub struct DrmBackendState {
     /// When present, we manage lid-close policy (macOS-like: stay awake with
     /// external monitor, suspend via D-Bus when no display remains).
     logind: Option<Login1>,
-    /// Token for session notifier - must be removed before session drops
-    session_notifier_token: Option<RegistrationToken>,
     /// Primary KMS node and render node. Set once DRM initialization succeeds.
     primary_node: Option<DrmNode>,
     primary_render_node: Option<DrmNode>,
@@ -922,23 +920,17 @@ impl Drop for DrmBackendState {
     fn drop(&mut self) {
         // The console would inherit the tint.
         self.clear_sepia();
-        // CRITICAL: Remove session notifier from event loop BEFORE session is dropped.
-        // The notifier holds references to session internals that become invalid after
-        // session drop. This is essential for embedded mode where process exit doesn't
-        // clean up resources automatically.
-        if let (Some(handle), Some(token)) = (&self.loop_handle, self.session_notifier_token.take())
-        {
-            info!("Removing session notifier from event loop before session drop");
-            handle.remove(token);
+        // Master goes back and the display stays as it is for the next client.
+        for device in self.devices.values_mut() {
+            if device.drm.is_active() {
+                device.drm.pause();
+            }
         }
         if let (Some(handle), Some(token)) =
             (&self.loop_handle, self.closed_lid_settle_timer.take())
         {
             handle.remove(token);
         }
-        info!("DrmBackendState dropping - session will be released");
-        // After this, fields drop in declaration order: gpu_manager -> devices -> libinput ->
-        // session
     }
 }
 
@@ -2759,11 +2751,7 @@ impl DrmBackendState {
 }
 
 /// Initialize DRM devices and set up outputs.
-fn initialize_drm(
-    state: &mut State,
-    display_handle: &smithay::reexports::wayland_server::DisplayHandle,
-    _event_loop_handle: &LoopHandle<'static, State>,
-) -> anyhow::Result<()> {
+fn initialize_drm(state: &mut State) -> anyhow::Result<()> {
     let pending = {
         let drm_backend = state.backend.as_drm_mut().context("Not a DRM backend")?;
         drm_backend
@@ -2784,7 +2772,7 @@ fn initialize_drm(
 
     {
         let drm_backend = state.backend.as_drm_mut().unwrap();
-        drm_backend.display_handle = Some(display_handle.clone());
+        drm_backend.display_handle = Some(state.ewm.display_handle.clone());
         drm_backend.primary_node = Some(pending.primary_node);
         drm_backend.primary_render_node = Some(pending.primary_render_node);
         drm_backend.gpu_manager = Some(gpu_manager);
@@ -2980,7 +2968,6 @@ pub fn run_drm(cursor: crate::config::Cursor) -> anyhow::Result<()> {
         lid_closed: initial_lid_state.unwrap_or(false),
         closed_lid_settle_timer: None,
         logind: Login1::new(to_ewm),
-        session_notifier_token: None, // Set after registering notifier
         messages,
         loop_handle: Some(event_loop.handle()),
         cursor_texture_cache: CursorTextureCache::default(),
@@ -3102,7 +3089,7 @@ pub fn run_drm(cursor: crate::config::Cursor) -> anyhow::Result<()> {
     }
 
     // Register session notifier and store token for cleanup in Drop
-    let session_notifier_token = event_loop
+    event_loop
         .handle()
         .insert_source(notifier, |event, _, state| match event {
             SessionEvent::PauseSession => {
@@ -3129,7 +3116,6 @@ pub fn run_drm(cursor: crate::config::Cursor) -> anyhow::Result<()> {
             }
         })
         .map_err(|err| err.error)?;
-    state.backend.as_drm_mut().unwrap().session_notifier_token = Some(session_notifier_token);
 
     // Fallback frame callback timer for surfaces that somehow
     // didn't receive frame callbacks through the normal render path.
@@ -3174,8 +3160,7 @@ pub fn run_drm(cursor: crate::config::Cursor) -> anyhow::Result<()> {
         })
         .map_err(|err| err.error)?;
 
-    let display_handle_for_init = display_handle.clone();
-    let event_loop_handle = event_loop.handle();
+    // A source owning a loop handle is a cycle, the display would outlive the loop.
     event_loop
         .handle()
         .insert_source(receiver, move |event, _, state| {
@@ -3183,9 +3168,7 @@ pub fn run_drm(cursor: crate::config::Cursor) -> anyhow::Result<()> {
             match event {
                 Event::Msg(DrmMessage::InitializeDrm) => {
                     info!("Received DRM init message");
-                    if let Err(e) =
-                        initialize_drm(state, &display_handle_for_init, &event_loop_handle)
-                    {
+                    if let Err(e) = initialize_drm(state) {
                         // Ready is already out, so nothing else reports this.
                         error!("Failed to initialize DRM: {:?}", e);
                         state.ewm.stop();
@@ -3232,8 +3215,7 @@ pub fn run_drm(cursor: crate::config::Cursor) -> anyhow::Result<()> {
     // If session is already active, initialize DRM immediately
     if session_active {
         info!("Session already active, initializing DRM now");
-        initialize_drm(&mut state, &display_handle, &event_loop.handle())
-            .context("Failed to initialize DRM")?;
+        initialize_drm(&mut state).context("Failed to initialize DRM")?;
     }
 
     // Ready means the socket is up, not that DRM is initialised: an inactive
