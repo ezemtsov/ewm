@@ -756,6 +756,16 @@ The compositor runs as a thread within the Emacs process."
       (while (ewm-running)
         (sleep-for ewm--compositor-poll-interval)))))
 
+(defun ewm--kill-emacs ()
+  "Let go of the display before the compositor, GTK exits on a dead one."
+  ;; A plain exit runs no frame hooks either.
+  (let ((delete-frame-functions nil)
+        (after-delete-frame-functions nil))
+    (dolist (terminal (terminal-list))
+      (when (memq (terminal-live-p terminal) ewm--managed-window-systems)
+        (delete-terminal terminal t)))
+    (ewm--stop-compositor)))
+
 (defun ewm--apply-background (&rest _)
   "Push the default face background to the compositor and GTK."
   (ewm--send-config)
@@ -794,7 +804,7 @@ The compositor runs as a thread within the Emacs process."
   (add-hook 'after-make-frame-functions #'ewm--on-make-frame)
   (add-hook 'enable-theme-functions #'ewm--apply-background)
   (advice-add 'delete-frame :around #'ewm--prevent-frame-deletion)
-  (add-hook 'kill-emacs-hook #'ewm--stop-compositor t))
+  (add-hook 'kill-emacs-hook #'ewm--kill-emacs t))
 
 (defun ewm--teardown ()
   "Remove Emacs-side state installed by `ewm--setup'."
@@ -814,7 +824,7 @@ The compositor runs as a thread within the Emacs process."
   (remove-hook 'emacs-startup-hook #'ewm-notify-initialized-module)
   (remove-hook 'enable-theme-functions #'ewm--apply-background)
   (advice-remove 'delete-frame #'ewm--prevent-frame-deletion)
-  (remove-hook 'kill-emacs-hook #'ewm--stop-compositor))
+  (remove-hook 'kill-emacs-hook #'ewm--kill-emacs))
 
 ;;;###autoload
 (defcustom ewm-mode nil
