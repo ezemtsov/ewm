@@ -215,6 +215,7 @@ commands and pipe events, not polling.
 - `lisp/ewm-text-input.el` - Input method bridge
 - `lisp/ewm-commands.el` - Interactive commands
 - `lisp/ewm-input.el` - Input handling, intercepted keys, keyboard capture
+- `lisp/ewm-session.el` - Frames and surfaces under desktop-save-mode
 - `lisp/ewm.el` - Lifecycle, configuration, event dispatch
 
 The Lisp files are listed in load order and each requires only the ones above it.

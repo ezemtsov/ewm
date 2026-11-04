@@ -663,25 +663,29 @@ Each function receives the event alist with symbol keys:
 (defvar ewm-output-populate-functions nil
   "Functions called with an empty output, non-nil means one made its frames.")
 
+(defun ewm--populate-outputs ()
+  "Give every empty output a frame unless a hook did, non-nil when one was empty."
+  (let (empty)
+    (dolist (output (ewm-get-active-outputs))
+      (unless (or (ewm--strip-frames output) (ewm--frame-in-flight-on-p output))
+        (unless (with-demoted-errors "ewm-output-populate-functions: %S"
+                  (run-hook-with-args-until-success 'ewm-output-populate-functions output))
+          (ewm--create-frame-for-output output nil '((ewm-owner . compositor))))
+        (setq empty t)))
+    empty))
+
 (defun ewm--handle-outputs-complete ()
   "Apply output config, then create any missing per-output frames."
   (ewm--apply-user-config "ewm-output-config" #'ewm--apply-output-config)
   ;; For pgtk, CSS goes in before any frame is created so the GTK widget
   ;; background is set on the first wl_surface commit.
   (ewm--apply-background)
-  (let (created)
-    (dolist (output (ewm-get-active-outputs))
-      (unless (or (ewm--strip-frames output) (ewm--frame-in-flight-on-p output))
-        (unless (with-demoted-errors "ewm-output-populate-functions: %S"
-                  (run-hook-with-args-until-success 'ewm-output-populate-functions output))
-          (ewm--create-frame-for-output output nil '((ewm-owner . compositor))))
-        (setq created t)))
-    ;; Frames created after the ready event missed the replay `ewm-start-module'
-    ;; asks for, and PGTK drops the enter they get before their first roundtrip.
-    ;; Once only: the replay costs a leave/enter for whatever holds focus.
-    (when (and created ewm--compositor-ready (not ewm--late-frames-replayed))
-      (setq ewm--late-frames-replayed t)
-      (run-with-idle-timer 0 nil #'ewm-notify-initialized-module))))
+  ;; Frames created after the ready event missed the replay `ewm-start-module'
+  ;; asks for, and PGTK drops the enter they get before their first roundtrip.
+  ;; Once only: the replay costs a leave/enter for whatever holds focus.
+  (when (and (ewm--populate-outputs) ewm--compositor-ready (not ewm--late-frames-replayed))
+    (setq ewm--late-frames-replayed t)
+    (run-with-idle-timer 0 nil #'ewm-notify-initialized-module)))
 
 ;;; Clipboard integration
 
@@ -801,6 +805,7 @@ The compositor runs as a thread within the Emacs process."
 
 (defun ewm--setup ()
   "Install Emacs-side state before compositor startup events run."
+  (require 'ewm-session)
   (ewm--disable-csd)
   (ewm--enable-layout-sync)
   (add-hook 'ewm-layout-menu-deactivated-hook #'ewm--flush-pending-placements)

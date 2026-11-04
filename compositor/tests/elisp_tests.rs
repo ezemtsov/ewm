@@ -31,3 +31,8 @@ fn ewm_event_ert_suite() {
 fn ewm_cursor_ert_suite() {
     common::run_ert_suite("ewm-cursor-tests.el");
 }
+
+#[test]
+fn ewm_session_ert_suite() {
+    common::run_ert_suite("ewm-session-tests.el");
+}

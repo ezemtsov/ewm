@@ -242,6 +242,9 @@ A frame made by plain `make-frame' goes to the end of the focused strip."
     ;; `quit-window' would iconify a float otherwise, which EWM frames cannot do.
     (when floating
       (set-frame-parameter frame 'auto-hide-function (lambda () (delete-frame frame))))
+    ;; The slot a save refreshes, present on every tile so frameset keeps it.
+    (unless (or floating (frame-parameter frame 'ewm-strip-position))
+      (set-frame-parameter frame 'ewm-strip-position (length (ewm-get-strip-frame-ids output))))
     (ewm-place-frame-module
      id
      `(,@(and output `(:output ,output))
@@ -278,12 +281,13 @@ A frame made by plain `make-frame' goes to the end of the focused strip."
   (pop ewm--frames-in-flight))
 
 (defun ewm--prevent-frame-deletion (orig-fun &optional frame force)
-  "Around `delete-frame': keep an output's last frame unless FORCE."
+  "Around `delete-frame': keep the last frame of an output unless one is coming."
   (let* ((f (or frame (selected-frame)))
          (output (ewm--frame-output f))
          (alone (and output
                      (not (frame-parameter f 'ewm-floating))
-                     (<= (length (ewm--strip-frames output)) 1))))
+                     (<= (length (ewm--strip-frames output)) 1)
+                     (not (ewm--frame-in-flight-on-p output)))))
     (if (and alone (not force))
         (message "Cannot delete the only frame on output %s" output)
       (when (eq f (selected-frame))
