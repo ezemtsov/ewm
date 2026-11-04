@@ -40,6 +40,7 @@
 (defvar ewm-live-tests--foot nil)
 (defvar ewm-live-tests--locker nil)
 (defvar ewm-live-tests--launched nil)
+(defvar ewm-live-tests--session nil "Non-nil once a session check saved a desktop.")
 (defconst ewm-live-tests--buffer "*ewm-live-tests*")
 
 ;;;; report and waits
@@ -532,13 +533,108 @@ It echoes nothing, hides its cursor and paints four cells white near its top rig
                                     (leaked "the password reached the frame")
                                     (t "locker gone, nothing reached the frame")))))
 
+;;;; session
+
+(defun ewm-live-tests--frame-named (name)
+  (cl-find name (frame-list) :test #'equal
+           :key (lambda (frame)
+                  (and-let* ((id (frame-parameter frame 'ewm-surface-id))) (ewm-get-workspace-name id)))))
+
+;; A terminal renames itself after its title, this mode comes back renamed behind a decoy.
+(define-derived-mode ewm-live-tests-title-mode special-mode "Title"
+  (setq-local desktop-save-buffer #'ignore))
+
+(defun ewm-live-tests--restore-title (_file name _misc)
+  "A decoy under NAME and the title buffer under another, a desktop handler."
+  (generate-new-buffer name)
+  (with-current-buffer (generate-new-buffer name)
+    (ewm-live-tests-title-mode)
+    (current-buffer)))
+
+(with-eval-after-load 'desktop
+  (add-to-list 'desktop-buffer-mode-handlers
+               '(ewm-live-tests-title-mode . ewm-live-tests--restore-title)))
+
+(defun ewm-live-tests--file (name text)
+  "The buffer of file NAME under `ewm-live-tests-dir' holding TEXT."
+  (with-current-buffer (find-file-noselect (expand-file-name name ewm-live-tests-dir))
+    (erase-buffer)
+    (insert text "\n")
+    (save-buffer)
+    (current-buffer)))
+
+(defun ewm-live-tests--float-at ()
+  "Where the float showing float.txt sits on its output, nil without one."
+  (when-let* ((window (get-buffer-window "float.txt" t)))
+    (ewm--frame-position (window-frame window))))
+
+(defun ewm-live-tests-session-setup (name)
+  "Name the frame NAME, show a file and a title buffer beside the app, float a file."
+  (let ((frame ewm-live-tests--frame)
+        (notes (ewm-live-tests--file "notes.txt" name))
+        (floated (ewm-live-tests--file "float.txt" name))
+        (app (window-buffer (ewm-live-tests--foot-window))))
+    (ewm-live-tests--focus)
+    (with-selected-frame frame
+      (delete-other-windows)
+      (set-window-buffer (selected-window) notes)
+      (set-window-buffer (split-window-right) app)
+      (set-window-buffer (split-window-below)
+                         (or (car (match-buffers '(major-mode . ewm-live-tests-title-mode)))
+                             (ewm-live-tests--restore-title nil "*ewm-live-tests-title*" nil))))
+    (ewm-workspace-rename name frame)
+    (unless (ewm-live-tests--float-at)
+      (ewm--float-buffer floated '(300 . 200) '(120 . 90)))
+    (ewm-live-tests--check "session setup"
+                           (ewm-live-tests--wait
+                            (lambda ()
+                              (and (eq (ewm-live-tests--frame-named name) frame)
+                                   (eq (window-frame (get-buffer-window app t)) frame)
+                                   (equal (ewm-live-tests--float-at) '(120 . 90)))))
+                           (format "%s shows file, title and app, float.txt floats" name))))
+
+(defvar ewm-live-tests--saved nil "Frame states of the desktop this session read.")
+(add-hook 'desktop-after-read-hook
+          (lambda () (setq ewm-live-tests--saved (frameset-states desktop-saved-frameset))))
+
+(defun ewm-live-tests-session-restored (name)
+  "After the restart frame NAME shows file and app, title and float are back, nothing waits."
+  (let* ((frame (ewm-live-tests--wait (lambda () (ewm-live-tests--frame-named name)) 60))
+         (windows (lambda () (and frame (window-list frame 'no-mini))))
+         (app (ewm-live-tests--wait
+               (lambda () (seq-some (lambda (window) (ewm-surface-buffer-p (window-buffer window)))
+                                    (funcall windows)))
+               60))
+         (at (ewm-live-tests--wait #'ewm-live-tests--float-at 30))
+         (settled (ewm-live-tests--wait (lambda () (null (ewm-session--placeholders))) 60))
+         (shown (mapcar (lambda (window) (buffer-name (window-buffer window))) (funcall windows)))
+         ;; The startup frame went, the strip holds the saved tiles and no more.
+         (output (and frame (ewm--frame-output frame)))
+         (saved (seq-count (lambda (state)
+                             (and (equal (alist-get 'ewm-output (car state)) output)
+                                  (not (alist-get 'ewm-floating (car state)))))
+                           ewm-live-tests--saved))
+         (tiles (ewm-live-tests--wait
+                 (lambda () (= saved (length (ewm-get-strip-frame-ids output)))) 30)))
+    (setq ewm-live-tests--session t ewm-live-tests--frame frame
+          ewm-live-tests--foot (get-process "foot"))
+    (ewm-live-tests--check "session restored"
+                           (and app settled tiles (member "notes.txt" shown) (equal at '(120 . 90))
+                                (match-buffers '(major-mode . ewm-live-tests-title-mode)))
+                           (format "%s shows %s, float.txt at %s, %d tiles on %s"
+                                   name (string-join shown ", ") at saved output))))
+
 (defun ewm-live-tests-teardown ()
-  "Close the apps and the frame."
+  "Close the apps and the frame, and the desktop a session check saved."
   (ewm-live-tests--close-foot)
   (ewm-live-tests--close-launched)
   (when (frame-live-p ewm-live-tests--frame)
     (ewm-live-tests--focus)
     (ewm-frame-close))
+  (when ewm-live-tests--session
+    (desktop-save-mode -1)
+    (desktop-release-lock)
+    (desktop-remove))
   (when (get-buffer ewm-live-tests--buffer)
     (kill-buffer ewm-live-tests--buffer))
   "PASS teardown — frame closed")

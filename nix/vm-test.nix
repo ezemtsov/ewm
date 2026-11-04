@@ -57,6 +57,12 @@ let
               ;;; -*- lexical-binding: t -*-
               (setq ewm-output-config '(("Virtual-1" :scale 1.5)
                                         ("Virtual-2" :width 1280 :height 800 :refresh 60 :custom t :scale 1.0)))
+              (setq desktop-save t)
+              (desktop-save-mode 1)
+              (require 'ewm)
+              (ewm-start-module)
+              ;; The desktop handler of the title buffer must exist when the desktop is read.
+              (load "${../tests/ewm-live-tests.el}")
             '';
           in
           [
@@ -99,11 +105,18 @@ let
           """Evaluate FORM, a check that returns its PASS line or signals."""
           print(machine.succeed(eval_cmd(form), timeout=dt.timedelta(minutes=2)))
 
+      def exit_session(cmd):
+          """Run CMD, which ends the Emacs process, and wait until it is gone."""
+          pid = machine.succeed(eval_cmd("(emacs-pid)")).strip()
+          machine.execute(cmd)
+          machine.wait_until_fails(f"kill -0 {pid}", timeout=dt.timedelta(minutes=1))
+
       READY = f"{eval_cmd('ewm--compositor-ready')} | grep -qx t"
+      LOAD = eval_cmd('(progn (load "${../tests/ewm-live-tests.el}") (setq ewm-live-tests-dir "/tmp/session"))')
 
       with subtest("greetd logs alice into an EWM session"):
           machine.wait_until_succeeds(READY, timeout=dt.timedelta(minutes=3))
-          machine.succeed(eval_cmd('(progn (load "${../tests/ewm-live-tests.el}") (setq ewm-live-tests-dir "/tmp/session"))'))
+          machine.succeed(LOAD)
 
       # The screenshots leave the machine whatever happens to the checks.
       try:
@@ -159,19 +172,24 @@ let
               machine.send_chars("alice\n")
               check('(ewm-live-tests-unlocked "alice")')
 
+          with subtest("a logout and a login bring the desktop back in place"):
+              check('(ewm-live-tests-session-setup "login")')
+              # greetd logs in again at once, the session exits as C-x C-c does.
+              exit_session(eval_cmd("(save-buffers-kill-emacs)"))
+              machine.fail("journalctl -b --no-pager | grep -qE 'dumped core|ewm.service.*(Failed with result|code=(killed|dumped))'")
+              machine.wait_until_succeeds(READY, timeout=dt.timedelta(minutes=3))
+              machine.succeed(LOAD)
+              check('(ewm-live-tests-session-restored "login")')
+
           check("(ewm-live-tests-teardown)")
       finally:
+          # A crash prints its stack to the journal a moment after the dump.
+          if machine.execute("journalctl -q -b --no-pager | grep -q 'terminated abnormally'")[0] == 0:
+              machine.wait_until_succeeds("journalctl -q -b --no-pager | grep -q 'Stack trace of thread'", timeout=dt.timedelta(minutes=1))
+              print(machine.execute("journalctl -q -b --no-pager -o cat | grep -B3 -A80 'Stack trace of thread' | head -200")[1])
           machine.execute("mkdir -p /tmp/session")
           shutil.rmtree(driver.out_dir / "session", ignore_errors=True)
           machine.copy_from_machine("/tmp/session")
-
-      with subtest("logout ends the session cleanly and greetd logs in again"):
-          # greetd logs in again at once, watch the pid.
-          pid = machine.succeed(eval_cmd("(emacs-pid)")).strip()
-          machine.execute(eval_cmd("(kill-emacs)"))
-          machine.wait_until_fails(f"kill -0 {pid}", timeout=dt.timedelta(minutes=1))
-          machine.fail("journalctl -b --no-pager | grep -qE 'dumped core|ewm.service.*(Failed with result|code=(killed|dumped))'")
-          machine.wait_until_succeeds(READY, timeout=dt.timedelta(minutes=3))
 
       with subtest("the compositor logged no error"):
           errors = machine.succeed("journalctl -q -b --no-pager -p err _SYSTEMD_USER_UNIT=ewm.service").strip()
