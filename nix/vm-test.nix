@@ -172,6 +172,24 @@ let
               machine.send_chars("alice\n")
               check('(ewm-live-tests-unlocked "alice")')
 
+          with subtest("ewm-restart brings the desktop back in place"):
+              check('(ewm-live-tests-session-setup "live")')
+              exit_session(eval_cmd("(ewm-restart)"))
+              machine.wait_until_succeeds(READY, timeout=dt.timedelta(minutes=3))
+              machine.succeed(LOAD)
+              check('(ewm-live-tests-session-restored "live")')
+
+          with subtest("a restart of the service from outside comes back in the same login"):
+              check('(ewm-live-tests-session-setup "outside")')
+              # A stop saves nothing, the file holds what the user or the auto-save wrote.
+              machine.succeed(eval_cmd("(desktop-save-in-desktop-dir)"))
+              login = machine.succeed("pgrep -o -f bin/ewm-session").strip()
+              exit_session("su - alice -c 'XDG_RUNTIME_DIR=/run/user/1000 systemctl --user restart ewm.service'")
+              machine.wait_until_succeeds(READY, timeout=dt.timedelta(minutes=3))
+              machine.succeed(LOAD)
+              check('(ewm-live-tests-session-restored "outside")')
+              assert login == machine.succeed("pgrep -o -f bin/ewm-session").strip(), "greetd logged in again"
+
           with subtest("a logout and a login bring the desktop back in place"):
               check('(ewm-live-tests-session-setup "login")')
               # greetd logs in again at once, the session exits as C-x C-c does.

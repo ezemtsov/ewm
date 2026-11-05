@@ -169,8 +169,10 @@ and `ewm-output-populate-functions` and `ewm-place-surface-functions` in
 ## Verification
 
 `nix/vm-test.nix` runs the session under `desktop-save-mode` with
-`desktop-save` at t, logs out and in again, and checks that a named frame
-comes back showing its file and a self-renaming buffer beside the relaunched
-application and that a float comes back where it was. By hand on the tty2
-test daemon: log in with the lid closed, open the lid, the frames homed on
-eDP-1 return to the panel. A terminal reattaches to its running process.
+`desktop-save` at t, restarts it in place, restarts the service from outside
+after a `desktop-save`, then logs out and in again, and checks each time that
+a named frame comes back showing its file and a self-renaming buffer beside
+the relaunched application and that a float comes back where it was, the
+restarts in the same login. By hand on the tty2 test daemon: restart with the
+lid closed, open the lid, the frames homed on eDP-1 return to the panel. A
+terminal reattaches to its running process.
