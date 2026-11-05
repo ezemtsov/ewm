@@ -638,8 +638,8 @@ impl Fixture {
         self.state.ewm.queue_redraw_for_pointer();
     }
 
-    /// Put `frames` on `output`'s strip the way `new_toplevel` places Emacs
-    /// frames, then declare their contents. Frames placed already stay put.
+    /// Put `frames` on `output`'s strip the way `place_emacs_frame` places
+    /// Emacs frames, then declare their contents. Frames placed already stay put.
     pub fn tile(&mut self, output: &str, frames: Vec<Frame>) {
         let layout = self.place(output, frames, false);
         self.state.apply_layout(layout);
@@ -653,13 +653,19 @@ impl Fixture {
         self.state.sync_keyboard_focus();
     }
 
+    /// Place Emacs frame `id` as Lisp does once its surface has arrived.
+    pub fn place_frame(&mut self, id: u64, placement: crate::module::FramePlacement) {
+        self.handle_module_command(crate::module::ModuleCommand::PlaceFrame { id, placement });
+        self.state.sync_keyboard_focus();
+    }
+
     /// `tile` for `output`'s floating space.
     pub fn float(&mut self, output: &str, frames: Vec<Frame>) {
         let layout = self.place(output, frames, true);
         self.state.apply_layout(layout);
     }
 
-    /// Place the unplaced frames among `frames` on `output` as `new_toplevel` would.
+    /// Place the unplaced frames among `frames` on `output` as `place_emacs_frame` would.
     pub fn open_frames(&mut self, output: &str, frames: &[Frame], floating: bool) {
         let ewm = &mut self.state.ewm;
         let Some(output) = ewm.layout.output(output).cloned() else {
@@ -677,9 +683,9 @@ impl Fixture {
                         area, pos,
                     ))
                 });
-                crate::layout::Placement::Floating { pos }
+                crate::layout::Placement::Floating { pos, size: None }
             } else {
-                crate::layout::Placement::Tiled { after: None }
+                crate::layout::Placement::Tiled { before: None }
             };
             ewm.layout.add_frame(id, &output, placement, None);
         }

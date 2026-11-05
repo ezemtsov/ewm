@@ -19,6 +19,14 @@ use smithay::utils::{Rectangle, Size};
 use crate::layout::strip;
 use crate::{Layout, LayoutEntry, LayoutEntryId, animation};
 
+/// A frame placed at the end of the strip of `output`, what Lisp sends for a plain frame.
+pub fn placement(output: &str) -> crate::module::FramePlacement {
+    crate::module::FramePlacement {
+        output: output.to_owned(),
+        ..Default::default()
+    }
+}
+
 /// Two wl_fixed steps of 1/256 px.
 pub const WL_FIXED_TOLERANCE: f64 = 1.0 / 128.0;
 
@@ -36,21 +44,6 @@ pub fn proptest_cases(default: u32) -> u32 {
 /// another frame before `xdg_toplevel.destroy` reaches the compositor.
 pub fn mark_active_frame_close(id: u64) {
     crate::module::mark_pending_active_frame_close(id);
-}
-
-/// Queue Emacs frame SEQ tiled on OUTPUT, as `ewm-prepare-frame` does.
-pub fn prepare_frame(output: &str, seq: u64, after: Option<u64>) {
-    crate::module::prepare_frame(crate::module::PendingFrame {
-        output: output.to_owned(),
-        placement: crate::layout::Placement::Tiled { after },
-        seq,
-        home: None,
-    });
-}
-
-/// Home the queued frame SEQ, as `ewm-prepare-frame-home-module` does.
-pub fn prepare_frame_home(seq: u64, home: crate::layout::Home) {
-    crate::module::home_pending_frame(seq, home);
 }
 
 /// A bare output called `name`, for layouts without a backend.
@@ -79,11 +72,6 @@ pub fn layout_with(strips: Vec<(&str, strip::Strip)>) -> Layout {
         layout.install_strip(&output, strip);
     }
     layout
-}
-
-/// Drop every queued frame. The queue is a process-wide static.
-pub fn clear_pending_frames() {
-    while crate::module::take_pending_frame().is_some() {}
 }
 
 // Layout fixtures shared by the unit tests in lib.rs and layout/.

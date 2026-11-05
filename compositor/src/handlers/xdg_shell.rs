@@ -22,9 +22,9 @@ use smithay::wayland::shell::xdg::{
 use smithay::wayland::xdg_foreign::{XdgForeignHandler, XdgForeignState};
 use tracing::{debug, info, warn};
 
-use crate::layout::enter_output_for_window;
+use crate::layout::{enter_output_for_window, leave_output_for_window};
 use crate::surface::SurfaceState;
-use crate::{Event, Ewm, FocusSource, Notify, Placement, State, client_identity, im, module};
+use crate::{Event, Ewm, FocusSource, Notify, State, client_identity, im, module};
 
 /// Snapshot an unmapping frame or view, and fade a resize answer.
 pub(crate) fn add_toplevel_pre_commit_hook(surface: &WlSurface, id: u64) -> HookId {
@@ -296,7 +296,8 @@ fn unconstrain_with_padding(
 }
 
 impl Ewm {
-    /// Register a toplevel, configure it and place an Emacs frame right away.
+    /// Register a toplevel and configure it to the active output. An Emacs frame stays out of
+    /// the layout, and so unseen, until Lisp places it from its frame parameters.
     fn handle_new_toplevel(&mut self, surface: ToplevelSurface) {
         let id = self.next_surface_id;
         self.next_surface_id += 1;
@@ -318,104 +319,95 @@ impl Ewm {
         .or_else(|| identity.and_then(|i| i.comm))
         .unwrap_or_else(|| "unknown".to_string());
 
-        // Determine target output before the initial configure so floating
-        // Emacs frames don't get the normal maximized/working-area configure.
-        let pending_frame = is_emacs.then(module::take_pending_frame).flatten();
-        let target_output = pending_frame
-            .as_ref()
-            .and_then(|pending| self.layout.output(&pending.output))
-            .or_else(|| self.active_output())
+        let output = self
+            .active_output()
+            .or_else(|| self.first_output())
             .cloned();
-        let frame_seq = pending_frame.as_ref().map(|pending| pending.seq);
-        let (placement, home) = pending_frame
-            .map_or((Placement::Tiled { after: None }, None), |pending| {
-                (pending.placement, pending.home)
-            });
-        let frame_is_floating = matches!(placement, Placement::Floating { .. });
-        let working_area = target_output
+        let working_area = output
             .as_ref()
             .map(|output| self.get_working_area(output).size);
-
+        // A tile, the common frame, gets its final size from this first configure.
         surface.with_pending_state(|state| {
             state.bounds = working_area;
-            if is_emacs && frame_is_floating {
-                // Let Emacs drive the size. The frame fits itself to its content.
-                state.size = None;
-            } else {
-                state.size = working_area;
-                state.states.set(XdgToplevelState::Maximized);
-            }
+            state.size = working_area;
+            state.states.set(XdgToplevelState::Maximized);
             state.states.set(XdgToplevelState::Activated);
         });
         surface.send_configure();
 
         let record = SurfaceState::new(id, surface, is_emacs, app.clone());
-        let window = record.window.clone();
-        self.surfaces.insert(id, record);
-
-        debug!(
-            "new_toplevel id={} is_emacs={} seq={:?} floating={} target_output={:?} pending_queue_after_take={:?}",
-            id,
-            is_emacs,
-            frame_seq,
-            frame_is_floating,
-            target_output,
-            module::peek_pending_frame_outputs()
-        );
-
-        // Place the frame now so `layout.has_frame(id)`, `set_focus_frame(id)`,
-        // etc. work before Emacs's first layout arrives. That layout only
-        // fills in contents (name, width, entries, selected_entry_id).
-        if is_emacs && let Some(output) = &target_output {
-            self.layout.add_frame(id, output, placement, home);
-            self.reconcile_output_entries(output);
-        } else if let Some(output) = target_output.as_ref().or_else(|| self.first_output()) {
+        if let Some(output) = &output {
             // Scale and enter before the first commit, bypassing SpaceElement::output_enter
             // which would leave uncommitted surfaces.
-            enter_output_for_window(&window, output);
+            enter_output_for_window(&record.window, output);
         }
+        self.surfaces.insert(id, record);
 
         // App surfaces resolve their host frame at map. `New` only creates the buffer.
         self.queue_event(Event::New {
             id,
             app: app.clone(),
-            seq: frame_seq,
             pid: client_pid,
         });
-        // A new emacs frame joins its strip inactive. Tell lisp so it can
-        // freeze it, after Event::New so ewm-surface-id is already bound on
-        // the lisp side. The overview shows every frame, a new one too.
-        if is_emacs {
-            let is_active = target_output
-                .as_ref()
-                .and_then(|output| self.layout.active_frame_id(output))
-                == Some(id);
-            self.queue_event(
-                if frame_is_floating || is_active || self.overview.is_active() {
-                    Event::FrameShown { id }
-                } else {
-                    Event::FrameHidden { id }
-                },
-            );
+        info!("New toplevel {} ({})", id, app);
+    }
+
+    /// Put Emacs frame `id` where `placement` says, once. Lisp asks when the frame's surface
+    /// has arrived, so the frame is unseen until then.
+    pub(crate) fn place_emacs_frame(&mut self, id: u64, placement: &module::FramePlacement) {
+        let Some(surface) = self.surfaces.get(&id) else {
+            return;
+        };
+        if !surface.emacs || self.layout.has_frame(id) {
+            warn!("place_emacs_frame: {id} is not an unplaced Emacs frame");
+            return;
         }
-        // The first Emacs frame took the keyboard at placement. Sent after New so the lisp side
-        // has assigned ewm-surface-id by the time the Focus event is processed.
-        if is_emacs && self.focused_frame_id() == Some(id) {
+        let Some(output) = self
+            .layout
+            .output(&placement.output)
+            .or_else(|| self.active_output())
+            .cloned()
+        else {
+            // No output yet, the frame parks hidden and the first output to map adopts it.
+            let home = placement.home.clone().unwrap_or_default();
+            self.layout.park_frame(id, placement.placement(), home);
+            self.queue_event(Event::FrameHidden { id });
+            info!("Parked Emacs frame {id} until an output maps");
+            return;
+        };
+        self.layout
+            .add_frame(id, &output, placement.placement(), placement.home.clone());
+        self.configure_frame(id);
+        // Creation entered the active output for scale, a frame landing elsewhere leaves it.
+        for other in self.layout.outputs().filter(|other| **other != output) {
+            leave_output_for_window(&surface.window, other);
+        }
+        self.reconcile_output_entries(&output);
+        // A new frame joins its strip inactive. Lisp freezes a hidden one, the overview shows
+        // every frame.
+        let is_active = self.layout.active_frame_id(&output) == Some(id);
+        self.queue_event(
+            if placement.floating || is_active || self.overview.is_active() {
+                Event::FrameShown { id }
+            } else {
+                Event::FrameHidden { id }
+            },
+        );
+        // The first Emacs frame takes the keyboard at placement.
+        if self.focused_frame_id() == Some(id)
+            && let Some(focus_id) = self.layout.focus_id_of_frame(id)
+        {
             info!("Initial Emacs frame {} holds the keyboard", id);
-            if let Some(focus_id) = self.layout.focus_id_of_frame(id) {
-                self.queue_event(Event::Focus {
-                    focus_id,
-                    x: None,
-                    y: None,
-                    pointer: false,
-                });
-            }
+            self.queue_event(Event::Focus {
+                focus_id,
+                x: None,
+                y: None,
+                pointer: false,
+            });
         }
         info!(
-            "New toplevel {} ({}) -> {:?}",
-            id,
-            app,
-            target_output.as_ref().map(Output::name)
+            "Placed Emacs frame {id} on {} as {placement:?}",
+            output.name()
         );
     }
 

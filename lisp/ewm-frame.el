@@ -132,21 +132,22 @@ EWM can host either a pgtk or a native-Wayland (+ Skia) Emacs build.")
                 :key (lambda (f) (frame-parameter f 'ewm-surface-id)))))
 
 (defun ewm--frame-output (frame)
-  "FRAME's output as the compositor places it, or its intended one before it maps."
-  (if-let* ((id (frame-parameter frame 'ewm-surface-id)))
-      (ewm-get-frame-output id)
-    (frame-parameter frame 'ewm-output)))
+  "FRAME's output as the compositor places it, or its intended one until then."
+  (or (when-let* ((id (frame-parameter frame 'ewm-surface-id)))
+        (ewm-get-frame-output id))
+      (frame-parameter frame 'ewm-output)))
 
 (defun ewm--strip-frames (output)
   "Return OUTPUT's strip frames left to right, as the compositor places them."
   (seq-keep #'ewm--frame-by-surface-id (ewm-get-strip-frame-ids output)))
 
 (defun ewm--frame-in-flight-on-p (output)
-  "Non-nil when a tiled frame bound for OUTPUT has not mapped yet."
+  "Non-nil when a tiled frame bound for OUTPUT is not placed yet."
   (seq-some (lambda (frame)
-              (and (equal (frame-parameter frame 'ewm-output) output)
-                   (not (frame-parameter frame 'ewm-surface-id))
-                   (not (frame-parameter frame 'ewm-floating))))
+              (let ((id (frame-parameter frame 'ewm-surface-id)))
+                (and (equal (frame-parameter frame 'ewm-output) output)
+                     (not (frame-parameter frame 'ewm-floating))
+                     (not (and id (ewm-get-frame-output id))))))
             (frame-list)))
 
 (defun ewm-output-active-frame (output)
@@ -174,64 +175,107 @@ Emacs's `selected-frame' can drift via `display-buffer'/`select-window'."
              (ewm-get-frame-origin id)))
       (ewm--get-output-origin (ewm--frame-output frame))))
 
-(defvar ewm--frame-seq 0
-  "Monotonic counter advanced for each EWM-managed frame creation.
-The compositor echoes it in the `new' event of the frame's surface.")
+(defun ewm--frame-position (frame)
+  "Origin of FRAME on its output, (x . y) logical pixels."
+  (pcase-let ((`(,fx . ,fy) (ewm--get-frame-origin frame))
+              (`(,ox . ,oy) (ewm--get-output-origin (ewm--frame-output frame))))
+    (cons (- fx ox) (- fy oy))))
 
-(defun ewm-prepare-frame (output seq &optional after)
-  "Tell the compositor frame SEQ goes on OUTPUT, right of frame id AFTER."
-  (ewm-prepare-frame-module output seq after))
+(defvar ewm--frames-in-flight nil
+  "Frames whose surfaces are due, in the order their toplevels were made.
+pwayl makes the toplevel with the frame, pgtk at its first show, and both make
+a new one when a hidden frame is shown again.")
 
-(defun ewm-prepare-floating-frame (output seq &optional x y)
-  "Tell the compositor frame SEQ floats on OUTPUT at top-left X/Y."
-  (ewm-prepare-floating-frame-module output seq x y))
+(defvar ewm--frames-parked nil
+  "Frames that get a toplevel at their next show, queued once seen shown.")
 
-(defun ewm--make-output-frame (output-name seq extra-params)
-  "Make managed frame SEQ on OUTPUT-NAME carrying EXTRA-PARAMS.
+(defun ewm--make-output-frame (output-name extra-params)
+  "Make a managed frame on OUTPUT-NAME carrying EXTRA-PARAMS.
 EXTRA-PARAMS win over the defaults, so a caller can override `visibility'."
-  (when-let* ((home (alist-get 'ewm-home extra-params)))
-    (ewm-prepare-frame-home-module seq (car home) (cdr home)))
   (make-frame `(,@extra-params
                 (visibility . t)
                 (window-system . ,(ewm--window-system))
-                (ewm-output . ,output-name)
-                (ewm-frame-seq . ,seq))))
+                (ewm-output . ,output-name))))
 
 (defun ewm--create-frame-for-output (output-name &optional after-frame extra-params)
   "Create a frame on OUTPUT-NAME inserted after AFTER-FRAME (or appended)."
-  (let ((seq (cl-incf ewm--frame-seq)))
-    (ewm-prepare-frame output-name seq
-                       (and after-frame (frame-parameter after-frame 'ewm-surface-id)))
-    (ewm--make-output-frame output-name seq extra-params)))
+  (ewm--make-output-frame
+   output-name
+   `(,@(and after-frame `((ewm-after . ,(frame-parameter after-frame 'ewm-surface-id))))
+     ,@extra-params)))
 
 (defun ewm--create-floating-frame-for-output (output-name &optional extra-params pos)
   "Create a floating frame on OUTPUT-NAME, optionally at POS (X . Y) pixels."
-  (let ((seq (cl-incf ewm--frame-seq)))
-    (ewm-prepare-floating-frame output-name seq (car pos) (cdr pos))
-    (let ((frame (ewm--make-output-frame
-                  output-name seq
-                  `((ewm-floating . t) ,@extra-params (width . 80) (height . 24)))))
-      ;; `quit-window' would iconify otherwise, which EWM frames cannot do.
-      (set-frame-parameter frame 'auto-hide-function (lambda () (delete-frame frame)))
-      frame)))
+  (ewm--make-output-frame
+   output-name
+   `((ewm-floating . t) (ewm-position . ,pos) ,@extra-params (width . 80) (height . 24))))
 
-(defun ewm--stray-frame-p (frame)
-  "Non-nil when FRAME is a managed toplevel EWM did not make."
-  (and (ewm--output-managed-p frame)
-       (null (frame-parent frame))
-       (null (frame-parameter frame 'ewm-output))))
+(defun ewm--frame-before (frame output)
+  "Id of the strip frame of OUTPUT that FRAME goes left of, nil for the end.
+A frame made after another follows it, a frame with a saved `ewm-strip-position'
+goes before the first strip frame with a later position."
+  (let ((ids (ewm-get-strip-frame-ids output)))
+    (if-let* ((after (frame-parameter frame 'ewm-after)))
+        (cadr (member after ids))
+      (when-let* ((position (frame-parameter frame 'ewm-strip-position)))
+        (seq-find (lambda (id)
+                    (when-let* ((other (ewm--frame-by-surface-id id))
+                                (theirs (frame-parameter other 'ewm-strip-position)))
+                      (> theirs position)))
+                  ids)))))
+
+(defun ewm--place-frame (frame)
+  "Place FRAME as its parameters say.
+A frame made by plain `make-frame' goes to the end of the focused strip."
+  (let* ((id (frame-parameter frame 'ewm-surface-id))
+         (output (or (frame-parameter frame 'ewm-output)
+                     (ewm--frame-output (ewm--focused-frame))
+                     (car (ewm-get-active-outputs))))
+         (home (frame-parameter frame 'ewm-home))
+         (pos (frame-parameter frame 'ewm-position))
+         (size (frame-parameter frame 'ewm-size))
+         (floating (frame-parameter frame 'ewm-floating))
+         (before (and (not floating) (ewm--frame-before frame output))))
+    (set-frame-parameter frame 'ewm-output output)
+    ;; Placed once, the made-after intent is spent, a reshow goes by its slot.
+    (set-frame-parameter frame 'ewm-after nil)
+    ;; `quit-window' would iconify a float otherwise, which EWM frames cannot do.
+    (when floating
+      (set-frame-parameter frame 'auto-hide-function (lambda () (delete-frame frame))))
+    (ewm-place-frame-module
+     id
+     `(,@(and output `(:output ,output))
+       ,@(if floating
+             `(:floating t :x ,(car pos) :y ,(cdr pos) :width ,(car size) :height ,(cdr size))
+           `(:before ,before))
+       :home ,(and home `(:identity ,(car home) :connector ,(cdr home)))))
+    (when-let* ((name (frame-parameter frame 'ewm-workspace-name)))
+      (ewm-workspace-rename-module name id))))
+
+(defun ewm--park-frame (frame)
+  "Hold FRAME until its next show makes it a toplevel."
+  (setq ewm--frames-parked (nconc ewm--frames-parked (list frame))))
+
+(defun ewm--queue-shown-frames ()
+  "Queue the parked frames shown since, forget those that died unshown."
+  (dolist (frame ewm--frames-parked)
+    (when (or (not (frame-live-p frame)) (frame-visible-p frame))
+      (setq ewm--frames-parked (delq frame ewm--frames-parked))
+      (when (frame-live-p frame)
+        (setq ewm--frames-in-flight (nconc ewm--frames-in-flight (list frame)))))))
 
 (defun ewm--on-make-frame (frame)
-  "Hook for frame creation. Drop frames EWM did not make."
-  (when (ewm--stray-frame-p frame)
-    (ewm--log "on-make-frame: frame=%s action=schedule-delete" frame)
-    (run-at-time 0 nil (lambda () (ignore-errors (delete-frame frame))))))
+  "Queue a toplevel FRAME for its surface, pgtk makes none while it is hidden."
+  (when (and (ewm--output-managed-p frame) (null (frame-parent frame)))
+    (ewm--queue-shown-frames)
+    (if (and (ewm--gtk-backed-p) (not (frame-visible-p frame)))
+        (ewm--park-frame frame)
+      (setq ewm--frames-in-flight (nconc ewm--frames-in-flight (list frame))))))
 
-(defun ewm--delete-stray-frames ()
-  "Delete managed frames made before `ewm--on-make-frame' was installed."
-  (dolist (frame (frame-list))
-    (when (ewm--stray-frame-p frame)
-      (ignore-errors (delete-frame frame)))))
+(defun ewm--next-frame-in-flight ()
+  "Take the frame whose surface is due, nil when none waits. A dead one had one."
+  (ewm--queue-shown-frames)
+  (pop ewm--frames-in-flight))
 
 (defun ewm--prevent-frame-deletion (orig-fun &optional frame force)
   "Around `delete-frame': keep an output's last frame unless FORCE."
@@ -260,18 +304,23 @@ EXTRA-PARAMS win over the defaults, so a caller can override `visibility'."
       (ewm-output-active-frame (ewm--frame-output floating-frame))))
 
 (defun ewm--fit-floating-frame (frame width height)
-  "Size FRAME so its client window body is WIDTH×HEIGHT logical pixels."
+  "Size FRAME so its client window body is WIDTH×HEIGHT logical pixels.
+The surface size that asks for is kept in `ewm-size' for the placement, the
+frame itself may still hold the maximized size of its first configure."
   (let ((rect (ewm--window-body-pixel-rect (frame-selected-window frame)))
         (area (frame-monitor-workarea frame))
         (scale (ewm--frame-scale frame)))
     (cl-flet ((axis (want limit text body)
                 (round (+ (min (* want scale) limit) (- text body)))))
-      ;; Emacs rounds the frame to whole lines and columns otherwise.
-      (let ((frame-resize-pixelwise t))
-        (set-frame-size frame
-                        (axis width (nth 2 area) (frame-text-width frame) (nth 2 rect))
-                        (axis height (nth 3 area) (frame-text-height frame) (nth 3 rect))
-                        t)))))
+      (let ((w (axis width (nth 2 area) (frame-text-width frame) (nth 2 rect)))
+            (h (axis height (nth 3 area) (frame-text-height frame) (nth 3 rect)))
+            ;; Emacs rounds the frame to whole lines and columns otherwise.
+            (frame-resize-pixelwise t))
+        (set-frame-size frame w h t)
+        (set-frame-parameter
+         frame 'ewm-size
+         (cons (/ (+ w (- (frame-pixel-width frame) (frame-text-width frame))) scale)
+               (/ (+ h (- (frame-pixel-height frame) (frame-text-height frame))) scale)))))))
 
 (defun ewm--make-floating-frame (alist)
   "Make a floating frame from ALIST and `pop-up-frame-alist', or nil."
@@ -332,11 +381,10 @@ own placements add `ewm-output' and `ewm-position' (top-left X . Y)."
       (user-error "Cannot detach minibuffer window"))
     (select-frame frame)
     ;; Float positions are output-relative.
-    (pcase-let ((`(,fx . ,fy) (ewm--get-frame-origin frame))
-                (`(,ox . ,oy) (ewm--get-output-origin (ewm--frame-output frame))))
+    (pcase-let ((`(,fx . ,fy) (ewm--frame-position frame)))
       (ewm--float-buffer (window-buffer source-window) (cons fw fh)
-                         (cons (+ (nth 0 rect) (- fx ox) (/ (- w fw) 2))
-                               (+ (nth 1 rect) (- fy oy) (/ (- h fh) 2)))))
+                         (cons (+ (nth 0 rect) fx (/ (- w fw) 2))
+                               (+ (nth 1 rect) fy (/ (- h fh) 2)))))
     ;; Reclaim the tile once the buffer has left for a float.
     (when (and (window-live-p source-window)
                (frame-parameter (window-frame (selected-window)) 'ewm-floating))

@@ -23,10 +23,10 @@
 (declare-function ewm--window-body-logical-rect "ewm-layout" (window &optional scale))
 (declare-function ewm--frame-scale "ewm-layout" (frame &optional monitors))
 (declare-function ewm--float-buffer "ewm-frame" (buffer size pos))
-(declare-function ewm--get-frame-origin "ewm-frame" (frame))
-(declare-function ewm--get-output-origin "ewm-frame" (output-name))
+(declare-function ewm--frame-position "ewm-frame" (frame))
 (declare-function ewm-configure-output "ewm-frame" (name &rest args))
 (declare-function ewm-get-active-outputs "ewm-core")
+(declare-function ewm-get-strip-frame-ids "ewm-core" (name))
 (declare-function ewm-launch-xdg-command "ewm-commands" (name))
 (declare-function ewm-list-xdg-apps "ewm-core")
 (defvar ewm--output-info)
@@ -351,14 +351,16 @@ It echoes nothing, hides its cursor and paints four cells white near its top rig
 (defun ewm-live-tests-float ()
   "A float opens with its body at the place and size asked for."
   (let* ((output (ewm-live-tests--focus))
-         (origin (ewm--get-output-origin output))
          (buffer (ewm-live-tests--red-buffer "*ewm-live-tests-float*"))
          (window (progn (ewm--float-buffer buffer '(400 . 300) '(100 . 80))
                         (get-buffer-window buffer t)))
          (frame (window-frame window))
-         (at (ewm-live-tests--wait
-              (lambda () (and (frame-parameter frame 'ewm-surface-id) (ewm--get-frame-origin frame)))))
-         (pos (and at (cons (- (car at) (car origin)) (- (cdr at) (cdr origin)))))
+         (pos (progn
+                ;; The frame reports its place and size before the placement lands.
+                (ewm-live-tests--wait
+                 (lambda () (and (equal (ewm--frame-position frame) '(100 . 80))
+                                 (equal (cddr (ewm--window-body-logical-rect window)) '(400 300)))))
+                (ewm--frame-position frame)))
          (body (ewm--window-body-logical-rect window))
          (rect (ewm-live-tests--body-at output window pos))
          (red (ewm-live-tests--wait-pixels output `((,rect ewm-live-tests--red-p > 0.99)))))
@@ -366,6 +368,30 @@ It echoes nothing, hides its cursor and paints four cells white near its top rig
     (delete-frame frame)
     (ewm-live-tests--check "float" (and (equal pos '(100 . 80)) (equal (cddr body) '(400 300)) (car red))
                               (format "at %s, body %sx%s, %.2f red" pos (nth 2 body) (nth 3 body) (cadr red)))))
+
+(defun ewm-live-tests-frame-pairing ()
+  "Frames pair with their surfaces in order, deleted, hidden and reshown ones too."
+  (let* ((output (ewm-live-tests--focus))
+         (gone (make-frame))
+         (hidden (progn (delete-frame gone t) (make-frame '((visibility . nil)))))
+         (a (make-frame))
+         (b (make-frame))
+         (id (lambda (frame) (frame-parameter frame 'ewm-surface-id)))
+         (paired (lambda ()
+                   (and (seq-every-p id (list hidden a b))
+                        (member (funcall id b) (member (funcall id a) (ewm-get-strip-frame-ids output))))))
+         (first (progn (make-frame-visible hidden) (ewm-live-tests--wait paired) (funcall id a)))
+         ;; A hidden frame loses its toplevel and pairs again once shown.
+         (reshown (progn (make-frame-invisible a)
+                         (ewm-live-tests--wait (lambda () (null (funcall id a))))
+                         (make-frame-visible a)
+                         (ewm-live-tests--wait (lambda () (funcall id a)))))
+         (kept (and (frame-live-p hidden) (frame-live-p b) (funcall id hidden) (funcall id b)))
+         (detail (format "a %s then %s, hidden %s, b %s" first reshown
+                         (and (frame-live-p hidden) (funcall id hidden))
+                         (and (frame-live-p b) (funcall id b)))))
+    (dolist (frame (list hidden a b)) (when (frame-live-p frame) (delete-frame frame t)))
+    (ewm-live-tests--check "frame pairing" (and first reshown kept (not (eql first reshown))) detail)))
 
 (defun ewm-live-tests-fullscreen ()
   "An app goes fullscreen over its output and back."

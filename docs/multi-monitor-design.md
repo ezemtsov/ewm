@@ -61,7 +61,7 @@ Events are queued as Lisp data and drained by `ewm-drain-events` on the wakeup:
 |-------|--------|---------|
 | `output_detected` | name, make, model, width_mm, height_mm, modes | Monitor connected |
 | `output_disconnected` | name | Monitor removed |
-| `new` | id, app, seq, pid | Surface created. `seq` names the Emacs frame it belongs to |
+| `new` | id, app, pid | Surface created. A `pid` of this Emacs marks a frame surface |
 
 ### Emacs -> Compositor Functions
 
@@ -69,7 +69,7 @@ Emacs calls module functions directly (no serialization needed):
 
 ```elisp
 (ewm-configure-output name &key x y width height refresh enabled)
-(ewm-prepare-frame output seq &optional after)  ; Frame SEQ goes on output
+(ewm-place-frame-module id placement)  ; Frame of surface ID goes where PLACEMENT says
 (ewm-layout frames)            ; Declare every frame's contents
 ```
 
@@ -78,9 +78,9 @@ Emacs calls module functions directly (no serialization needed):
 ```
 1. Compositor pushes output_detected, then outputs_complete, via pipe fd
 2. Emacs consults ewm-output-config and finds the output has no frame
-3. Emacs calls (ewm-prepare-frame "HDMI-A-1" seq) to register pending frame
-4. Emacs calls (make-frame) which creates a Wayland surface
-5. Compositor places the new surface on the output and echoes seq in its new event
+3. Emacs calls (make-frame) with ewm-output "HDMI-A-1", which creates a Wayland surface
+4. Compositor announces the surface in a new event, unplaced and so unseen
+5. Emacs pairs it with the oldest frame awaiting a surface and places it from the frame parameters
 6. Frame is visible on the correct output immediately
 ```
 
@@ -89,7 +89,7 @@ Emacs calls module functions directly (no serialization needed):
 ```
 1. External client (Firefox, terminal, etc.) creates surface
 2. Compositor places it on the active output (focused frame's, else under the cursor)
-3. Compositor pushes new event with { id, app, pid } (`seq` is sent for Emacs frames only)
+3. Compositor pushes new event with { id, app, pid }
 4. Emacs receives via pipe fd, creates buffer for surface
 5. Emacs includes the surface in its next layout declaration
 6. Compositor positions and displays the surface
@@ -107,8 +107,8 @@ Emacs calls module functions directly (no serialization needed):
 7. Emacs receives outputs_complete, for each output without a frame:
    a. Consults ewm-output-config for positioning/scale
    b. Calls ewm-configure-output to set properties
-   c. Calls ewm-prepare-frame to register pending frame
-   d. Calls (make-frame) to create the actual frame
+   c. Calls (make-frame) with ewm-output naming the output
+   d. Places the frame with ewm-place-frame-module once its surface arrives
 8. All outputs now have frames, system is ready
 ```
 
@@ -158,7 +158,7 @@ standard `OutputDetected` -> frame creation path runs.
 |---------|----------|
 | Broken Emacs config | Frames created with default positioning |
 | Module fails to load | Error message, compositor not started |
-| Frame prepared for an unknown output | Compositor places it on the active output |
+| Frame placed on an unknown output | Compositor places it on the active output |
 | Compositor thread panics | Emacs continues running (catch_unwind) |
 | No outputs connected | Emacs daemon running, ready for hotplug |
 

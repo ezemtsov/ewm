@@ -500,6 +500,12 @@ impl Strip {
             .map_or(self.frames.len(), |idx| idx + 1)
     }
 
+    /// The slot of frame `id`, else the end.
+    pub fn slot_before(&self, id: Option<u64>) -> usize {
+        id.and_then(|id| self.index_of(id))
+            .unwrap_or(self.frames.len())
+    }
+
     pub fn push_frame(&mut self, frame: Frame) {
         self.frames.push(frame);
     }

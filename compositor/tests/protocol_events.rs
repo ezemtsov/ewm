@@ -72,13 +72,11 @@ fn every_event() -> Vec<Event> {
         Event::New {
             id: 7,
             app: "Alacritty".into(),
-            seq: None,
             pid: 4242,
         },
         Event::New {
             id: 1,
             app: "emacs".into(),
-            seq: Some(3),
             pid: 4000,
         },
         Event::Mapped {

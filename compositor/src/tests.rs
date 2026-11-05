@@ -5,7 +5,7 @@ use crate::idle::SEPIA_FADE_DURATION;
 use crate::layout::strip;
 use crate::testing::{
     HEAD_A, HEAD_B, PROP_HEADS, add_prop_outputs, frame_with_entry, frame_with_width, nz,
-    order_from_keys, proptest_cases, set_sorted_output_order,
+    order_from_keys, placement, proptest_cases, set_sorted_output_order,
 };
 use crate::{FocusSource, Notify};
 
@@ -287,6 +287,26 @@ fn disabling_the_only_output_keeps_its_last_filler() {
         .insert(HEAD_A.to_string(), OutputConfig::default());
     fix.apply_output_config(HEAD_A);
     assert_eq!(fix.ewm_ref().layout.frame_output(101), Some(HEAD_A));
+}
+
+/// Lisp places a frame before any output maps, the first output to map adopts it.
+#[test]
+fn placing_a_frame_before_any_output_parks_it() {
+    let mut fix = testing::Fixture::new().unwrap();
+    fix.ewm().set_emacs_pid(std::process::id());
+    let mut client = fix.new_client().unwrap();
+    fix.roundtrip(&mut client);
+    let (_toplevel, id) = fix.open_toplevel_with_id(&mut client, "frame", Size::from((400, 300)));
+    fix.enable_event_capture();
+    fix.place_frame(id, placement(HEAD_A));
+    assert!(fix.ewm_ref().layout.is_homeless(id));
+    assert!(
+        fix.drain_events()
+            .iter()
+            .any(|event| matches!(event, Event::FrameHidden { id: hidden } if *hidden == id))
+    );
+    fix.add_output(HEAD_A, 1600, 900);
+    assert_eq!(fix.ewm_ref().layout.frame_output(id), Some(HEAD_A));
 }
 
 #[test]

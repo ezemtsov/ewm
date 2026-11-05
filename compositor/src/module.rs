@@ -16,7 +16,6 @@
 //!    one-shot channel until the compositor processes the command on its next tick.
 //!
 //! 3. **Synchronous state for races**: Some state must be synchronous to avoid race conditions:
-//!    - `PENDING_FRAME_OUTPUTS`: Must be read atomically with surface creation
 //!    - `INTERCEPTED_KEYS`: Must be available before first key event
 //!
 //! 4. **Focus debugging**: `FOCUS_HISTORY` records the last 20 focus changes with source tracking.
@@ -118,67 +117,43 @@ pub fn set_text_input_surrounding(snapshot: Option<SurroundingSnapshot>) {
     *text_input_surrounding().lock().unwrap() = snapshot;
 }
 
-/// Pending frame-to-output assignments (synchronous to avoid race with surface creation)
-#[derive(Debug, Clone)]
-pub struct PendingFrame {
+/// Where a new Emacs frame goes, as Lisp reads it off the frame parameters.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct FramePlacement {
     pub output: String,
-    pub placement: Placement,
-    /// Emacs's creation counter, echoed in `Event::New` to pair the surface with its frame.
-    pub seq: u64,
+    /// The strip frame it goes left of, else the end.
+    pub before: Option<u64>,
+    pub floating: bool,
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    /// The size a float asked for, logical pixels.
+    pub width: Option<f64>,
+    pub height: Option<f64>,
     /// Where the frame belongs when that is not the output it lands on.
     pub home: Option<Home>,
 }
 
-static PENDING_FRAMES: OnceLock<Mutex<VecDeque<PendingFrame>>> = OnceLock::new();
-
-fn pending_frames() -> &'static Mutex<VecDeque<PendingFrame>> {
-    PENDING_FRAMES.get_or_init(|| Mutex::new(VecDeque::new()))
-}
-
-/// Queue FRAME for the next Emacs toplevel.
-pub(crate) fn prepare_frame(frame: PendingFrame) {
-    pending_frames().lock().unwrap().push_back(frame);
-}
-
-/// Home the queued frame SEQ at `home`.
-pub(crate) fn home_pending_frame(seq: u64, home: Home) {
-    if let Some(pending) = pending_frames()
-        .lock()
-        .unwrap()
-        .iter_mut()
-        .find(|pending| pending.seq == seq)
-    {
-        pending.home = Some(home);
-    }
-}
-
-/// Take the next pending frame output (called by compositor when creating surfaces).
-pub fn take_pending_frame() -> Option<PendingFrame> {
-    pending_frames().lock().unwrap().pop_front()
-}
-
-/// Get pending frame outputs for state dump.
-pub fn peek_pending_frame_outputs() -> Vec<String> {
-    pending_frames()
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|pending| {
-            if matches!(pending.placement, Placement::Floating { .. }) {
-                format!("{}:floating", pending.output)
-            } else {
-                pending.output.clone()
+impl FramePlacement {
+    pub(crate) fn placement(&self) -> Placement {
+        if self.floating {
+            Placement::Floating {
+                pos: self.x.zip(self.y).map(smithay::utils::Point::from),
+                size: self.width.zip(self.height).map(smithay::utils::Size::from),
             }
-        })
-        .collect()
+        } else {
+            Placement::Tiled {
+                before: self.before,
+            }
+        }
+    }
 }
 
 /// Frame closes initiated for the selected Emacs frame.
 ///
-/// This is synchronous for the same reason as `PENDING_FRAME_OUTPUTS`: a pgtk
-/// delete can relay Emacs's MRU focus before the Wayland destroy reaches us,
-/// so the destroy handler needs the close intent without waiting for the
-/// command queue.
+/// This is synchronous because a pgtk delete can relay Emacs's MRU focus before
+/// the Wayland destroy reaches us, so the destroy handler needs the close intent
+/// without waiting for the command queue.
 static PENDING_ACTIVE_FRAME_CLOSES: OnceLock<Mutex<BTreeSet<u64>>> = OnceLock::new();
 
 fn pending_active_frame_closes() -> &'static Mutex<BTreeSet<u64>> {
@@ -486,6 +461,11 @@ pub enum ModuleCommand {
     Layout {
         frames: Vec<Frame>,
     },
+    /// Put the Emacs frame whose surface is `id` where its parameters say.
+    PlaceFrame {
+        id: u64,
+        placement: FramePlacement,
+    },
     /// Move an Emacs frame `delta` slots along its strip.
     MoveFrame {
         id: u64,
@@ -655,6 +635,10 @@ impl State {
                 let dropped = strip::dropped_frame_ids(self.ewm.layout.placed_frames(), &frames);
                 self.store_close_snapshots(&dropped);
                 self.apply_layout(frames);
+                self.refresh_pointer_after_layout();
+            }
+            ModuleCommand::PlaceFrame { id, placement } => {
+                self.ewm.place_emacs_frame(id, &placement);
                 self.refresh_pointer_after_layout();
             }
             ModuleCommand::MoveFrame { id, delta } => {
@@ -1343,49 +1327,13 @@ fn warp_pointer_module(x: Lisp<f64>, y: Lisp<f64>) -> Result<()> {
     Ok(())
 }
 
-/// Prepare the next frame as Emacs frame SEQ on OUTPUT, right of strip frame AFTER
-/// when given (synchronous to avoid a race with surface creation).
+/// Place the Emacs frame whose surface is ID as PLACEMENT, a `FramePlacement` plist, says.
 #[defun]
-fn prepare_frame_module(output: String, seq: Lisp<u64>, after: Lisp<Option<u64>>) -> Result<()> {
-    tracing::info!("Prepared frame for output {}", output);
-    prepare_frame(PendingFrame {
-        output,
-        placement: Placement::Tiled { after: after.0 },
-        seq: seq.0,
-        home: None,
+fn place_frame_module(id: Lisp<u64>, placement: Lisp<FramePlacement>) -> Result<()> {
+    push_command(ModuleCommand::PlaceFrame {
+        id: id.0,
+        placement: placement.0,
     });
-    Ok(())
-}
-
-/// Prepare the next frame as Emacs frame SEQ floating on OUTPUT, optionally at top-left X/Y.
-#[defun]
-fn prepare_floating_frame_module(
-    output: String,
-    seq: Lisp<u64>,
-    x: Lisp<Option<f64>>,
-    y: Lisp<Option<f64>>,
-) -> Result<()> {
-    let pos = x.0.zip(y.0).map(smithay::utils::Point::from);
-    tracing::info!("Prepared floating frame for output {}", output);
-    prepare_frame(PendingFrame {
-        output,
-        placement: Placement::Floating { pos },
-        seq: seq.0,
-        home: None,
-    });
-    Ok(())
-}
-
-/// Home the queued frame SEQ on IDENTITY and CONNECTOR, a display that need not be connected.
-#[defun]
-fn prepare_frame_home_module(seq: Lisp<u64>, identity: String, connector: String) -> Result<()> {
-    home_pending_frame(
-        seq.0,
-        Home {
-            identity,
-            connector,
-        },
-    );
     Ok(())
 }
 

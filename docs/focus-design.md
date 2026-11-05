@@ -65,7 +65,7 @@ frame, the views inside it with their geometry.
 
 The compositor decides placement.  Which output a frame is on, its slot in
 the strip and where a float sits are compositor state.  Lisp sends intents
-(`ewm-prepare-frame`, `ewm-move-frame-module`) and reads placement back through
+(`ewm-place-frame-module`, `ewm-move-frame-module`) and reads placement back through
 snapshot queries (`ewm-get-strip-frame-ids`, `ewm-get-active-frame-id`,
 `ewm-get-frame-output`).
 
@@ -103,8 +103,8 @@ left-to-right sequence of Emacs frames.  Only one frame is "on-screen" at
 a time per output, and a keybind slides between them.  Frames in the
 strip are workspaces, more or less.
 
-The compositor owns the strip.  Frames enter it at `new_toplevel` where
-lisp asked, move along it with `ewm-move-frame-module`, and move with their
+The compositor owns the strip.  Frames enter it where Lisp places them from
+their parameters, move along it with `ewm-move-frame-module`, and move with their
 output on hotplug.  Inside a frame, Emacs's own window splits position
 the views, and that is the description lisp sends.  The compositor
 renders each view at the screen rect of the Emacs window that displays it.
@@ -265,7 +265,7 @@ After specific operations:
 11. **A layout changes no frame's placement.**  `apply_layout(frames)`
     leaves every strip's frame set and order as they were. It replaces
     the contents of the frames it names and empties the frames it
-    leaves out. Frames enter a strip at `new_toplevel` and move only
+    leaves out. Frames enter a strip when Lisp places them and move only
     through compositor operations.
 12. **Destruction is authoritative.**  After
     `handle_toplevel_destroyed_by_id`, the frame's surface_id is gone from
@@ -363,9 +363,10 @@ brittle.
 
 A few small decisions buy a lot of robustness:
 
-**Frames enter the layout once, at `new_toplevel`.**  When the Wayland
-surface is born, the compositor places the frame where `ewm-prepare-frame`
-said, before lisp's first layout arrives.  This means "is this an Emacs
+**Frames enter the layout once, at `ewm-place-frame-module`.**  When the
+Wayland surface is born, lisp pairs it with the frame it made and places it
+from the frame parameters, before its first layout arrives.  Until then the
+frame is in no strip and so unseen.  This means "is this a placed Emacs
 frame?" is answerable from the layout alone, without a separate registry.
 No dual state, no synchronization rule between two data structures.
 

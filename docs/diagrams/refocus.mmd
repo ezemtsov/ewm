@@ -72,7 +72,7 @@ flowchart TB
     target --> hooks
 
     hclose --> killbuf["kill-buffer"]:::muted
-    hout --> parity["apply-output-config +<br/>frames for empty outputs +<br/>delete stray frames"]:::muted
+    hout --> parity["apply-output-config +<br/>frames for empty outputs"]:::muted
 
     hfs --> set_param["set ewm-fullscreen<br/>per-frame"]
     set_param --> refresh_fs["ewm-layout--refresh"]

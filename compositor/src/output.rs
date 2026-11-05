@@ -610,21 +610,7 @@ impl Ewm {
         let working_area = self.get_working_area(output);
 
         for id in self.layout.strip_frame_ids(output) {
-            let Some(window) = self.window(id) else {
-                continue;
-            };
-            if let Some(toplevel) = window.toplevel() {
-                let new_size = Some(working_area.size);
-                let changed = toplevel.with_pending_state(|state| {
-                    let changed = state.size != new_size;
-                    state.size = new_size;
-                    state.bounds = new_size;
-                    changed
-                });
-                if changed {
-                    toplevel.send_configure();
-                }
-            }
+            self.configure_frame(id);
         }
 
         if let Some(space) = self.layout.floating_mut(output) {

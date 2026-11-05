@@ -140,6 +140,9 @@ let
               check("(ewm-live-tests-child-frame)")
               check("(ewm-live-tests-float)")
 
+          with subtest("frames pair with their surfaces in order"):
+              check("(ewm-live-tests-frame-pairing)")
+
           with subtest("the focused frame moves to the other output and back"):
               check("(ewm-live-tests-move)")
 

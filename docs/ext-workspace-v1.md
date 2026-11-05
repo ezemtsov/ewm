@@ -13,7 +13,7 @@ the compositor keeps clients consistent with its strips.
 
 | Side  | Owns                                | Reads from        |
 |-------|-------------------------------------|-------------------|
-| rust  | `Layout`: one `Monitor` per mapped output, each with its `Strip` | itself. Lisp asks via `ewm-prepare-frame` and `ewm-move-frame-module` |
+| rust  | `Layout`: one `Monitor` per mapped output, each with its `Strip` | itself. Lisp asks via `ewm-place-frame-module` and `ewm-move-frame-module` |
 | lisp  | frame contents (`ewm-layout`)                    | rust via `ewm-get-strip-frame-ids`, `ewm-get-active-frame-id` and `ewm-get-frame-output` |
 | protocol mirror | per-client ext-workspace handles        | rust strips |
 
@@ -70,7 +70,7 @@ When more than one party could pick, exactly one of them does:
 | Decision                         | Owner   | Mechanism                          |
 |----------------------------------|---------|------------------------------------|
 | Frame creation                   | lisp    | `ewm-frame-new` → `make-frame`     |
-| Frame placement                  | rust    | `ewm-prepare-frame` names the output and the frame to insert right of. `new_toplevel` inserts |
+| Frame placement                  | rust    | `ewm-place-frame-module` names the output and the frame to insert left of, once the surface has arrived. `place_emacs_frame` inserts |
 | Strip reorder                    | rust    | `ewm-frame-move-left/right` → `ewm-move-frame-module` → `Layout::move_frame` |
 | Active frame on reorder          | rust    | the active slot follows its frame  |
 | Active frame on close (I9, I10)  | rust    | lisp passes an explicit frame to `delete-frame`; Rust applies active-close or inactive-close strip rules when that frame's toplevel is destroyed |

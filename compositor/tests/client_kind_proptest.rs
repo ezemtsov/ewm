@@ -1,12 +1,9 @@
 //! Property tests for what a new toplevel's client decides: only listener
-//! clients with our pid are Emacs frames, portal windows always float, and
-//! pending Emacs frames go to Emacs toplevels alone, in order.
-//! Own binary: the pending-frame queue is a process-wide static.
+//! clients with our pid are Emacs frames, portal windows always float, and an
+//! Emacs frame stays out of the layout until Lisp places it, exactly once.
 
 use ewm_core::event::Event;
-use ewm_core::testing::{
-    Fixture, TestClient, Toplevel, clear_pending_frames, prepare_frame, proptest_cases,
-};
+use ewm_core::testing::{Fixture, TestClient, Toplevel, placement, proptest_cases};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use smithay::utils::{Logical, Size};
@@ -34,8 +31,8 @@ enum Hints {
 struct Arrival {
     kind: Kind,
     hints: Hints,
-    /// Queue a tiled Emacs frame for `OUTPUTS[i]` before the toplevel arrives.
-    pending: Option<usize>,
+    /// Ask for the toplevel as a frame on `OUTPUTS[i]` once it has arrived.
+    place: Option<usize>,
 }
 
 fn arrival() -> impl Strategy<Value = Arrival> {
@@ -44,11 +41,7 @@ fn arrival() -> impl Strategy<Value = Arrival> {
         prop_oneof![Just(Hints::Plain), Just(Hints::Parent), Just(Hints::Fixed)],
         prop::option::of(0..OUTPUTS.len()),
     )
-        .prop_map(|(kind, hints, pending)| Arrival {
-            kind,
-            hints,
-            pending,
-        })
+        .prop_map(|(kind, hints, place)| Arrival { kind, hints, place })
 }
 
 fn size() -> Size<i32, Logical> {
@@ -59,14 +52,10 @@ struct Harness {
     fix: Fixture,
     listener: TestClient,
     portal: TestClient,
-    /// Model of the pending-frame queue, front first.
-    pending: Vec<(&'static str, u64)>,
-    next_seq: u64,
 }
 
 impl Harness {
     fn new() -> Self {
-        clear_pending_frames();
         let mut fix = Fixture::new().unwrap();
         fix.enable_event_capture();
         for output in OUTPUTS {
@@ -80,17 +69,10 @@ impl Harness {
             fix,
             listener,
             portal,
-            pending: Vec::new(),
-            next_seq: 0,
         }
     }
 
     fn arrive(&mut self, arrival: Arrival) -> Result<(), TestCaseError> {
-        if let Some(i) = arrival.pending {
-            self.next_seq += 1;
-            prepare_frame(OUTPUTS[i], self.next_seq, None);
-            self.pending.push((OUTPUTS[i], self.next_seq));
-        }
         // A parent must come from the same client, so it is an arrival of its own.
         let parent = match arrival.hints {
             Hints::Parent => {
@@ -102,7 +84,10 @@ impl Harness {
             }
             _ => None,
         };
-        self.open(arrival.kind, arrival.hints, parent.as_ref())?;
+        let (_, sid) = self.open(arrival.kind, arrival.hints, parent.as_ref())?;
+        if let Some(i) = arrival.place {
+            self.place(sid, arrival.kind, i)?;
+        }
         Ok(())
     }
 
@@ -110,8 +95,8 @@ impl Harness {
         &mut self,
         kind: Kind,
         hints: Hints,
-        parent: Option<&Toplevel>,
-    ) -> Result<Toplevel, TestCaseError> {
+        parent: Option<&(Toplevel, u64)>,
+    ) -> Result<(Toplevel, u64), TestCaseError> {
         let own = std::process::id();
         self.fix.ewm().set_emacs_pid(match kind {
             Kind::App => own + 1,
@@ -122,7 +107,7 @@ impl Harness {
             _ => &mut self.listener,
         };
         let toplevel = match (hints, parent) {
-            (Hints::Parent, Some(parent)) => {
+            (Hints::Parent, Some((parent, _))) => {
                 self.fix
                     .open_toplevel_with_parent(client, "child", parent, size())
             }
@@ -134,22 +119,19 @@ impl Harness {
             .find_surface_id(client, &toplevel.surface)
             .expect("server did not assign a surface id");
         self.check(sid, kind, hints)?;
-        Ok(toplevel)
+        Ok((toplevel, sid))
     }
 
+    /// No toplevel is a frame at arrival, an Emacs one waits for Lisp, the rest map.
     fn check(&mut self, sid: u64, kind: Kind, hints: Hints) -> Result<(), TestCaseError> {
-        let is_emacs = kind == Kind::Emacs;
-        prop_assert_eq!(self.fix.ewm_ref().layout.has_frame(sid), is_emacs);
+        prop_assert!(!self.fix.ewm_ref().layout.has_frame(sid));
         self.fix.ewm_ref().verify_invariants();
 
         let events = self.fix.drain_events();
-        let new: Vec<_> = events
+        let new = events
             .iter()
-            .filter_map(|event| match event {
-                Event::New { id, seq, .. } if *id == sid => Some(*seq),
-                _ => None,
-            })
-            .collect();
+            .filter(|event| matches!(event, Event::New { id, .. } if *id == sid))
+            .count();
         let mapped: Vec<_> = events
             .iter()
             .filter_map(|event| match event {
@@ -159,25 +141,57 @@ impl Harness {
                 _ => None,
             })
             .collect();
-        prop_assert_eq!(new.len(), 1, "exactly one New per toplevel");
+        prop_assert_eq!(new, 1, "exactly one New per toplevel");
+        prop_assert!(
+            !shown_or_hidden(&events, sid),
+            "nothing shows before placement"
+        );
 
-        if is_emacs {
-            // Emacs takes the oldest pending frame, and is placed by lisp, never via Mapped.
-            match self.pending.first().copied() {
-                Some((_, seq)) => {
-                    self.pending.remove(0);
-                    prop_assert_eq!(new[0], Some(seq));
-                }
-                None => prop_assert!(new[0].is_none(), "no pending frame, no seq"),
-            }
-            prop_assert!(mapped.is_empty());
+        if kind == Kind::Emacs {
+            prop_assert!(
+                mapped.is_empty(),
+                "an Emacs frame is placed by lisp, never via Mapped"
+            );
         } else {
-            prop_assert_eq!(&new[0], &None, "apps carry no frame seq");
             let floats = kind == Kind::Portal || hints != Hints::Plain;
             prop_assert_eq!(mapped, vec![floats]);
         }
         Ok(())
     }
+
+    /// Only an Emacs toplevel becomes a frame, where asked, and a second ask changes nothing.
+    fn place(&mut self, sid: u64, kind: Kind, i: usize) -> Result<(), TestCaseError> {
+        self.fix.place_frame(sid, placement(OUTPUTS[i]));
+        let is_emacs = kind == Kind::Emacs;
+        let placed = self.fix.ewm_ref().layout.has_frame(sid);
+        prop_assert_eq!(placed, is_emacs);
+        let events = self.fix.drain_events();
+        prop_assert_eq!(
+            shown_or_hidden(&events, sid),
+            is_emacs,
+            "placement announces the frame"
+        );
+        if is_emacs {
+            prop_assert_eq!(
+                self.fix.ewm_ref().layout.frame_output(sid),
+                Some(OUTPUTS[i])
+            );
+            self.fix.place_frame(sid, placement(OUTPUTS[1 - i]));
+            prop_assert_eq!(
+                self.fix.ewm_ref().layout.frame_output(sid),
+                Some(OUTPUTS[i])
+            );
+            prop_assert!(!shown_or_hidden(&self.fix.drain_events(), sid));
+        }
+        self.fix.ewm_ref().verify_invariants();
+        Ok(())
+    }
+}
+
+fn shown_or_hidden(events: &[Event], sid: u64) -> bool {
+    events.iter().any(
+        |event| matches!(event, Event::FrameShown { id } | Event::FrameHidden { id } if *id == sid),
+    )
 }
 
 proptest! {

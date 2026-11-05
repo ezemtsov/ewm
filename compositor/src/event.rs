@@ -66,15 +66,10 @@ pub enum Event {
     /// Compositor is ready
     #[serde(rename = "ready")]
     Ready,
-    /// New surface created. The buffer is created now and placed at `Mapped`.
+    /// New surface created. An app buffer is created now and placed at `Mapped`, an Emacs frame
+    /// (`pid` is the Emacs pid) is paired with its frame by Lisp and placed at its request.
     #[serde(rename = "new")]
-    New {
-        id: u64,
-        app: String,
-        /// Emacs frames only: the `ewm-frame-seq` the surface belongs to.
-        seq: Option<u64>,
-        pid: i32,
-    },
+    New { id: u64, app: String, pid: i32 },
     /// App surface mapped: placed once, floating (`open_floating`) or tiled in `frame_surface_id`.
     /// `activate` asks Emacs to select it: a token or its focused parent wants it and no fullscreen
     /// surface holds focus. `width`/`height` carry the client's natural size, nil when it fills the

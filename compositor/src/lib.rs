@@ -123,6 +123,7 @@ pub use idle::{CursorHideState, IdleAction, IdleTimeoutState};
 pub use input::binding::{Action, InterceptDispatch, InterceptedKey, Trigger};
 pub use layout::entry::{FocusId, LayoutEntry, LayoutEntryId, LayoutEntrySurface};
 pub use layout::{Layout, Monitor, Placement};
+pub use module::FramePlacement;
 use im::repeat::{HeldKeyOwner, InterceptRepeat, InterceptRepeatState};
 use smithay::backend::input::{InputTime, KeyState};
 use smithay::backend::renderer::element::solid::SolidColorBuffer;
@@ -2445,7 +2446,6 @@ impl Ewm {
                 })
             }).collect::<Vec<_>>(),
             "workspace_protocol": self.workspace_state.debug_state(),
-            "pending_frame_outputs": module::peek_pending_frame_outputs(),
             "pending_active_frame_closes": module::peek_pending_active_frame_closes(),
             "keyboard_capture": module::get_keyboard_capture(),
             "keyboard_capture_holders": module::keyboard_capture_holders_debug(),

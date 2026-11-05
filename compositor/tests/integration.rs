@@ -7,11 +7,12 @@ use ewm_core::layout::Home;
 use ewm_core::layout::floating::{ResizeEdge, SizeFracPoint};
 use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{
-    ClientEvent, Fixture, TestClient, WL_FIXED_TOLERANCE, clear_pending_frames, nz, prepare_frame,
-    prepare_frame_home, proptest_cases,
+    ClientEvent, Fixture, TestClient, WL_FIXED_TOLERANCE, nz, placement, proptest_cases,
 };
 use ewm_core::utils::output_size;
-use ewm_core::{Event, FocusSource, LayoutEntry, LayoutEntryId, Notify, OutputConfig};
+use ewm_core::{
+    Event, FocusSource, FramePlacement, LayoutEntry, LayoutEntryId, Notify, OutputConfig,
+};
 use proptest::prelude::*;
 use smithay::output::Output;
 use smithay::utils::{Logical, Point, Rectangle, Size, Transform};
@@ -673,11 +674,9 @@ proptest! {
         ),
     ) {
         let mut fixture = Fixture::new().unwrap();
-        clear_pending_frames();
         fixture.ewm().set_emacs_pid(std::process::id());
         let mut client = fixture.new_client().unwrap();
         fixture.roundtrip(&mut client);
-        let mut next_seq = 0u64;
         let mut connector_seq = 0u32;
         let mut mint = |i: usize, serial: &str| {
             if serial.is_empty() {
@@ -720,16 +719,26 @@ proptest! {
                     }
                 }
                 HotplugOp::Restore(i) => {
-                    // Lisp prepares the frame after the last displaced one, on the output
+                    // Lisp places the frame after the last displaced one, on the output
                     // holding it, with the home of the display it was saved on.
                     let last = *displays[i].frames.last().unwrap();
                     let holder = fixture.ewm_ref().layout.frame_output(last).map(str::to_owned);
                     if let (None, Some(holder)) = (&displays[i].connector, holder) {
-                        next_seq += 1;
-                        prepare_frame(&holder, next_seq, Some(last));
-                        prepare_frame_home(next_seq, displays[i].home.clone());
                         let size = Size::from((400, 300));
                         let id = fixture.open_toplevel_id(&mut client, "frame", size);
+                        let before = fixture
+                            .ewm_ref()
+                            .layout
+                            .strip(&fixture.output(&holder))
+                            .and_then(|strip| strip.frame_ids().skip_while(|f| *f != last).nth(1));
+                        fixture.place_frame(
+                            id,
+                            FramePlacement {
+                                before,
+                                home: Some(displays[i].home.clone()),
+                                ..placement(&holder)
+                            },
+                        );
                         displays[i].frames.push(id);
                     }
                 }

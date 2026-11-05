@@ -411,7 +411,7 @@ enum LayoutOp {
         id: u64,
         output: usize,
         floating: bool,
-        after: Option<u64>,
+        before: Option<u64>,
         filler: bool,
         home: Option<usize>,
     },
@@ -475,11 +475,11 @@ fn layout_op() -> impl Strategy<Value = LayoutOp> {
             any::<bool>(),
             prop::option::of(output.clone())
         )
-            .prop_map(|(id, output, floating, after, filler, home)| LayoutOp::AddFrame {
+            .prop_map(|(id, output, floating, before, filler, home)| LayoutOp::AddFrame {
                 id,
                 output,
                 floating,
-                after,
+                before,
                 filler,
                 home,
             }),
@@ -608,16 +608,25 @@ fn apply_layout_op(
             id,
             output,
             floating,
-            after,
+            before,
             filler,
             home,
         } => {
             if !live.contains(&id) && layout.monitor_of(&outputs[output]).is_some() {
                 let placement = if floating {
-                    Placement::Floating { pos: None }
+                    Placement::Floating {
+                        pos: None,
+                        size: None,
+                    }
                 } else {
-                    Placement::Tiled { after }
+                    Placement::Tiled { before }
                 };
+                // The slot of `before` on this strip, else the end.
+                let slot = layout.strip(&outputs[output]).map(|strip| {
+                    before
+                        .and_then(|before| strip.index_of(before))
+                        .unwrap_or(strip.frame_ids().count())
+                });
                 let home = home.map(|home| Home::of(&outputs[home]));
                 layout.add_frame(id, &outputs[output], placement, home);
                 let frame = layout.frame_mut(id).unwrap();
@@ -628,6 +637,10 @@ fn apply_layout_op(
                 }
                 live.insert(id);
                 prop_assert_eq!(layout.frame_output(id), Some(PROP_HEADS[output]));
+                if !floating {
+                    let idx = layout.strip(&outputs[output]).and_then(|s| s.index_of(id));
+                    prop_assert_eq!(idx, slot, "a tile goes left of `before`, else last");
+                }
             }
         }
         LayoutOp::RemoveFrame { id, active_close } => {
@@ -889,7 +902,7 @@ fn a_pin_onto_a_frame_added_after_the_float() {
         id,
         output: 0,
         floating,
-        after: None,
+        before: None,
         filler: false,
         home: None,
     };

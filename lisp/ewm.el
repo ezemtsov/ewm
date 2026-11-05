@@ -351,24 +351,25 @@ A section the compositor rejects is reported and stays at its default."
       ('overview (ewm--handle-overview body))
       ('hide (ewm--handle-hide body)))))
 
-(defun ewm--assign-surface-to-frame (id seq)
-  "Pair surface ID with the frame created as SEQ."
-  (when-let* ((frame (cl-find seq (frame-list)
-                              :key (lambda (f) (frame-parameter f 'ewm-frame-seq)))))
-    (set-frame-parameter frame 'ewm-surface-id id)
-    ;; PGTK only flushes Cairo to the wl_surface for the selected frame;
-    ;; without this the first commit is transparent until something else
-    ;; triggers a redisplay (bug#53232).
-    (with-selected-frame frame (redisplay t))
-    (when (frame-parameter frame 'ewm-focus-on-create)
-      (set-frame-parameter frame 'ewm-focus-on-create nil)
-      (select-frame-set-input-focus frame))
-    ;; A rename queued before the frame paired, see `ewm-workspace-rename'.
-    (when-let* ((name (frame-parameter frame 'ewm-workspace-name)))
-      (set-frame-parameter frame 'ewm-workspace-name nil)
-      (ewm-workspace-rename-module name id))
-    (ewm-layout--refresh)
-    frame))
+(defun ewm--adopt-frame-surface (id)
+  "Pair surface ID with the frame whose surface is due and place that frame.
+A frame deleted before its surface arrived still takes its turn. A frame shown
+again right after a hide is not queued yet when its new surface arrives, the
+surface takes the next frame in flight or none, and the late close of the old
+one then deletes the reshown frame."
+  (let ((frame (ewm--next-frame-in-flight)))
+    (when (frame-live-p frame)
+      (set-frame-parameter frame 'ewm-surface-id id)
+      (ewm--place-frame frame)
+      ;; PGTK only flushes Cairo to the wl_surface for the selected frame;
+      ;; without this the first commit is transparent until something else
+      ;; triggers a redisplay (bug#53232).
+      (with-selected-frame frame (redisplay t))
+      (when (frame-parameter frame 'ewm-focus-on-create)
+        (set-frame-parameter frame 'ewm-focus-on-create nil)
+        (select-frame-set-input-focus frame))
+      (ewm-layout--refresh)
+      frame)))
 
 (defun ewm--create-surface-buffer (id app pid)
   "Create the buffer for surface ID (APP, client PID); placed later on map."
@@ -383,16 +384,15 @@ A section the compositor rejects is reported and stays at its default."
 
 (defun ewm--handle-new-surface (event)
   "Handle new surface EVENT.
-An Emacs frame surface carries the seq of the frame it belongs to and is
-paired with it. Any other surface gets a buffer."
+A surface of this Emacs is a frame, paired with the oldest frame awaiting one.
+Any other surface gets a buffer."
   (let* ((id (alist-get 'id event))
          (app (alist-get 'app event))
-         (seq (alist-get 'seq event))
          (pid (alist-get 'pid event))
-         (frame (and seq (ewm--assign-surface-to-frame id seq))))
-    (ewm--log "handle-new-surface: id=%s app=%s seq=%s frame=%s"
-              id app seq (or frame "no-match"))
-    (unless frame
+         (own (eql pid (emacs-pid)))
+         (frame (and own (ewm--adopt-frame-surface id))))
+    (ewm--log "handle-new-surface: id=%s app=%s frame=%s" id app (or frame "no-match"))
+    (unless own
       (ewm--create-surface-buffer id app pid))))
 
 (defvar ewm--pending-placements nil
@@ -485,6 +485,10 @@ A launch window beats HOST-ID and is never selected, ACTIVATE selects a float."
           (quit-windows-on buf t))
         ;; Emacs 30 leaves an undisplayed buffer alive.
         (when (buffer-live-p buf) (kill-buffer buf))))
+     ;; A hidden frame lost its toplevel and gets one back when shown.
+     ((and frame (not (frame-visible-p frame)))
+      (set-frame-parameter frame 'ewm-surface-id nil)
+      (ewm--park-frame frame))
      (frame
       (ignore-errors (delete-frame frame t))))))
 
@@ -672,7 +676,6 @@ Each function receives the event alist with symbol keys:
                   (run-hook-with-args-until-success 'ewm-output-populate-functions output))
           (ewm--create-frame-for-output output nil '((ewm-owner . compositor))))
         (setq created t)))
-    (ewm--delete-stray-frames)
     ;; Frames created after the ready event missed the replay `ewm-start-module'
     ;; asks for, and PGTK drops the enter they get before their first roundtrip.
     ;; Once only: the replay costs a leave/enter for whatever holds focus.

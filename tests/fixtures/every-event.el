@@ -5,8 +5,8 @@
 (defconst ewm-test-every-event
   '(
     ready
-    (new (id . 7) (app . "Alacritty") (seq) (pid . 4242))
-    (new (id . 1) (app . "emacs") (seq . 3) (pid . 4000))
+    (new (id . 7) (app . "Alacritty") (pid . 4242))
+    (new (id . 1) (app . "emacs") (pid . 4000))
     (mapped (id . 7) (open_floating) (activate . t) (output) (frame_surface_id . 1) (width) (height) (token . "abc"))
     (mapped (id . 9) (open_floating . t) (activate) (output . "eDP-1") (frame_surface_id) (width . 800.0) (height . 600.0) (token))
     (close (id . 7))

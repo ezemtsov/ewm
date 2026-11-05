@@ -10,7 +10,7 @@ pub mod snapshot;
 pub mod strip;
 pub mod transition;
 
-pub(crate) use ewm::enter_output_for_window;
+pub(crate) use ewm::{enter_output_for_window, leave_output_for_window};
 
 use std::collections::{HashMap, HashSet};
 use std::mem;
@@ -128,7 +128,7 @@ struct InteractiveMove {
 }
 
 /// The output a frame belongs to, by display identity and connector.
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Home {
     pub identity: String,
     pub connector: String,
@@ -154,10 +154,13 @@ pub struct FrameSnapshot {
 /// Where a new frame goes on its output.
 #[derive(Debug, Clone, Copy)]
 pub enum Placement {
-    /// On the strip right of `after`, else at the end.
-    Tiled { after: Option<u64> },
-    /// In the floating space at `pos`, else centered.
-    Floating { pos: Option<Point<f64, Logical>> },
+    /// On the strip left of `before`, else at the end.
+    Tiled { before: Option<u64> },
+    /// In the floating space at `pos`, else centered, `size` wide, else the default.
+    Floating {
+        pos: Option<Point<f64, Logical>>,
+        size: Option<Size<f64, Logical>>,
+    },
 }
 
 /// One output's frames: the strip and the floating space above it.
@@ -693,14 +696,13 @@ impl Layout {
         let Some(monitor) = self.monitor_of_mut(output) else {
             return;
         };
-        let mut frame = strip::Frame::new(id);
-        frame.home = home.unwrap_or_else(|| Home::of(output));
+        let mut frame = Self::new_frame(id, &placement, home.unwrap_or_else(|| Home::of(output)));
         match placement {
-            Placement::Tiled { after } => {
-                let at = monitor.strip.slot_after(after);
+            Placement::Tiled { before } => {
+                let at = monitor.strip.slot_before(before);
                 monitor.strip.insert_frame(at, frame);
             }
-            Placement::Floating { pos } => {
+            Placement::Floating { pos, .. } => {
                 frame.floating_pos = pos.map(|pos| {
                     floating::Data::logical_to_size_frac_in_working_area(
                         monitor.floating.working_area(),
@@ -713,6 +715,35 @@ impl Layout {
         // A fullscreen float pins to the first strip frame as it appears.
         monitor.settle_pins();
         self.settle_focus();
+    }
+
+    /// Hold frame `id` as `placement` says until an output maps.
+    pub fn park_frame(&mut self, id: u64, placement: Placement, home: Home) {
+        let frame = Self::new_frame(id, &placement, home);
+        match placement {
+            Placement::Tiled { before } => {
+                let frames = &mut self.homeless.tiled;
+                let at = before
+                    .and_then(|before| frames.iter().position(|frame| frame.surface_id == before))
+                    .unwrap_or(frames.len());
+                frames.insert(at, frame);
+            }
+            Placement::Floating { .. } => self.homeless.floating.push(frame),
+        }
+        self.settle_focus();
+    }
+
+    fn new_frame(id: u64, placement: &Placement, home: Home) -> strip::Frame {
+        let mut frame = strip::Frame::new(id);
+        frame.home = home;
+        if let Placement::Floating {
+            size: Some(size), ..
+        } = placement
+        {
+            frame.width = size.w;
+            frame.height = size.h;
+        }
+        frame
     }
 
     /// Frames on monitors, each strip then its floating space.

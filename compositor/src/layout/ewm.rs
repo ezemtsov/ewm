@@ -34,7 +34,7 @@ pub(crate) fn enter_output_for_window(window: &Window, output: &Output) {
     }
 }
 
-fn leave_output_for_window(window: &Window, output: &Output) {
+pub(crate) fn leave_output_for_window(window: &Window, output: &Output) {
     if let Some(surface) = window.wl_surface() {
         output.leave(&surface);
     }
@@ -625,6 +625,7 @@ impl Ewm {
             return;
         };
         let changed = mem::replace(&mut surface.pending_fullscreen, on) != on;
+        let emacs = surface.emacs;
         if on {
             // One fullscreen per strip frame, the newest request wins, repeated or not.
             for rival in self
@@ -638,7 +639,9 @@ impl Ewm {
             return;
         }
         self.refresh_primary_assignments();
-        if self
+        if emacs && self.layout.has_frame(id) {
+            self.configure_frame(id);
+        } else if self
             .layout_entry_for_surface(id, LayoutEntry::primary)
             .is_none()
         {
@@ -894,19 +897,15 @@ impl Ewm {
         self.with_floating_space(id, |space| space.move_frame_by(id, Point::from((dx, dy))))
     }
 
-    /// Like `with_floating_space`, but configures the toplevel to the size `f` returns.
+    /// Like `with_floating_space`, but configures the frame when `f` resized it.
     fn with_floating_resize(
         &mut self,
         id: u64,
         f: impl FnOnce(&mut floating::FloatingSpace) -> Option<Size<i32, Logical>>,
     ) -> bool {
-        let mut size = None;
-        let changed = self.with_floating_space(id, |space| {
-            size = f(space);
-            size.is_some()
-        });
-        if let Some(size) = size {
-            self.configure_floating_frame_size(id, size);
+        let changed = self.with_floating_space(id, |space| f(space).is_some());
+        if changed {
+            self.configure_frame(id);
         }
         changed
     }
@@ -915,25 +914,43 @@ impl Ewm {
         self.with_floating_resize(id, |space| space.resize_frame_by(id, Size::from((dw, dh))))
     }
 
-    fn configure_floating_frame_size(&self, id: u64, size: Size<i32, Logical>) {
-        let Some(window) = self.window(id) else {
+    /// Configure the toplevel of frame `id` to its place: a tile fills the working area, a float
+    /// keeps its own size and a frame asked fullscreen covers the output.
+    pub(crate) fn configure_frame(&self, id: u64) {
+        let Some(toplevel) = self.window(id).and_then(|window| window.toplevel()) else {
             return;
         };
-        let Some(toplevel) = window.toplevel() else {
+        let Some(location) = self.layout.frame_location(id) else {
             return;
         };
-        let changed = toplevel.with_pending_state(|state| {
-            let was_fullscreen = state.states.contains(XdgToplevelState::Fullscreen);
-            let was_maximized = state.states.contains(XdgToplevelState::Maximized);
-            let changed = state.size != Some(size) || was_fullscreen || was_maximized;
-            state.size = Some(size);
-            state.states.unset(XdgToplevelState::Fullscreen);
-            state.states.unset(XdgToplevelState::Maximized);
-            changed
+        let output = location.monitor.output();
+        let working_area = self.get_working_area(output).size;
+        let fullscreen = self.pending_fullscreen(id);
+        let float = self
+            .layout
+            .floating(output)
+            .and_then(|space| space.frame_with_data(id))
+            .map(|(_, data)| data.size().to_i32_round());
+        toplevel.with_pending_state(|state| {
+            state.bounds = Some(working_area);
+            state.size = Some(if fullscreen {
+                crate::utils::output_size(output).to_i32_round()
+            } else {
+                float.unwrap_or(working_area)
+            });
+            if fullscreen {
+                state.states.set(XdgToplevelState::Fullscreen);
+                state.states.unset(XdgToplevelState::Maximized);
+            } else {
+                state.states.unset(XdgToplevelState::Fullscreen);
+                if float.is_some() {
+                    state.states.unset(XdgToplevelState::Maximized);
+                } else {
+                    state.states.set(XdgToplevelState::Maximized);
+                }
+            }
         });
-        if changed {
-            toplevel.send_configure();
-        }
+        toplevel.send_pending_configure();
     }
 
     /// The output strictly under `pos`, with `pos` made relative to it.

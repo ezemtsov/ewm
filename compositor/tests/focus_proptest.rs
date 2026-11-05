@@ -15,8 +15,8 @@ use ewm_core::event::Event;
 use ewm_core::handlers::PlacementHint;
 use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{
-    ClientEvent, Fixture, TestClient, Toplevel, clear_pending_frames, mark_active_frame_close, nz,
-    prepare_frame, proptest_cases, strip_with_frame_ids,
+    ClientEvent, Fixture, TestClient, Toplevel, mark_active_frame_close, nz, placement,
+    proptest_cases, strip_with_frame_ids,
 };
 use ewm_core::{
     Action, FocusSource, LayoutEntry, LayoutEntryId, Notify, OutputConfig, OverviewAction,
@@ -29,13 +29,13 @@ use wayland_client::Proxy as _;
 const OUTPUTS: [&str; 2] = ["HEAD-A", "HEAD-B"];
 const MAX_FRAMES: usize = 3;
 
-/// The pending-frame queue is process-wide, so tests that create frames take turns.
+/// The event channel is process-wide, so tests that create frames take turns.
 static SERIAL: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone)]
 enum Op {
-    /// Lisp prepares a frame on `OUTPUTS[output]` and Emacs opens its toplevel,
-    /// which enters the strip before any layout arrives.
+    /// Emacs opens a toplevel and Lisp places it on `OUTPUTS[output]`, which enters
+    /// the strip before any layout arrives.
     CreateEmacsFrame {
         output: usize,
         surface_id: u64,
@@ -252,7 +252,6 @@ fn launch_op_strategy() -> impl Strategy<Value = Op> {
 struct Frames {
     client: TestClient,
     toplevels: HashMap<u64, (Toplevel, u64)>,
-    next_seq: u64,
     apps: TestClient,
     launches: Vec<Launch>,
 }
@@ -274,7 +273,6 @@ struct Redeemed {
 
 impl Frames {
     fn new(fix: &mut Fixture) -> Self {
-        clear_pending_frames();
         // Opened before Emacs's pid is known, so these are app windows.
         let mut apps = fix.new_client().unwrap();
         fix.roundtrip(&mut apps);
@@ -297,7 +295,6 @@ impl Frames {
         Self {
             client,
             toplevels: HashMap::new(),
-            next_seq: 0,
             apps,
             launches,
         }
@@ -363,17 +360,16 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
                 return;
             }
             let unfocused = fix.ewm_ref().focused_surface_id().is_none();
-            frames.next_seq += 1;
-            prepare_frame(output_name, frames.next_seq, None);
             let toplevel = fix.open_toplevel(&mut frames.client, "frame", Size::from((400, 300)));
             let sid = fix
                 .find_surface_id(&frames.client, &toplevel.surface)
                 .expect("the compositor assigns every toplevel a surface id");
             frames.toplevels.insert(surface_id, (toplevel, sid));
+            fix.place_frame(sid, placement(output_name));
             assert_eq!(
                 fix.ewm_ref().layout.frame_output(sid),
                 Some(output_name),
-                "frame {surface_id} ({sid}) did not land on the output Lisp prepared it for",
+                "frame {surface_id} ({sid}) did not land on the output Lisp placed it on",
             );
             if unfocused {
                 // The boot regression: the first frame takes focus by itself.
