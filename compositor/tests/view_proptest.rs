@@ -4,6 +4,7 @@
 //! float showing fullscreen pins to that frame and keeps the pin while parked. Until a client
 //! commits the buffer a layout asked for, the views of its surface keep presenting the one it has,
 //! the view that buffer was made for at its own size and the others covering their windows with it.
+//! A commit answers a configure and draws none of its own, an activated change aside.
 //!
 //! Ported from niri's src/layout/tests.rs: the hints, the forced size and the answer op.
 
@@ -16,7 +17,10 @@ use ewm_core::testing::{
 };
 use ewm_core::{Ewm, LayoutEntry, LayoutEntryId};
 use proptest::prelude::*;
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgToplevelState;
 use smithay::utils::{Logical, Size};
+use smithay::wayland::compositor::with_states;
+use smithay::wayland::shell::xdg::{ToplevelState, XdgToplevelSurfaceData};
 use wayland_client::Proxy as _;
 
 const OUTPUTS: [&str; 2] = ["HEAD-A", "HEAD-B"];
@@ -700,8 +704,35 @@ fn apply_op(
             asked
         );
         prop_assert!(now.synced(), "answering {:?} left {} behind", asked, sid);
+        // The commit drew no configure of its own, an activated change aside.
+        let toplevel = now.window.toplevel().unwrap();
+        let committed = toplevel.with_committed_state(|state| state.map(drawn_states));
+        let sent = with_states(toplevel.wl_surface(), |states| {
+            let role = states.data_map.get::<XdgToplevelSurfaceData>().unwrap();
+            drawn_states(&role.lock().unwrap().current_server_state())
+        });
+        prop_assert_eq!(
+            committed,
+            Some(sent),
+            "answering {:?} drew a configure for {}",
+            asked,
+            sid
+        );
     }
     check(fix, model, clients)
+}
+
+/// The states a commit may not change, sorted, the activated bit left out.
+fn drawn_states(state: &ToplevelState) -> Vec<u32> {
+    let mut states: Vec<u32> = state
+        .states
+        .clone()
+        .into_iter()
+        .filter(|state| *state != XdgToplevelState::Activated)
+        .map(|state| state as u32)
+        .collect();
+    states.sort_unstable();
+    states
 }
 
 fn check_ops(ops: &[Op]) -> Result<(), TestCaseError> {
