@@ -543,6 +543,8 @@ pub struct Ewm {
     /// Last output the cursor was drawn on, for per-output cursor redraw.
     pointer_output: Option<Output>,
     pub keyboard_focus: Option<WlSurface>,
+    /// The toplevel told it is activated.
+    activated: Option<u64>,
     /// Keys for Emacs waiting until it reads the Focus they followed.
     pub(crate) deferred_keys: VecDeque<input::DeferredKey>,
     pub(crate) im_repeat: InterceptRepeatState,
@@ -935,6 +937,7 @@ impl Ewm {
             pointer_focus: None,
             pointer_output: None,
             keyboard_focus: None,
+            activated: None,
             deferred_keys: VecDeque::new(),
             im_repeat: InterceptRepeatState::new(
                 input::DEFAULT_KEYBOARD_REPEAT_RATE,
@@ -2806,12 +2809,17 @@ impl State {
         } else {
             self.ewm.resolve_layer_keyboard_focus()
         };
+        // The layout focus is activated, not the keyboard target, a redirect to Emacs changes
+        // nothing. A layer surface holding the keyboard deactivates it.
+        let focused = self.ewm.focused_surface_id();
+        self.ewm
+            .set_activated(layer_focus.is_none().then_some(focused).flatten());
         let ewm = &self.ewm;
         let new_focus = resolve_keyboard_focus_target(locked, lock_surface, layer_focus, || {
             if let Some(surface) = ewm.emacs_keyboard_redirect_focus() {
                 return Some(surface);
             }
-            ewm.window(ewm.focused_surface_id()?)
+            ewm.window(focused?)
                 .and_then(|w| w.wl_surface())
                 .map(|s| s.into_owned())
         });

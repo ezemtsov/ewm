@@ -22,7 +22,10 @@ use ewm_core::{
     Action, FocusSource, LayoutEntry, LayoutEntryId, Notify, OutputConfig, OverviewAction,
 };
 use proptest::prelude::*;
-use smithay::utils::Size;
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgToplevelState;
+use smithay::utils::{IsAlive, Size};
+use smithay::wayland::compositor::with_states;
+use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
 use smithay::wayland::xdg_activation::XdgActivationTokenData;
 use wayland_client::Proxy as _;
 
@@ -1122,6 +1125,29 @@ fn check_launch_ops(ops: Vec<Op>) -> Result<(), TestCaseError> {
         // A tick settles what the op changed before the next snapshot.
         fix.dispatch();
         fix.ewm_ref().verify_invariants();
+        check_activated(&fix)?;
+    }
+    Ok(())
+}
+
+/// The layout focus holds the activated bit (invariant 21), no layer surface in this suite.
+fn check_activated(fix: &Fixture) -> Result<(), TestCaseError> {
+    let ewm = fix.ewm_ref();
+    for (id, window) in ewm.windows() {
+        let Some(toplevel) = window.toplevel().filter(|_| window.alive()) else {
+            continue;
+        };
+        let activated = with_states(toplevel.wl_surface(), |states| {
+            let role = states.data_map.get::<XdgToplevelSurfaceData>().unwrap();
+            let state = role.lock().unwrap().current_server_state();
+            state.states.contains(XdgToplevelState::Activated)
+        });
+        prop_assert_eq!(
+            activated,
+            Some(id) == ewm.focused_surface_id(),
+            "surface {} told it is activated",
+            id
+        );
     }
     Ok(())
 }

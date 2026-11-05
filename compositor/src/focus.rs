@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use smithay::desktop::{LayerSurface as DesktopLayerSurface, layer_map_for_output};
 use smithay::output::Output;
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgToplevelState;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point};
 use smithay::wayland::seat::WaylandFocus;
@@ -75,6 +76,27 @@ impl Ewm {
                 .and_then(|entry_id| frame.entry_surface_id(entry_id))
                 .unwrap_or(frame.surface_id)
         })
+    }
+
+    /// Activate `target`, deactivating the toplevel that was.
+    pub(crate) fn set_activated(&mut self, target: Option<u64>) {
+        if self.activated == target {
+            return;
+        }
+        for (id, active) in [(self.activated, false), (target, true)] {
+            let Some(toplevel) = id.and_then(|id| self.window(id)?.toplevel()) else {
+                continue;
+            };
+            toplevel.with_pending_state(|state| {
+                if active {
+                    state.states.set(XdgToplevelState::Activated);
+                } else {
+                    state.states.unset(XdgToplevelState::Activated);
+                }
+            });
+            toplevel.send_pending_configure();
+        }
+        self.activated = target;
     }
 
     /// Whether the focused view is fullscreen.

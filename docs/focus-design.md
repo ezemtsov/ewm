@@ -316,6 +316,10 @@ After specific operations:
     the mark survives every focus change while the overview is open, and
     once it is closed the next refresh clears the frame and surface that
     hold focus.  Checked by `check_urgency_ops`.
+21. **The activated bit follows the layout focus.**  The toplevel holding
+    the layout focus is told it is activated and the one that lost it that
+    it is not, a layer surface holding the keyboard deactivates it, the lock
+    does not.  Checked by `check_activated`.
 
 ## Why two threads make this hard
 

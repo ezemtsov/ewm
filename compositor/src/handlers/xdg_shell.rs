@@ -364,7 +364,6 @@ impl Ewm {
                 state.states.unset(XdgToplevelState::Fullscreen);
                 state.states.set(XdgToplevelState::Maximized);
             }
-            state.states.set(XdgToplevelState::Activated);
         });
         toplevel.send_pending_configure();
     }
