@@ -24,6 +24,7 @@ use tracing::{debug, info, warn};
 
 use crate::layout::{enter_output_for_window, leave_output_for_window};
 use crate::surface::SurfaceState;
+use crate::title::app_id_and_title;
 use crate::{Event, Ewm, FocusSource, Notify, State, client_identity, im, module};
 
 /// Snapshot an unmapping frame or view, and fade a resize answer.
@@ -211,7 +212,10 @@ fn set_server_side_decoration(toplevel: &ToplevelSurface) {
     toplevel.with_pending_state(|state| {
         state.decoration_mode = Some(Mode::ServerSide);
     });
-    toplevel.send_configure();
+    // Asked before the first commit, the mode rides on the initial configure.
+    if toplevel.is_initial_configure_sent() {
+        toplevel.send_configure();
+    }
 }
 
 impl XdgDecorationHandler for State {
@@ -296,8 +300,8 @@ fn unconstrain_with_padding(
 }
 
 impl Ewm {
-    /// Register a toplevel and configure it to the active output. An Emacs frame stays out of
-    /// the layout, and so unseen, until Lisp places it from its frame parameters.
+    /// Register a toplevel, its first commit configures and announces it. An Emacs frame stays
+    /// out of the layout, and so unseen, until Lisp places it from its frame parameters.
     fn handle_new_toplevel(&mut self, surface: ToplevelSurface) {
         let id = self.next_surface_id;
         self.next_surface_id += 1;
@@ -310,46 +314,59 @@ impl Ewm {
             info!("Surface {} is an Emacs surface", id);
         }
 
-        let app = with_states(surface.wl_surface(), |states| {
-            states
-                .data_map
-                .get::<XdgToplevelSurfaceData>()
-                .and_then(|d| d.lock().unwrap().app_id.clone())
-        })
-        .or_else(|| identity.and_then(|i| i.comm))
-        .unwrap_or_else(|| "unknown".to_string());
-
-        let output = self
-            .active_output()
-            .or_else(|| self.first_output())
-            .cloned();
-        let working_area = output
-            .as_ref()
-            .map(|output| self.get_working_area(output).size);
-        // A tile, the common frame, gets its final size from this first configure.
-        surface.with_pending_state(|state| {
-            state.bounds = working_area;
-            state.size = working_area;
-            state.states.set(XdgToplevelState::Maximized);
-            state.states.set(XdgToplevelState::Activated);
-        });
-        surface.send_configure();
-
-        let record = SurfaceState::new(id, surface, is_emacs, app.clone());
-        if let Some(output) = &output {
+        let record = SurfaceState::new(id, surface, is_emacs);
+        if let Some(output) = self.active_output() {
             // Scale and enter before the first commit, bypassing SpaceElement::output_enter
             // which would leave uncommitted surfaces.
             enter_output_for_window(&record.window, output);
         }
         self.surfaces.insert(id, record);
+    }
 
-        // App surfaces resolve their host frame at map. `New` only creates the buffer.
-        self.queue_event(Event::New {
-            id,
-            app: app.clone(),
-            pid: client_pid,
+    /// Configure toplevel `id` at its first commit and tell Lisp of it with the committed app id.
+    pub(crate) fn announce(&mut self, id: u64) {
+        let Some(toplevel) = self.window(id).and_then(|window| window.toplevel()) else {
+            return;
+        };
+        self.configure_unplaced(id, toplevel);
+        let identity = client_identity(toplevel.wl_surface());
+        let pid = identity.as_ref().map_or(0, |i| i.credentials.pid);
+        let app = app_id_and_title(toplevel.wl_surface())
+            .0
+            .or_else(|| identity.and_then(|i| i.comm))
+            .unwrap_or_else(|| "unknown".to_string());
+        let Some(surface) = self.surfaces.get_mut(&id) else {
+            return;
+        };
+        surface.app_id = app.clone();
+        surface.announced = true;
+        info!("New toplevel {id} ({app})");
+        self.queue_event(Event::New { id, app, pid });
+    }
+
+    /// Configure the unplaced toplevel `id` to the active output, the whole of it when fullscreen
+    /// is asked. A tile, the common frame, gets its final size from this first configure.
+    pub(crate) fn configure_unplaced(&self, id: u64, toplevel: &ToplevelSurface) {
+        let output = self.active_output();
+        let working_area = output.map(|output| self.get_working_area(output).size);
+        let fullscreen = self.pending_fullscreen(id);
+        toplevel.with_pending_state(|state| {
+            state.bounds = working_area;
+            state.size = if fullscreen {
+                output.map(|output| crate::utils::output_size(output).to_i32_round())
+            } else {
+                working_area
+            };
+            if fullscreen {
+                state.states.set(XdgToplevelState::Fullscreen);
+                state.states.unset(XdgToplevelState::Maximized);
+            } else {
+                state.states.unset(XdgToplevelState::Fullscreen);
+                state.states.set(XdgToplevelState::Maximized);
+            }
+            state.states.set(XdgToplevelState::Activated);
         });
-        info!("New toplevel {} ({})", id, app);
+        toplevel.send_pending_configure();
     }
 
     /// Put Emacs frame `id` where `placement` says, once. Lisp asks when the frame's surface
@@ -413,6 +430,13 @@ impl Ewm {
 
     /// Drop toplevel `id`, returning the frame to refocus.
     pub fn handle_toplevel_destroyed_by_id(&mut self, id: u64) -> Option<u64> {
+        // Never announced, Lisp has no buffer to close.
+        if let Some(surface) = self.surfaces.get(&id)
+            && !surface.announced
+        {
+            self.surfaces.remove(&id);
+            return None;
+        }
         let was_focused = self.focused_frame_id() == Some(id);
         let close_was_active = module::take_pending_active_frame_close(id);
         let active_close = was_focused || close_was_active;

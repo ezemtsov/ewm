@@ -89,7 +89,7 @@ Emacs drains it, which the key queue relies on.
 | Event | Rust | Purpose |
 |-------|------|---------|
 | `ready` | `Event::Ready` | Compositor initialized |
-| `new` | `Event::New{id,app,seq,pid}` | Surface created. `seq` names the Emacs frame it belongs to, nil for apps |
+| `new` | `Event::New{id,app,pid}` | Surface committed for the first time, with the app id it set |
 | `close` | `Event::Close{id}` | Surface destroyed, or a frame the compositor dropped for Emacs to delete |
 | `focus` | `Event::Focus{focus_id,x,y,pointer}` | Frame or view focused |
 | `title` | `Event::Title{id,app,title}` | Surface title changed |

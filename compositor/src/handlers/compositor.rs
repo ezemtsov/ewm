@@ -133,8 +133,12 @@ impl CompositorHandler for State {
 
         // 3. Find the window that owns this root surface
         if let Some(id) = self.ewm.surface_id(&root_surface) {
-            if let Some(window) = self.ewm.window(id) {
-                window.on_commit();
+            if let Some(record) = self.ewm.surfaces.get(&id) {
+                record.window.on_commit();
+                // The first commit carries the app id, hints, parent and decoration mode.
+                if surface == &root_surface && !record.announced {
+                    self.ewm.announce(id);
+                }
             }
             // Views take the committed size and fullscreen state.
             let flipped = self

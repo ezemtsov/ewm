@@ -158,19 +158,8 @@ impl Ewm {
             return;
         };
 
-        let (app_id, title) = smithay::wayland::compositor::with_states(wl_surface, |states| {
-            states
-                .data_map
-                .get::<XdgToplevelSurfaceData>()
-                .map(|d| {
-                    let data = d.lock().unwrap();
-                    (
-                        data.app_id.clone().unwrap_or_default(),
-                        data.title.clone().unwrap_or_default(),
-                    )
-                })
-                .unwrap_or_default()
-        });
+        let (app_id, title) = app_id_and_title(wl_surface);
+        let (app_id, title) = (app_id.unwrap_or_default(), title.unwrap_or_default());
 
         let Some(surface) = self.surfaces.get_mut(&id) else {
             return;
@@ -192,4 +181,17 @@ impl Ewm {
         self.introspect_windows_dirty = true;
         self.queue_title_update(id, app_id, title, first_title, app_changed);
     }
+}
+
+/// The app id and title the client set on `surface`.
+pub(crate) fn app_id_and_title(surface: &WlSurface) -> (Option<String>, Option<String>) {
+    smithay::wayland::compositor::with_states(surface, |states| {
+        let role = states
+            .data_map
+            .get::<XdgToplevelSurfaceData>()?
+            .lock()
+            .unwrap();
+        Some((role.app_id.clone(), role.title.clone()))
+    })
+    .unwrap_or_default()
 }

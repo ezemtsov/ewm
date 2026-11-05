@@ -588,37 +588,6 @@ impl Ewm {
             .collect()
     }
 
-    fn configure_surface_fullscreen_state(&self, id: u64, fullscreen: bool) {
-        let Some(window) = self.window(id) else {
-            return;
-        };
-        let Some(toplevel) = window.toplevel() else {
-            return;
-        };
-        // Unplaced, the view is sized to the active output.
-        let size = self
-            .active_output()
-            .map(|output| crate::utils::output_size(output).to_i32_round());
-        let changed = toplevel.with_pending_state(|state| {
-            let was_fullscreen = state.states.contains(XdgToplevelState::Fullscreen);
-            let resized = size.is_some_and(|size| state.size != Some(size));
-            if let Some(size) = size {
-                state.size = Some(size);
-            }
-            if fullscreen {
-                state.states.set(XdgToplevelState::Fullscreen);
-                state.states.unset(XdgToplevelState::Maximized);
-            } else {
-                state.states.unset(XdgToplevelState::Fullscreen);
-                state.states.set(XdgToplevelState::Maximized);
-            }
-            was_fullscreen != fullscreen || resized
-        });
-        if changed {
-            toplevel.send_configure();
-        }
-    }
-
     /// Ask surface `id` to go fullscreen or back, and configure it so.
     pub(crate) fn set_surface_fullscreen(&mut self, id: u64, on: bool) {
         let Some(surface) = self.surfaces.get_mut(&id) else {
@@ -644,8 +613,10 @@ impl Ewm {
         } else if self
             .layout_entry_for_surface(id, LayoutEntry::primary)
             .is_none()
+            && let Some(toplevel) = self.window(id).and_then(|window| window.toplevel())
+            && toplevel.is_initial_configure_sent()
         {
-            self.configure_surface_fullscreen_state(id, on);
+            self.configure_unplaced(id, toplevel);
         }
     }
 

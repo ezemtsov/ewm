@@ -2615,7 +2615,9 @@ impl State {
         };
         let changed = self.ewm.pending_fullscreen(id) != on;
         self.set_surface_fullscreen(id, on);
-        if !changed && let Some(toplevel) = self.ewm.window(id).and_then(|window| window.toplevel())
+        if !changed
+            && let Some(toplevel) = self.ewm.window(id).and_then(|window| window.toplevel())
+            && toplevel.is_initial_configure_sent()
         {
             toplevel.send_configure();
         }

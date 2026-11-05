@@ -517,13 +517,19 @@ impl TestClient {
 
     /// Caller must roundtrip before reading server-side state.
     pub fn create_toplevel(&mut self, title: &str) -> Toplevel {
+        let toplevel = self.create_toplevel_uncommitted(title);
+        toplevel.surface.commit();
+        toplevel
+    }
+
+    /// A toplevel whose first commit is still to come.
+    pub fn create_toplevel_uncommitted(&mut self, title: &str) -> Toplevel {
         let qh = self.eq.handle();
         let surface = self.compositor().create_surface(&qh, ());
         let xdg_surface = self.wm_base().get_xdg_surface(&surface, &qh, ());
         let xdg_toplevel = xdg_surface.get_toplevel(&qh, ());
         xdg_toplevel.set_title(title.to_string());
         xdg_toplevel.set_app_id("ewm-test".into());
-        surface.commit();
         Toplevel {
             surface,
             xdg_surface,

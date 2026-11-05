@@ -194,6 +194,36 @@ fn shown_or_hidden(events: &[Event], sid: u64) -> bool {
     )
 }
 
+/// A toplevel gone before its first commit was never announced, Lisp hears nothing of it.
+#[test]
+fn a_toplevel_gone_before_its_first_commit_is_silent() {
+    let mut fix = Fixture::new().unwrap();
+    fix.enable_event_capture();
+    fix.add_output(OUTPUTS[0], 1920, 1080);
+    let mut client = fix.new_client().unwrap();
+    fix.roundtrip(&mut client);
+    fix.drain_events();
+    let toplevel = client.create_toplevel_uncommitted("gone");
+    fix.roundtrip(&mut client);
+    let sid = fix.find_surface_id(&client, &toplevel.surface).unwrap();
+    toplevel.xdg_toplevel.destroy();
+    toplevel.xdg_surface.destroy();
+    toplevel.surface.destroy();
+    fix.roundtrip(&mut client);
+    fix.dispatch();
+    assert!(
+        !fix.ewm_ref().surfaces.contains_key(&sid),
+        "record {sid} kept"
+    );
+    let events = fix.drain_events();
+    assert!(
+        events.iter().all(
+            |event| !matches!(event, Event::New { id, .. } | Event::Close { id } if *id == sid)
+        ),
+        "{events:?}"
+    );
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(proptest_cases(32)))]
 

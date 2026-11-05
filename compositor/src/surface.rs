@@ -44,6 +44,8 @@ pub struct SurfaceState {
     pub emacs: bool,
     pub app_id: String,
     pub title: String,
+    /// Told to Lisp at its first commit, kept past the role reset of a destroyed toplevel.
+    pub announced: bool,
     /// Whether a buffer has ever been committed.
     pub mapped: bool,
     /// Whether a layout has ever shown it.
@@ -74,7 +76,7 @@ pub struct SurfaceState {
 }
 
 impl SurfaceState {
-    pub(crate) fn new(id: u64, toplevel: ToplevelSurface, emacs: bool, app_id: String) -> Self {
+    pub(crate) fn new(id: u64, toplevel: ToplevelSurface, emacs: bool) -> Self {
         let surface = toplevel.wl_surface();
         with_states(surface, |states| {
             states
@@ -89,8 +91,9 @@ impl SurfaceState {
             window: Window::new_wayland_window(toplevel),
             hook,
             emacs,
-            app_id,
+            app_id: String::new(),
             title: String::new(),
+            announced: false,
             mapped: false,
             placed: false,
             urgent: false,
