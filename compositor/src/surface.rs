@@ -129,12 +129,8 @@ impl SurfaceState {
         let Some(toplevel) = self.window.toplevel() else {
             return;
         };
-        let (changed, size_changed) = toplevel.with_pending_state(|state| {
-            let was_fullscreen = state.states.contains(XdgToplevelState::Fullscreen);
-            let was_maximized = state.states.contains(XdgToplevelState::Maximized);
+        let size_changed = toplevel.with_pending_state(|state| {
             let size_changed = state.size != Some(size);
-            let changed =
-                size_changed || was_fullscreen != fullscreen || was_maximized == fullscreen;
             state.size = Some(size);
             if fullscreen {
                 state.states.set(XdgToplevelState::Fullscreen);
@@ -143,12 +139,11 @@ impl SurfaceState {
                 state.states.set(XdgToplevelState::Maximized);
                 state.states.unset(XdgToplevelState::Fullscreen);
             }
-            (changed, size_changed)
+            size_changed
         });
-        if !changed {
+        let Some(serial) = toplevel.send_pending_configure() else {
             return;
-        }
-        let serial = toplevel.send_configure();
+        };
         if size_changed && fades && resize_fades(size, self.window.geometry().size) {
             self.animate = Some(serial);
         }
