@@ -68,15 +68,10 @@ pub mod testing;
 
 /// The VT of the session, the active one may belong to another session.
 pub fn current_vt() -> Option<u32> {
-    let vt = match std::env::var("XDG_VTNR") {
-        Ok(vt) => vt,
-        Err(_) => std::fs::read_to_string("/sys/class/tty/tty0/active")
-            .ok()?
-            .trim()
-            .strip_prefix("tty")?
-            .to_owned(),
-    };
-    vt.trim().parse().ok()
+    let vt = std::env::var("XDG_VTNR")
+        .or_else(|_| std::fs::read_to_string("/sys/class/tty/tty0/active"))
+        .ok()?;
+    vt.trim().trim_start_matches("tty").parse().ok()
 }
 
 /// Get a VT-specific suffix for socket names.
