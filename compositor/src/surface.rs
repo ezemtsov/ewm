@@ -11,7 +11,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, Serial, Size};
 use smithay::wayland::compositor::{HookId, remove_pre_commit_hook, with_states};
 use smithay::wayland::seat::WaylandFocus;
-use smithay::wayland::shell::xdg::{ToplevelCachedState, ToplevelSurface, XdgToplevelSurfaceData};
+use smithay::wayland::shell::xdg::{ToplevelSurface, XdgToplevelSurfaceData};
 use smithay::wayland::xdg_activation::XdgActivationTokenData;
 
 use crate::animation::Animation;
@@ -182,23 +182,19 @@ impl SurfaceState {
         }
     }
 
-    /// Whether the client has committed the last configure, so its views present the primary.
+    /// Whether the client has committed the size and fullscreen last asked.
     pub fn synced(&self) -> bool {
         let Some(toplevel) = self.window.toplevel() else {
             return true;
         };
-        with_states(toplevel.wl_surface(), |states| {
-            let mut cached = states.cached_state.get::<ToplevelCachedState>();
-            let committed = cached
-                .current()
-                .last_acked
-                .as_ref()
-                .map(|configure| configure.serial);
-            let role = states.data_map.get::<XdgToplevelSurfaceData>().unwrap();
-            let role = role.lock().unwrap();
-            let acked = role.last_acked.as_ref().map(|configure| configure.serial);
-            role.pending_configures().is_empty() && acked == committed
-        })
+        let committed = toplevel.with_committed_state(|state| {
+            let state = state?;
+            Some((
+                state.size?,
+                state.states.contains(XdgToplevelState::Fullscreen),
+            ))
+        });
+        committed == self.configured()
     }
 
     /// Whether a configure whose answer fades is still unanswered.
