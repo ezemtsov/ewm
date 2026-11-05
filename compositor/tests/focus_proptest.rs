@@ -610,10 +610,12 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
                 if plain { !focused } else { before.pending },
                 "grant after a redeem on mapped {sid}",
             );
-            // Only a loud fresh redeem away from its frame flags, and a focused surface is seen.
+            // Only a loud fresh redeem away from its frame flags, and a focused surface is seen
+            // outside the overview (invariant 20).
+            let seen = focused && !fix.ewm_ref().overview.is_open();
             assert_eq!(
                 after.urgent,
-                (before.urgent || away) && !focused,
+                (before.urgent || away) && !seen,
                 "urgency after a redeem on mapped {sid}",
             );
         }
@@ -1215,6 +1217,36 @@ fn frames_back_from_parking_under_the_overview() {
     ];
     check_focus_ops(ops.clone()).unwrap();
     check_show_hide_ops(ops).unwrap();
+}
+
+#[test]
+fn a_redeem_under_the_overview_keeps_the_mark() {
+    let ops = vec![
+        Op::Action(Action::Overview(OverviewAction::Toggle)),
+        Op::Launch {
+            slot: 1,
+            hint: Some((HintFrame::Other(0), false)),
+            stale: false,
+        },
+        Op::MapLaunch,
+        Op::ApplyLayout {
+            frames: vec![FrameSpec {
+                surface_id: 100,
+                frame_focus_id: nz(200),
+                selected_entry_id: None,
+                entries: vec![EntrySpec {
+                    surface_id: 1007,
+                    entry_id: nz(20000),
+                }],
+            }],
+        },
+        Op::Launch {
+            slot: 1,
+            hint: None,
+            stale: false,
+        },
+    ];
+    check_launch_ops(ops).unwrap();
 }
 
 #[derive(Debug, Clone)]
