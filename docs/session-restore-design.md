@@ -17,11 +17,11 @@ Chromium and Electron exit.
 
 ## The mode is desktop-save-mode
 
-`desktop-save-mode` is the mode. EWM makes its frames and surfaces citizens
-of desktop.el and frameset.el, so a user who turns `desktop-save-mode` on
-gets the session back with no EWM switch. `lisp/ewm-session.el` loads with
-`ewm-mode` and acts only where `desktop-save-mode` is on. The recipe is on
-the wiki page Session Restore.
+`desktop-save-mode` is the mode. EWM makes
+its frames and surfaces citizens of desktop.el, frameset.el and bookmark.el,
+so a user who turns `desktop-save-mode` on gets the session back with no EWM
+switch. `lisp/ewm-session.el` loads with `ewm-mode` and acts only where
+`desktop-save-mode` is on. The recipe is on the wiki page Session Restore.
 
 ### Frames
 
@@ -56,17 +56,18 @@ through the same placement, frameset needs nothing of EWM.
 A surface buffer is the launch record of its application: `desktop-save-buffer`
 returns `(:app A :command C :directory D)` read from `/proc/PID/cmdline` and
 `/proc/PID/cwd`, with a one-element argv re-split because Electron rewrites
-it. Desktop persists the application through this one function. This breaks
-for sandboxed clients and for multi-process apps whose connecting process is
-not the one launched.
+it, and `bookmark-make-record-function` returns the same record under the
+`EWM` handler type. Desktop, bookmark and everything built on bookmarks
+persist applications through one function. This breaks for sandboxed clients
+and for multi-process apps whose connecting process is not the one launched.
 
 The desktop handler of a surface buffer makes a placeholder under the saved
 name, a buffer saying the application is not ready whose `g` runs the command
 again, and the placeholder is itself a desktop record, so it survives a
 second restart. Once the desktop is read every placeholder relaunches its
 command with a quiet `ewm-launch-hint`, one process per command, the `g`
-relaunch also names the selected frame in it. When the surface maps,
-`ewm-place-surface-functions` finds the placeholder by the token
+relaunch and the bookmark jump also name the selected frame in it. When the
+surface maps, `ewm-place-surface-functions` finds the placeholder by the token
 in `ewm-surface-token`, then by pid ancestry, then by app id, shown
 placeholders first, shows the buffer in the windows of the placeholder without
 selecting it, or leaves it buried as the placeholder was, and kills the
@@ -160,10 +161,9 @@ listens.
    only vetoes selection and never grants it. A token stays redeemable 180 s,
    enough for a two minute warm start, the focus grant stays 10 s.
 
-Everything else is Elisp: the frameset filters, the desktop handlers and the
-placeholder in `lisp/ewm-session.el`, `ewm-restart` in `lisp/ewm-commands.el`,
-and `ewm-output-populate-functions` and `ewm-place-surface-functions` in
-`lisp/ewm.el`.
+Everything else is Elisp: the frameset filters, the desktop handlers, the
+bookmark record and the placeholder in `lisp/ewm-session.el`, `ewm-restart` in
+`lisp/ewm-commands.el`, and `ewm-output-populate-functions` and
 `ewm-place-surface-functions` in `lisp/ewm.el`.
 
 ## Verification

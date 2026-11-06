@@ -10,14 +10,15 @@
 ;; strip position and float geometry of every frame, refreshed from the
 ;; compositor at save, and a restored frame is placed from them when its
 ;; surface arrives. A surface buffer is the launch record of its
-;; application for desktop.el. A relaunched application maps into the
-;; window of its placeholder, found by the activation token of its
-;; spawn, or stays buried as it was.
+;; application for desktop.el and bookmark.el alike. A relaunched
+;; application maps into the window of its placeholder, found by the
+;; activation token of its spawn, or stays buried as it was.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'desktop)
+(require 'bookmark)
 (require 'ewm-module)
 (ewm-module--declare)
 (require 'ewm)
@@ -120,10 +121,18 @@ A stop from outside signals the clients and Emacs at once."
           :directory (file-name-as-directory
                       (or (file-symlink-p (format "/proc/%d/cwd" pid)) "~")))))
 
+(defun ewm-session--bookmark-make-record ()
+  "Bookmark record relaunching the surface, for `bookmark-make-record'."
+  `(,(buffer-name)
+    (handler . ewm-bookmark-jump)
+    (ewm-launch . ,(or (ewm-session--current-launch-record)
+                       (user-error "%s has no process to relaunch" (buffer-name))))))
+
 (defun ewm-session--setup-surface ()
-  "Make the surface buffer a desktop record of its launch."
+  "Make the surface buffer a desktop and bookmark record of its launch."
   (setq-local ewm-session--launch-record (ewm-session--read-launch-record)
-              desktop-save-buffer #'ewm-session--current-launch-record))
+              desktop-save-buffer #'ewm-session--current-launch-record
+              bookmark-make-record-function #'ewm-session--bookmark-make-record))
 
 (define-derived-mode ewm-placeholder-mode special-mode "Relaunch"
   "Stands in for an application until its relaunch maps, g runs the command again."
@@ -226,6 +235,15 @@ A stop from outside signals the clients and Emacs at once."
       (kill-buffer placeholder)
       (when windows (ewm-layout--refresh))
       t)))
+
+(defun ewm-bookmark-jump (bookmark)
+  "Relaunch the application of BOOKMARK into a placeholder, its handler."
+  (let ((placeholder (ewm-session--make-placeholder (bookmark-name-from-full-record bookmark)
+                                               (bookmark-prop-get bookmark 'ewm-launch))))
+    (ewm-session--launch placeholder (selected-frame))
+    (set-buffer placeholder)))
+
+(put 'ewm-bookmark-jump 'bookmark-handler-type "EWM")
 
 (provide 'ewm-session)
 ;;; ewm-session.el ends here

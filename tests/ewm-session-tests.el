@@ -5,7 +5,8 @@
 ;;; Commentary:
 
 ;; Pins the Lisp-only contracts of the session integration: the desktop
-;; handler, the placeholder and the placeholder matching of the placement hook.
+;; handler, the placeholder, the placeholder matching of the placement hook
+;; and the bookmark round trip.
 ;; The restore itself runs in the VM lane.
 ;;
 ;; Run:
@@ -84,6 +85,49 @@
       (delete-process running)
       (dolist (buffer (list by-token by-pid by-app shown surface other))
         (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
+(ert-deftest ewm-session-tests/a-bookmark-on-a-surface-relaunches-its-application ()
+  "C-x r m on a surface saves the launch of its process, C-x r b runs it again in a placeholder."
+  (let* ((ewm--surfaces (make-hash-table :test 'eql))
+         (bookmark-alist nil)
+         (bookmark-default-file "/nonexistent/bookmarks")
+         (bookmark-save-flag nil)
+         (directory default-directory)
+         (command (list (executable-find "sleep") "60"))
+         (app (make-process :name "ewm-session-app" :command command :noquery t))
+         surface orphan launch launched)
+    (unwind-protect
+        (cl-letf (((symbol-function 'make-process)
+                   (lambda (&rest args)
+                     (setq launched (cons default-directory (plist-get args :command)))
+                     nil)))
+          ;; make-process returns before the child execs, give it a moment to run sleep.
+          (cl-loop repeat 200
+                   until (file-equal-p (format "/proc/%d/exe" (process-id app)) (car command))
+                   do (sleep-for 0.01))
+          (setq surface (ewm--create-surface-buffer 7 "firefox" (process-id app))
+                orphan (ewm--create-surface-buffer 8 "firefox" most-positive-fixnum))
+          (with-current-buffer surface (bookmark-set "browser"))
+          (setq launch (bookmark-prop-get (bookmark-get-bookmark "browser") 'ewm-launch))
+          (should (equal command (plist-get launch :command)))
+          (should (file-equal-p directory (plist-get launch :directory)))
+          ;; A surface with no process and no record from its map has nothing to save.
+          (with-current-buffer orphan
+            (should-error (bookmark-set "orphan") :type 'user-error))
+          ;; The application exited, the record from its map still serves.
+          (kill-process app)
+          (while (process-live-p app) (accept-process-output app 0.1))
+          (with-current-buffer surface
+            (should (equal launch (bookmark-prop-get (bookmark-make-record) 'ewm-launch))))
+          (kill-buffer surface)
+          (bookmark-jump "browser")
+          (with-current-buffer (window-buffer)
+            (should (eq 'ewm-placeholder-mode major-mode))
+            (should (equal "browser" (buffer-name)))
+            (should (equal (cons (plist-get launch :directory) command) launched))))
+      (delete-process app)
+      (dolist (buffer (list surface orphan (get-buffer "browser")))
+        (when (and buffer (buffer-live-p buffer)) (kill-buffer buffer))))))
 
 (provide 'ewm-session-tests)
 ;;; ewm-session-tests.el ends here
