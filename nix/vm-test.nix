@@ -79,6 +79,8 @@ let
         # QEMU enables only the first head.
         boot.kernelParams = [ "video=Virtual-2:1280x800e" ];
         virtualisation = {
+          # Room for a core of the Emacs process.
+          diskSize = 4096;
           memorySize = 4096;
           cores = 4;
           qemu.options = [
@@ -90,6 +92,7 @@ let
       };
 
     testScript = ''
+      import contextlib
       import datetime as dt
       import shlex
       import shutil
@@ -102,8 +105,11 @@ let
           return f"su - alice -c {shlex.quote(client)}"
 
       def check(form):
-          """Evaluate FORM, a check that returns its PASS line or signals."""
-          print(machine.succeed(eval_cmd(form), timeout=dt.timedelta(minutes=2)))
+          """Evaluate FORM, a check that returns its PASS or SKIP line or signals."""
+          out = machine.succeed(eval_cmd(form), timeout=dt.timedelta(minutes=2))
+          print(out)
+          # emacsclient exits 0 when the server hangs up mid eval, a crash leaves no line.
+          assert out.startswith(('"PASS ', '"SKIP ')), f"{form}: {out!r}"
 
       def exit_session(cmd):
           """Run CMD, which ends the Emacs process, and wait until it is gone."""
@@ -200,11 +206,12 @@ let
               check('(ewm-live-tests-session-restored "login")')
 
           check("(ewm-live-tests-teardown)")
+      except Exception:
+          # A crash hangs up emacsclient before systemd-coredump logs the core entry with its stack trace.
+          with contextlib.suppress(Exception):
+              print(machine.wait_until_succeeds("coredumpctl info --no-pager | grep -v 'without build-id'", timeout=dt.timedelta(seconds=30)))
+          raise
       finally:
-          # A crash prints its stack to the journal a moment after the dump.
-          if machine.execute("journalctl -q -b --no-pager | grep -q 'terminated abnormally'")[0] == 0:
-              machine.wait_until_succeeds("journalctl -q -b --no-pager | grep -q 'Stack trace of thread'", timeout=dt.timedelta(minutes=1))
-              print(machine.execute("journalctl -q -b --no-pager -o cat | grep -B3 -A80 'Stack trace of thread' | head -200")[1])
           machine.execute("mkdir -p /tmp/session")
           shutil.rmtree(driver.out_dir / "session", ignore_errors=True)
           machine.copy_from_machine("/tmp/session")
