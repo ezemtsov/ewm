@@ -781,6 +781,10 @@ The compositor runs as a thread within the Emacs process."
   ;; A plain exit runs no frame hooks either.
   (let ((delete-frame-functions nil)
         (after-delete-frame-functions nil))
+    ;; Deleting a pgtk terminal closes its display, frames deleted after that crash Emacs at exit.
+    (dolist (frame (frame-list))
+      (when (memq (frame-live-p frame) ewm--managed-window-systems)
+        (delete-frame frame t)))
     (dolist (terminal (terminal-list))
       (when (memq (terminal-live-p terminal) ewm--managed-window-systems)
         (delete-terminal terminal t)))
