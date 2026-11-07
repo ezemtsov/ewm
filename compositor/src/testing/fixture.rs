@@ -474,8 +474,12 @@ impl Fixture {
         headless.remove_output(name, &mut self.state.ewm);
     }
 
+    /// Whether the virtual connector `name` is plugged in, enabled or not.
     pub fn has_output(&self, name: &str) -> bool {
-        self.state.ewm.connected_output(name).is_some()
+        let Backend::Headless(headless) = &self.state.backend else {
+            unreachable!("test fixture always uses the headless backend");
+        };
+        headless.outputs.contains_key(name)
     }
 
     /// Dispatch the event loop once with a short timeout

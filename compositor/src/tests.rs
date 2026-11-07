@@ -1,4 +1,5 @@
 use proptest::prelude::*;
+use wayland_client::Proxy;
 
 use super::*;
 use crate::idle::SEPIA_FADE_DURATION;
@@ -63,6 +64,53 @@ fn reenabled_output_returns_to_its_slot() {
         );
         fix.apply_output_config(HEAD_A);
         assert_eq!(slots(&fix), expected);
+    }
+}
+
+/// GTK 3 keeps the objects of a withdrawn global and writes their events into freed memory.
+#[test]
+fn re_enabled_output_speaks_only_through_its_new_global() {
+    let mut fix = testing::Fixture::new().unwrap();
+    fix.add_output(HEAD_A, 1280, 720);
+    fix.add_output(HEAD_B, 1920, 1080);
+    let mut client = fix.new_client().unwrap();
+    fix.roundtrip(&mut client);
+    let output_id = |client: &testing::TestClient| client.state.outputs[HEAD_B].id().protocol_id();
+    let configure = |fix: &mut testing::Fixture, name: &str, config: OutputConfig| {
+        fix.ewm().output_config.insert(name.to_string(), config);
+        fix.apply_output_config(name);
+    };
+    let old = output_id(&client);
+
+    configure(
+        &mut fix,
+        HEAD_B,
+        OutputConfig {
+            enabled: false,
+            ..Default::default()
+        },
+    );
+    fix.roundtrip(&mut client);
+    client.state.output_events.clear();
+
+    configure(&mut fix, HEAD_B, OutputConfig::default());
+    fix.roundtrip(&mut client);
+    // A narrower HEAD_A moves HEAD_B, which is announced again.
+    configure(
+        &mut fix,
+        HEAD_A,
+        OutputConfig {
+            scale: Some(2.0),
+            ..Default::default()
+        },
+    );
+    fix.roundtrip(&mut client);
+
+    let new = output_id(&client);
+    let events = &client.state.output_events;
+    assert!(events.iter().all(|(id, _)| *id != old), "{events:?}");
+    for event in ["geometry", "mode", "done"] {
+        assert!(events.contains(&(new, event)), "{event}");
     }
 }
 

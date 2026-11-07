@@ -29,7 +29,7 @@ impl Ewm {
         Output::from_resource(wl_output).filter(|output| self.output_mapped(output))
     }
 
-    /// Find a connected output by name, whether or not it is currently mapped.
+    /// The output of connector `name`.
     pub(crate) fn connected_output(&self, name: &str) -> Option<Output> {
         self.output_state
             .keys()
@@ -37,25 +37,8 @@ impl Ewm {
             .cloned()
     }
 
-    /// Unmap a connected output while keeping its head available for
-    /// output-management so it can be re-enabled later.
-    pub(crate) fn disable_output(&mut self, output: &Output) {
-        if !self.output_mapped(output) {
-            return;
-        }
-
-        self.detach_output(output);
-        self.queue_redraw_all();
-    }
-
     /// Drop every record of a removed output once the backend has torn it down.
     pub fn remove_output(&mut self, output: &Output) {
-        let output_name = output.name();
-
-        // The output goes first, then the frames it took with it.
-        self.queue_event(Event::OutputDisconnected {
-            name: output_name.clone(),
-        });
         self.detach_output(output);
 
         // Cancel pending estimated-VBlank timers
@@ -68,7 +51,7 @@ impl Ewm {
 
         self.check_lock_on_output_removed();
 
-        info!("Output removed: {}", output_name);
+        info!("Output removed: {}", output.name());
     }
 
     /// Stop the screen casts of an output that left the space.
@@ -120,28 +103,19 @@ impl Ewm {
 
         let mut states = HashMap::new();
         for info in output_infos {
+            // A listed head drives an output exactly while it is enabled.
             let output = self.layout.output(&info.name);
             let geo = output.and_then(|o| self.layout.output_rect(o));
 
-            let enabled = self
-                .output_config
-                .get(&info.name)
-                .map(|c| c.enabled)
-                .unwrap_or(true);
-
             // Find current mode index
-            let current_mode = if enabled {
-                output.and_then(|o| {
-                    let current = o.current_mode()?;
-                    info.modes.iter().position(|m| {
-                        m.width == current.size.w
-                            && m.height == current.size.h
-                            && m.refresh == current.refresh
-                    })
+            let current_mode = output.and_then(|o| {
+                let current = o.current_mode()?;
+                info.modes.iter().position(|m| {
+                    m.width == current.size.w
+                        && m.height == current.size.h
+                        && m.refresh == current.refresh
                 })
-            } else {
-                None
-            };
+            });
 
             let head = OutputHeadState {
                 name: info.name.clone(),
@@ -153,7 +127,7 @@ impl Ewm {
                 } else {
                     None
                 },
-                enabled,
+                enabled: output.is_some(),
                 modes: info
                     .modes
                     .iter()
@@ -485,34 +459,21 @@ impl Ewm {
             .collect()
     }
 
-    /// Map `output`, pack the layout around it, give it a monitor and advertise it to clients.
-    pub(crate) fn map_output(&mut self, output: &Output) {
+    /// Map `output`, pack the layout around it, advertise it to clients and hand it its frames.
+    pub fn add_output(&mut self, output: &Output) {
         self.space.map_output(output, output.current_location());
         let working_area = self.get_working_area(output);
         self.layout.add_output(output.clone(), working_area);
         self.reposition_outputs(Some(output));
-        self.output_state
-            .get_mut(output)
-            .unwrap()
-            .global
-            .get_or_insert_with(|| output.create_global::<State>(&self.display_handle));
-    }
-
-    /// Register an output the backend has set up and mapped.
-    pub fn add_output(&mut self, output: &Output, info: OutputInfo) {
+        self.output_state.get_mut(output).unwrap().global =
+            Some(output.create_global::<State>(&self.display_handle));
         self.refresh_cursor_outputs();
-
-        self.queue_event(Event::OutputDetected(info));
-
-        if self.output_mapped(output) {
-            self.attach_output(output);
-            self.introspect_windows_dirty = true;
-        }
-        self.output_management_state.output_heads_changed = true;
+        self.attach_output(output);
+        self.introspect_windows_dirty = true;
     }
 
     /// Follow a new mode, scale, transform or position the backend applied to `output`.
-    pub fn output_config_changed(&mut self, output: &Output, became_mapped: bool) {
+    pub fn output_config_changed(&mut self, output: &Output) {
         let current_scale = output.current_scale().fractional_scale();
         self.reposition_outputs(Some(output));
         if let Some(strip) = self.layout.strip_mut(output) {
@@ -562,16 +523,9 @@ impl Ewm {
         }
         self.refresh_primary_assignments();
         self.queue_redraw_all();
-        if became_mapped {
-            self.attach_output(output);
-        }
 
         let event = self.output_config_event(output);
         self.queue_event(event);
-        // Enabled by config, nothing else asks Emacs for the frames it lacks.
-        if became_mapped {
-            self.queue_event(Event::OutputsComplete);
-        }
 
         self.output_management_state.output_heads_changed = true;
     }

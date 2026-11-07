@@ -278,6 +278,8 @@ pub struct ClientState {
     pub output_names: HashMap<u32, String>,
     /// `wl_output` proxies by server-advertised name.
     pub outputs: HashMap<String, wl_output::WlOutput>,
+    /// Every `wl_output` event, by protocol id.
+    pub output_events: Vec<(u32, &'static str)>,
     /// Registry name -> interface of every global currently advertised.
     pub globals: HashMap<u32, String>,
     pub events: Vec<ClientEvent>,
@@ -997,6 +999,10 @@ impl Dispatch<wl_output::WlOutput, ()> for ClientState {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        let desc = &wl_output::WlOutput::interface().events[usize::from(event.opcode())];
+        state
+            .output_events
+            .push((output.id().protocol_id(), desc.name));
         if let wl_output::Event::Name { name } = event {
             state.outputs.insert(name.clone(), output.clone());
             state.output_names.insert(output.id().protocol_id(), name);

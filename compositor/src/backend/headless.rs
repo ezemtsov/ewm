@@ -18,14 +18,9 @@ use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use tracing::{debug, info};
 
 use crate::backend::{
-    OutputInfos, apply_enabled_output_config, apply_initial_output_config, map_initial_output,
+    OutputInfos, apply_enabled_output_config, apply_initial_output_config, output_enabled,
 };
-use crate::{Ewm, OutputState, RedrawState};
-
-/// A virtual output for headless testing.
-struct VirtualOutput {
-    output: Output,
-}
+use crate::{Event, Ewm, OutputState, RedrawState};
 
 /// Headless backend state for testing without real hardware
 ///
@@ -39,8 +34,8 @@ struct VirtualOutput {
 ///
 /// The headless backend provides virtual outputs for exercising compositor logic in tests.
 pub struct HeadlessBackend {
-    /// Virtual outputs indexed by name
-    outputs: HashMap<String, VirtualOutput>,
+    /// Plugged virtual connectors by name.
+    pub(crate) outputs: HashMap<String, PhysicalProperties>,
     output_infos: OutputInfos,
     /// Renders per output, for tests that watch the redraw loop.
     render_counts: HashMap<String, u32>,
@@ -90,7 +85,26 @@ impl HeadlessBackend {
         serial: &str,
         ewm: &mut Ewm,
     ) {
-        let output = Output::new(
+        self.output_infos.insert(crate::OutputInfo {
+            name: name.to_string(),
+            make: make.to_string(),
+            model: model.to_string(),
+            serial: serial.to_string(),
+            width_mm: width,
+            height_mm: height,
+            x: 0,
+            y: 0,
+            scale: 1.0,
+            transform: 0,
+            modes: vec![crate::OutputMode {
+                width,
+                height,
+                refresh: 60_000,
+                preferred: true,
+                current: true,
+            }],
+        });
+        self.outputs.insert(
             name.to_string(),
             PhysicalProperties {
                 size: (width, height).into(),
@@ -100,69 +114,40 @@ impl HeadlessBackend {
                 serial_number: serial.into(),
             },
         );
+        self.connect_connector(name, ewm);
+    }
 
-        let mode = Mode {
-            size: (width, height).into(),
-            refresh: 60_000, // 60Hz
+    /// Bring up the plugged connector `name` when config allows, and tell Emacs of it.
+    fn connect_connector(&mut self, name: &str, ewm: &mut Ewm) -> bool {
+        let Some(properties) = self.outputs.get(name).cloned() else {
+            return false;
         };
-        // Look up stored config for this output
-        let config = ewm.output_config.get(name).cloned();
-        apply_initial_output_config(&output, mode, config.as_ref());
-
-        ewm.output_state.insert(
-            output.clone(),
-            OutputState::new(name, Some(Duration::from_micros(16_667)), (width, height)), // ~60Hz
-        );
-        let (position, is_enabled) = map_initial_output(ewm, &output, config.as_ref());
-
-        self.outputs.insert(
-            name.to_string(),
-            VirtualOutput {
-                output: output.clone(),
-            },
-        );
-
-        let output_info = crate::OutputInfo {
-            name: name.to_string(),
-            make: make.to_string(),
-            model: model.to_string(),
-            serial: serial.to_string(),
-            width_mm: width,
-            height_mm: height,
-            x: position.x,
-            y: position.y,
-            scale: output.current_scale().fractional_scale(),
-            transform: crate::backend::transform_to_int(output.current_transform()),
-            modes: vec![crate::OutputMode {
-                width,
-                height,
-                refresh: 60_000,
-                preferred: true,
-                current: true,
-            }],
-        };
-
-        self.output_infos.insert(output_info.clone());
-        ewm.add_output(&output, output_info);
-
-        if is_enabled {
-            info!(
-                "Added virtual output: {} ({}x{}) at ({}, {})",
-                name, width, height, position.x, position.y
+        let connected = output_enabled(ewm, name);
+        if connected {
+            let (width, height) = (properties.size.w, properties.size.h);
+            let output = Output::new(name.to_string(), properties);
+            let mode = Mode {
+                size: (width, height).into(),
+                refresh: 60_000, // 60Hz
+            };
+            apply_initial_output_config(&output, mode, ewm.output_config.get(name));
+            ewm.output_state.insert(
+                output.clone(),
+                OutputState::new(name, Some(Duration::from_micros(16_667)), (width, height)), // ~60Hz
             );
-        } else {
-            info!(
-                "Added virtual output: {} ({}x{}) disabled",
-                name, width, height
-            );
+            ewm.add_output(&output);
+            info!("Added virtual output: {} ({}x{})", name, width, height);
         }
+        self.output_infos.announce(name, ewm);
+        connected
     }
 
     /// Remove a virtual output by name
     pub fn remove_output(&mut self, name: &str, ewm: &mut Ewm) {
-        if let Some(virtual_output) = self.outputs.remove(name) {
-            self.output_infos.remove(name);
-            ewm.remove_output(&virtual_output.output);
+        self.outputs.remove(name);
+        self.output_infos.disconnect(name, ewm);
+        if let Some(output) = ewm.connected_output(name) {
+            ewm.remove_output(&output);
         }
     }
 
@@ -191,29 +176,27 @@ impl HeadlessBackend {
         super::RenderResult::Submitted
     }
 
-    /// Apply output configuration for a live headless output.
-    ///
-    /// Headless backend supports scale, transform, position, and enabled state.
-    /// Mode changes are not supported (virtual outputs have fixed size).
+    /// Apply the config of `output_name`, connecting or dropping the output as enabled says.
     pub fn apply_output_config(&mut self, ewm: &mut Ewm, output_name: &str) {
         let config = match ewm.output_config.get(output_name) {
             Some(c) => c.clone(),
             None => return,
         };
 
-        let output = ewm.connected_output(output_name);
-        let Some(output) = output else {
-            info!("apply_output_config: output not found: {}", output_name);
-            return;
-        };
-
-        // Handle disabled output
-        if !config.enabled {
-            info!("Disabled output {}", output_name);
-            ewm.disable_output(&output);
-            return;
+        match (config.enabled, ewm.connected_output(output_name)) {
+            (true, Some(output)) => apply_enabled_output_config(ewm, &output, &config, None),
+            // Enabled again, a fresh output as a replug brings one.
+            (true, None) => {
+                if self.connect_connector(output_name, ewm) {
+                    ewm.queue_event(Event::OutputsComplete);
+                }
+            }
+            (false, Some(output)) => {
+                // Disabled, the output leaves like an unplugged one.
+                info!("Disabled output {}", output_name);
+                ewm.remove_output(&output);
+            }
+            (false, None) => {}
         }
-
-        apply_enabled_output_config(ewm, &output, &config, None);
     }
 }

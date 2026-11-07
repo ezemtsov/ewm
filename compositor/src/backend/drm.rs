@@ -89,7 +89,7 @@ use crate::{
     Ewm, LockRenderState, LockState, OutputInfo, OutputMode, OutputState, RedrawState, State,
     backend::{
         Backend, OutputInfos, apply_enabled_output_config, apply_initial_output_config,
-        map_initial_output,
+        output_enabled,
     },
     cursor::CursorTextureCache,
     render::{collect_render_elements_for_output, process_screencopies_for_output},
@@ -1265,52 +1265,32 @@ impl DrmBackendState {
 }
 
 impl DrmBackendState {
-    /// Clear the DRM surface of an output (DPMS off). The surface is kept, so
-    /// enabling the output again re-enables it on the next queue_frame.
-    fn power_off_output(&mut self, output: &Output) {
-        let Some((node, crtc)) = self.find_output_device(output) else {
-            return;
-        };
-        let Some(surface) = self
-            .devices
-            .get_mut(&node)
-            .and_then(|device| device.surfaces.get_mut(&crtc))
-        else {
-            return;
-        };
-        if let Err(err) = surface.compositor.clear() {
-            warn!(
-                "Error clearing DRM surface for {}: {:?}",
-                output.name(),
-                err
-            );
-        }
-    }
-
-    /// Apply output configuration for a live output.
-    ///
-    /// Resolves the final state for mode, scale, transform, and position,
-    /// then applies everything in one pass. Updates reporting metadata,
-    /// refresh interval, working areas.
+    /// Apply the config of `output_name`, connecting or dropping the output as enabled says.
     pub fn apply_output_config(&mut self, ewm: &mut Ewm, output_name: &str) {
         let config = match ewm.output_config.get(output_name) {
             Some(c) => c.clone(),
             None => return,
         };
 
-        let output = ewm.connected_output(output_name);
-        let Some(output) = output else {
-            warn!("apply_output_config: output not found: {}", output_name);
-            return;
+        let output = match (config.enabled, ewm.connected_output(output_name)) {
+            (true, Some(output)) => output,
+            (true, None) => {
+                // Enabled again, the connector comes back as a replug brings it.
+                if self.connect_connectors(ewm, |conn| format_connector_name(conn) == output_name) {
+                    ewm.queue_event(crate::event::Event::OutputsComplete);
+                }
+                return;
+            }
+            (false, Some(output)) => {
+                // Disabled, the output leaves like an unplugged one.
+                info!("Disabled output {}", output_name);
+                if let Some((node, crtc)) = self.find_output_device(&output) {
+                    self.disconnect_output(node, crtc, ewm);
+                }
+                return;
+            }
+            (false, None) => return,
         };
-
-        // Handle disabled output
-        if !config.enabled {
-            info!("Disabled output {}", output_name);
-            ewm.disable_output(&output);
-            self.power_off_output(&output);
-            return;
-        }
 
         let Some((node, crtc)) = self.find_output_device(&output) else {
             warn!("No DRM surface for output: {}", output_name);
@@ -1896,19 +1876,17 @@ impl DrmBackendState {
             match event {
                 DrmScanEvent::Connected {
                     connector,
-                    crtc: Some(crtc),
+                    crtc: Some(_),
                 } => {
-                    info!(
-                        "connector connected on {:?}: {}",
-                        node,
-                        format_connector_name(&connector)
-                    );
-                    added.push((connector, crtc));
+                    let name = format_connector_name(&connector);
+                    info!("connector connected on {:?}: {}", node, name);
+                    added.push(name);
                 }
                 DrmScanEvent::Disconnected {
-                    crtc: Some(crtc), ..
+                    connector,
+                    crtc: Some(crtc),
                 } => {
-                    removed.push(crtc);
+                    removed.push((connector, crtc));
                 }
                 _ => (),
             }
@@ -1918,41 +1896,67 @@ impl DrmBackendState {
             return false;
         }
 
-        let mut changed = false;
-
-        for crtc in removed {
+        let changed = !removed.is_empty();
+        for (connector, crtc) in removed {
+            self.output_infos
+                .disconnect(&format_connector_name(&connector), ewm);
             self.disconnect_output(node, crtc, ewm);
-            changed = true;
         }
 
-        let Some(device) = self.devices.get(&node) else {
-            return changed;
-        };
-        let disable_laptop_panels = self.laptop_panels_suppressed();
-        let added: Vec<_> = added
-            .into_iter()
-            .filter(|(connector, crtc)| {
-                !device.surfaces.contains_key(crtc)
-                    && !(disable_laptop_panels && is_laptop_connector(connector))
-            })
-            .collect();
-
-        for (connector, crtc) in added {
-            if let Err(err) = self.connect_output(node, connector, crtc, ewm) {
-                warn!("failed to connect output on {:?}: {:?}", node, err);
-            } else {
-                changed = true;
-            }
-        }
-
-        changed
+        let connected =
+            self.connect_connectors(ewm, |conn| added.contains(&format_connector_name(conn)));
+        connected || changed
     }
 
-    /// Connect a new output
-    ///
-    /// Creates the DRM surface, Smithay output, and DrmCompositor.
-    /// Reads `ewm.output_config` for mode/scale/transform/position.
-    /// Sends the OutputDetected event to Emacs.
+    /// List the plugged connector for Emacs and the output management protocol.
+    fn list_connector(&mut self, node: DrmNode, connector: &connector::Info) {
+        let Some(device) = self.devices.get(&node) else {
+            return;
+        };
+        // Read EDID for manufacturer/model/serial
+        let (make, model, serial) = if let Some(info) =
+            smithay_drm_extras::display_info::for_connector(&device.drm, connector.handle())
+        {
+            (
+                info.make().unwrap_or_else(|| "Unknown".to_string()),
+                info.model().unwrap_or_else(|| "Unknown".to_string()),
+                info.serial().unwrap_or_default(),
+            )
+        } else {
+            ("Unknown".to_string(), "Unknown".to_string(), String::new())
+        };
+        let physical_size = connector.size().unwrap_or((0, 0));
+        let modes = connector
+            .modes()
+            .iter()
+            .map(|m| {
+                let smithay = Mode::from(*m);
+                OutputMode {
+                    width: smithay.size.w,
+                    height: smithay.size.h,
+                    refresh: smithay.refresh,
+                    preferred: m.mode_type().contains(ModeTypeFlags::PREFERRED),
+                    current: false,
+                }
+            })
+            .collect();
+        // The live output shapes the geometry, see sync.
+        self.output_infos.insert(OutputInfo {
+            name: format_connector_name(connector),
+            make,
+            model,
+            serial,
+            width_mm: physical_size.0 as i32,
+            height_mm: physical_size.1 as i32,
+            x: 0,
+            y: 0,
+            scale: 1.0,
+            transform: 0,
+            modes,
+        });
+    }
+
+    /// Drive the listed connector: its DRM surface, output and DrmCompositor, shaped by its config.
     fn connect_output(
         &mut self,
         node: DrmNode,
@@ -1960,12 +1964,16 @@ impl DrmBackendState {
         crtc: crtc::Handle,
         ewm: &mut Ewm,
     ) -> anyhow::Result<()> {
+        let connector_name = format_connector_name(&connector);
+        let config = ewm.output_config.get(&connector_name).cloned();
+        // The listing holds the identity read from the EDID at plug time.
+        let listed = self
+            .output_infos
+            .get(&connector_name)
+            .context("connector is not listed")?;
         let Some(device) = self.devices.get_mut(&node) else {
             bail!("DRM device not initialized");
         };
-
-        let connector_name = format_connector_name(&connector);
-        let config = ewm.output_config.get(&connector_name).cloned();
 
         // Select mode: modeline takes precedence, then the configured mode, then
         // the connector's preferred mode (handled inside pick_mode).
@@ -2044,31 +2052,15 @@ impl DrmBackendState {
                 .clone()
         };
 
-        // Read EDID for manufacturer/model/serial
-        let (make, model, serial_number) = if let Some(info) =
-            smithay_drm_extras::display_info::for_connector(&device.drm, connector.handle())
-        {
-            (
-                info.make().unwrap_or_else(|| "Unknown".to_string()),
-                info.model().unwrap_or_else(|| "Unknown".to_string()),
-                info.serial().unwrap_or_default(),
-            )
-        } else {
-            ("Unknown".to_string(), "Unknown".to_string(), String::new())
-        };
-
         // Create Smithay output
         let output = Output::new(
             connector_name.clone(),
             PhysicalProperties {
-                size: connector
-                    .size()
-                    .map(|(w, h)| (w as i32, h as i32).into())
-                    .unwrap_or_default(),
+                size: (listed.width_mm, listed.height_mm).into(),
                 subpixel: Subpixel::Unknown,
-                make: make.clone(),
-                model: model.clone(),
-                serial_number: serial_number.clone(),
+                make: listed.make,
+                model: listed.model,
+                serial_number: listed.serial,
             },
         );
 
@@ -2190,23 +2182,10 @@ impl DrmBackendState {
         }
         ewm.output_state.insert(output.clone(), output_state);
 
-        let (position, is_enabled) = map_initial_output(ewm, &output, config.as_ref());
-        if is_enabled {
-            info!(
-                "Mapped output {} at position ({}, {}), size {}x{}",
-                connector_name,
-                position.x,
-                position.y,
-                mode.size().0,
-                mode.size().1
-            );
-        } else {
-            info!("Output {} connected but disabled by config", connector_name);
-        }
+        ewm.add_output(&output);
 
-        // Stay off when disabled, or when monitors are off and this is one
-        // replugging itself after powering down.
-        if (!is_enabled || !ewm.monitors_active)
+        // Monitors are off and this is one replugging itself after powering down, stay off.
+        if !ewm.monitors_active
             && let Some(surface) = device.surfaces.get_mut(&crtc)
             && let Err(err) = surface.compositor.clear()
         {
@@ -2216,45 +2195,16 @@ impl DrmBackendState {
             );
         }
 
-        let physical_size = connector.size().unwrap_or((0, 0));
-        let output_modes: Vec<OutputMode> = connector
-            .modes()
-            .iter()
-            .map(|m| {
-                let smithay = Mode::from(*m);
-                OutputMode {
-                    width: smithay.size.w,
-                    height: smithay.size.h,
-                    refresh: smithay.refresh,
-                    preferred: m.mode_type().contains(ModeTypeFlags::PREFERRED),
-                    current: smithay == smithay_mode,
-                }
-            })
-            .collect();
-
-        let output_info = OutputInfo {
-            name: connector_name.clone(),
-            make,
-            model,
-            serial: serial_number,
-            width_mm: physical_size.0 as i32,
-            height_mm: physical_size.1 as i32,
-            x: position.x,
-            y: position.y,
-            scale: output.current_scale().fractional_scale(),
-            transform: super::transform_to_int(output.current_transform()),
-            modes: output_modes,
-        };
-
-        self.output_infos.insert(output_info.clone());
-        ewm.add_output(&output, output_info);
-
-        info!("Output connected: {}", connector_name);
+        info!(
+            "Output connected: {} at {:?}",
+            connector_name,
+            output.current_location()
+        );
 
         Ok(())
     }
 
-    /// Disconnect an output
+    /// Drop the output on `crtc` with its surface, which blanks the connector.
     fn disconnect_output(&mut self, node: DrmNode, crtc: crtc::Handle, ewm: &mut Ewm) {
         let Some(device) = self.devices.get_mut(&node) else {
             return;
@@ -2264,7 +2214,6 @@ impl DrmBackendState {
             return;
         };
 
-        self.output_infos.remove(&surface.output.name());
         ewm.remove_output(&surface.output);
     }
 
@@ -2328,7 +2277,7 @@ impl DrmBackendState {
         }
 
         // The laptop panel is the display here.
-        let reconnected = self.reconnect_laptop_panels(ewm);
+        let reconnected = self.connect_connectors(ewm, is_laptop_connector);
         if !self.lid_closed {
             self.cancel_closed_lid_settle_timer();
             ewm.wake_from_idle();
@@ -2362,11 +2311,12 @@ impl DrmBackendState {
         }
     }
 
-    fn reconnect_laptop_panels(&mut self, ewm: &mut Ewm) -> bool {
-        // Lid opened: reconnect laptop panels that the scanner still knows
-        // about but that we disconnected. on_device_changed() won't help
-        // here because the scanner sees no state change (the connector was
-        // physically connected the whole time).
+    /// List the connectors `wanted` picks, drive those config and the lid allow, and tell Emacs of each.
+    fn connect_connectors(
+        &mut self,
+        ewm: &mut Ewm,
+        wanted: impl Fn(&connector::Info) -> bool,
+    ) -> bool {
         let to_connect: Vec<(DrmNode, connector::Info, crtc::Handle)> = self
             .devices
             .iter()
@@ -2376,18 +2326,30 @@ impl DrmBackendState {
                     .crtcs()
                     .filter(|(conn, _)| conn.state() == connector::State::Connected)
                     .filter(|(_, crtc)| !device.surfaces.contains_key(crtc))
-                    .filter(|(conn, _)| is_laptop_connector(conn))
+                    .filter(|(conn, _)| wanted(conn))
                     .map(|(conn, crtc)| (*node, conn.clone(), crtc))
                     .collect::<Vec<_>>()
             })
             .collect();
-        let changed = !to_connect.is_empty();
+        let mut connected = false;
         for (node, connector, crtc) in to_connect {
-            if let Err(err) = self.connect_output(node, connector, crtc, ewm) {
-                warn!("Failed to reconnect laptop panel: {:?}", err);
+            self.list_connector(node, &connector);
+            let name = format_connector_name(&connector);
+            if self.wants_connector(ewm, &connector) {
+                match self.connect_output(node, connector, crtc, ewm) {
+                    Ok(()) => connected = true,
+                    Err(err) => warn!("Failed to connect output: {:?}", err),
+                }
             }
+            self.output_infos.announce(&name, ewm);
         }
-        changed
+        connected
+    }
+
+    /// Whether config and the lid let the plugged connector drive an output.
+    fn wants_connector(&self, ewm: &Ewm, connector: &connector::Info) -> bool {
+        output_enabled(ewm, &format_connector_name(connector))
+            && !(self.laptop_panels_suppressed() && is_laptop_connector(connector))
     }
 
     fn refresh_lid_state_from_acpi(&mut self) -> bool {
@@ -2681,19 +2643,20 @@ impl DrmBackendState {
         let Ok(node) = DrmNode::from_dev_id(device_id) else {
             return;
         };
-        let Some(device) = self.devices.remove(&node) else {
+        let Some(device) = self.devices.get(&node) else {
             return;
         };
 
-        let crtcs: Vec<_> = device.surfaces.keys().copied().collect();
-        // Put it back while disconnect_output removes surfaces.
-        self.devices.insert(node, device);
-        for crtc in crtcs {
+        let connectors: Vec<_> = device
+            .drm_scanner
+            .crtcs()
+            .map(|(conn, crtc)| (format_connector_name(conn), crtc))
+            .collect();
+        for (name, crtc) in connectors {
+            self.output_infos.disconnect(&name, ewm);
             self.disconnect_output(node, crtc, ewm);
         }
-        let Some(device) = self.devices.remove(&node) else {
-            return;
-        };
+        let device = self.devices.remove(&node).unwrap();
 
         if let Some(handle) = &self.loop_handle {
             handle.remove(device.notifier_token);

@@ -28,9 +28,9 @@ pub use drm::DrmBackendState;
 pub use headless::HeadlessBackend;
 use smithay::output::{Mode, Output, Scale};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Logical, Point, Transform};
+use smithay::utils::Transform;
 
-use crate::{Ewm, OutputConfig, OutputInfo, OutputMode};
+use crate::{Event, Ewm, OutputConfig, OutputInfo, OutputMode};
 
 /// Backend-owned output metadata for reporting protocols and Emacs events.
 #[derive(Clone, Default)]
@@ -53,8 +53,22 @@ impl OutputInfos {
         }
     }
 
-    pub(crate) fn remove(&self, name: &str) {
+    /// Unlist `name` for Emacs and the output management protocol.
+    pub(crate) fn disconnect(&self, name: &str, ewm: &mut Ewm) {
         self.infos.lock().unwrap().retain(|info| info.name != name);
+        ewm.queue_event(Event::OutputDisconnected {
+            name: name.to_string(),
+        });
+        ewm.output_management_state.output_heads_changed = true;
+    }
+
+    /// Announce the listing of `name`, as its live output shapes it, to Emacs and the protocol.
+    pub(crate) fn announce(&self, name: &str, ewm: &mut Ewm) {
+        self.sync(ewm);
+        if let Some(info) = self.get(name) {
+            ewm.queue_event(Event::OutputDetected(info));
+        }
+        ewm.output_management_state.output_heads_changed = true;
     }
 
     /// Refresh scale, transform, position and current mode from the live outputs.
@@ -99,7 +113,6 @@ impl OutputInfos {
         ordered
     }
 
-    #[cfg(feature = "screencast")]
     pub(crate) fn get(&self, name: &str) -> Option<OutputInfo> {
         self.infos
             .lock()
@@ -150,18 +163,11 @@ pub(crate) fn apply_initial_output_config(
     output.set_preferred(mode);
 }
 
-pub(crate) fn map_initial_output(
-    ewm: &mut Ewm,
-    output: &Output,
-    config: Option<&OutputConfig>,
-) -> (Point<i32, Logical>, bool) {
-    let enabled = config.map(|config| config.enabled).unwrap_or(true);
-    if enabled {
-        ewm.map_output(output);
-    }
-    let position = ewm.layout.output_rect(output).unwrap_or_default().loc;
-
-    (position, enabled)
+/// Whether config lets the plugged connector `name` drive an output.
+pub(crate) fn output_enabled(ewm: &Ewm, name: &str) -> bool {
+    ewm.output_config
+        .get(name)
+        .is_none_or(|config| config.enabled)
 }
 
 pub(crate) fn apply_enabled_output_config(
@@ -178,13 +184,7 @@ pub(crate) fn apply_enabled_output_config(
     if let Some(mode) = mode {
         output.set_preferred(mode);
     }
-
-    let became_mapped = !ewm.output_mapped(output);
-    if became_mapped {
-        ewm.map_output(output);
-        ewm.reconcile_output_entries(output);
-    }
-    ewm.output_config_changed(output, became_mapped);
+    ewm.output_config_changed(output);
 }
 
 /// Result of a backend render operation.
