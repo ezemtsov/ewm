@@ -659,11 +659,12 @@ impl Strip {
             .map(|(pos, closing)| (closing, *pos - Point::from((self.view_pos(), 0.))))
     }
 
-    /// `(idx, frame, slot, screen_x)` for frames whose slot meets the screen-space `viewport`.
+    /// `(idx, frame, slot, screen_x)` for frames whose slot meets the screen-space `viewport`,
+    /// every frame without one.
     pub fn frames_with_render_geo(
         &self,
         view_size: Size<f64, Logical>,
-        viewport: Rectangle<f64, Logical>,
+        viewport: Option<Rectangle<f64, Logical>>,
     ) -> impl Iterator<Item = (usize, &Frame, Rectangle<f64, Logical>, f64)> {
         let view_pos = self.view_pos();
         let mut col_x = 0.0;
@@ -676,8 +677,8 @@ impl Strip {
             col_x += self.stride(f);
             rect.loc.x += screen_x;
             viewport
-                .intersection(rect)
-                .map(|_| (idx, f, rect, screen_x))
+                .is_none_or(|viewport| viewport.overlaps(rect))
+                .then_some((idx, f, rect, screen_x))
         })
     }
 
@@ -922,7 +923,7 @@ mod tests {
             }).collect::<Vec<_>>();
 
             let rendered = s
-                .frames_with_render_geo(view, Rectangle::from_size(view))
+                .frames_with_render_geo(view, Some(Rectangle::from_size(view)))
                 .map(|(idx, _, rect, _)| (idx, rect.loc.x, rect.size.w, rect.size.h))
                 .collect::<Vec<_>>();
 
@@ -1043,9 +1044,8 @@ mod tests {
                 }
             }
             let view = Size::from((f64::from(wa.size.w), f64::from(wa.size.h)));
-            let viewport = Rectangle::new(Point::from((-1e6, -1e6)), Size::from((2e6, 2e6)));
             let mut x = 0.0;
-            for (idx, frame, rect, _) in s.frames_with_render_geo(view, viewport) {
+            for (idx, frame, rect, _) in s.frames_with_render_geo(view, None) {
                 let expected = if frame.fullscreen_entry().is_some() {
                     Rectangle::new(
                         Point::from((x - f64::from(inset_x), -f64::from(inset_y))),

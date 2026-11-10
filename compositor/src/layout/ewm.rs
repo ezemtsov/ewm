@@ -186,62 +186,30 @@ impl Ewm {
         }
     }
 
-    /// Global origin of slot `frame_idx` on `strip`.
-    pub(crate) fn strip_frame_origin(
-        output_geo: Rectangle<i32, Logical>,
-        working_area: Rectangle<i32, Logical>,
-        strip: &strip::Strip,
-        frame_idx: usize,
-    ) -> Point<i32, Logical> {
-        // Rounded so popups and hits track a sliding frame.
-        let frame_dx = strip.screen_x_of_frame(frame_idx).round() as i32;
-        Point::from((
-            output_geo.loc.x + working_area.loc.x + frame_dx,
-            output_geo.loc.y + working_area.loc.y,
-        ))
-    }
-
     /// Global origin of the frame at `location`.
     pub(crate) fn frame_origin(&self, location: FrameLocation<'_>) -> Option<Point<i32, Logical>> {
         let output = location.monitor.output();
         let output_geo = self.layout.output_rect(output)?;
+        // Rounded so popups track a sliding frame.
+        let dx = location.slot_x().round() as i32;
         if location.floating {
             let (_, data) = location
                 .monitor
                 .floating
                 .frame_with_data(location.frame.surface_id)?;
             let loc = data.logical_pos();
-            let dx = location.slot_x().round() as i32;
             return Some(Point::from((
                 output_geo.loc.x + loc.x as i32 + dx,
                 output_geo.loc.y + loc.y as i32,
             )));
         }
         let working_area = self.get_working_area(output);
-        Some(Self::strip_frame_origin(
-            output_geo,
-            working_area,
-            &location.monitor.strip,
-            location.frame_idx,
-        ))
+        Some(output_geo.loc + working_area.loc + Point::from((dx, 0)))
     }
 
     /// Global top-left of an Emacs frame, which is not in `space`.
     pub fn emacs_frame_origin(&self, surface_id: u64) -> Option<Point<i32, Logical>> {
         self.frame_origin(self.layout.frame_location(surface_id)?)
-    }
-
-    fn frame_rect(
-        output_geo: Rectangle<i32, Logical>,
-        working_area: Rectangle<i32, Logical>,
-        strip: &strip::Strip,
-        frame_idx: usize,
-        frame: &strip::Frame,
-    ) -> Rectangle<i32, Logical> {
-        Rectangle::new(
-            Self::strip_frame_origin(output_geo, working_area, strip, frame_idx),
-            Size::from((frame.width as i32, working_area.size.h)),
-        )
     }
 
     /// The focused layout entry when it shows surface `id`.
@@ -337,17 +305,6 @@ impl Ewm {
         Rectangle::new(output_geo.loc + Point::from((dx, 0)), output_geo.size)
     }
 
-    /// `local`, an output-local rect, on `output_geo`.
-    fn on_output(
-        output_geo: Rectangle<i32, Logical>,
-        local: Rectangle<f64, Logical>,
-    ) -> Rectangle<i32, Logical> {
-        Rectangle::new(
-            output_geo.loc + Point::from((local.loc.x as i32, local.loc.y as i32)),
-            Size::from((local.size.w as i32, local.size.h as i32)),
-        )
-    }
-
     /// On-screen origins of every layout view of `surface_id`, one per entry.
     pub fn surface_view_origins(&self, surface_id: u64) -> Vec<Point<i32, Logical>> {
         if self.layout.has_frame(surface_id) {
@@ -382,7 +339,7 @@ impl Ewm {
         let pos = pos - output_geo.loc.to_f64();
         self.visible_floats(monitor)
             .find(|(_, rect)| rect.contains(pos))
-            .map(|(frame, _)| frame)
+            .map(|(location, _)| location.frame)
     }
 
     pub(crate) fn floating_frame_under(&self, pos: Point<f64, Logical>) -> Option<u64> {
@@ -399,34 +356,17 @@ impl Ewm {
             .map(|frame| (frame.surface_id, floating::ResizeEdge::BOTTOM_RIGHT))
     }
 
-    /// The topmost frame on `monitor` holding `pos` or a view under it that `predicate` accepts,
-    /// with its rect and that view. Floats come first when `with_floats`, and a frame occludes the
-    /// frames under it, as drawn.
+    /// The first of `frames`, topmost first on `output_geo`, holding `pos` or a view under it
+    /// that `predicate` accepts, with its rect and that view. A frame occludes the frames under it.
     fn frame_under<'a>(
         &self,
-        monitor: &'a Monitor,
+        mut frames: impl Iterator<Item = (FrameLocation<'a>, Rectangle<f64, Logical>)>,
         output_geo: Rectangle<i32, Logical>,
         pos: Point<f64, Logical>,
-        with_floats: bool,
         mut predicate: impl FnMut(&LayoutEntry) -> bool,
     ) -> Option<FrameHit<'a>> {
-        let working_area = self.get_working_area(monitor.output());
-        let floats = monitor
-            .frame_locations_in(true)
-            .zip(monitor.floats_with_render_geo())
-            .filter(|(location, _)| with_floats && self.float_visible(monitor, location.frame))
-            .map(|(location, (_, slot))| (location, Self::on_output(output_geo, slot)));
-        let tiled = monitor.frame_locations_in(false).map(|location| {
-            let rect = Self::frame_rect(
-                output_geo,
-                working_area,
-                &monitor.strip,
-                location.frame_idx,
-                location.frame,
-            );
-            (location, rect)
-        });
-        floats.chain(tiled).find_map(|(location, rect)| {
+        frames.find_map(|(location, rect)| {
+            let rect = Rectangle::new(output_geo.loc.to_f64() + rect.loc, rect.size).to_i32_round();
             let hit = location
                 .entries()
                 // Primary clicks miss in the letterbox.
@@ -456,9 +396,8 @@ impl Ewm {
         let center: Point<f64, Logical> = Point::from((pos.x + size.w / 2.0, pos.y + size.h / 2.0));
         let output_geo = self.layout.output_rect(monitor.output())?;
         let center = output_geo.loc.to_f64() + center;
-        let (entry, _) = self
-            .frame_under(monitor, output_geo, center, false, |_| true)?
-            .hit?;
+        let strip = self.strip_frames_in_render_order(monitor, None);
+        let (entry, _) = self.frame_under(strip, output_geo, center, |_| true)?.hit?;
         Some(entry.id)
     }
 
@@ -468,10 +407,10 @@ impl Ewm {
     /// identical to rendering.
     pub fn layout_surface_under(&self, pos: Point<f64, Logical>) -> Option<SurfaceHit> {
         let (monitor, output_geo) = self.monitor_at(pos)?;
-        let FrameHit { frame, rect, hit } =
-            self.frame_under(monitor, output_geo, pos, true, |entry| {
-                entry.surface_id().is_some()
-            })?;
+        let frames = self.frames_in_render_order(monitor);
+        let FrameHit { frame, rect, hit } = self.frame_under(frames, output_geo, pos, |entry| {
+            entry.surface_id().is_some()
+        })?;
         hit.and_then(|hit| self.surface_under_layout_entry(pos, hit))
             .or_else(|| {
                 // The frame's own surface hides under its fullscreen view.
@@ -659,22 +598,54 @@ impl Ewm {
             })
     }
 
-    /// `monitor`'s visible floats with their output-local slots, topmost first.
-    pub(crate) fn visible_floats<'m>(
+    /// `monitor`'s frames from the topmost down with their output-local boxes, the visible floats
+    /// over the strip frames.
+    fn frames_in_render_order<'a>(
+        &'a self,
+        monitor: &'a Monitor,
+    ) -> impl Iterator<Item = (FrameLocation<'a>, Rectangle<f64, Logical>)> {
+        let strip = self.strip_frames_in_render_order(monitor, None);
+        self.visible_floats(monitor).chain(strip)
+    }
+
+    /// `monitor`'s strip frames from the topmost down with their output-local boxes, those
+    /// outside `viewport` left out when one is given.
+    pub(crate) fn strip_frames_in_render_order<'a>(
         &self,
-        monitor: &'m Monitor,
-    ) -> impl Iterator<Item = (&'m strip::Frame, Rectangle<f64, Logical>)> {
+        monitor: &'a Monitor,
+        viewport: Option<Rectangle<f64, Logical>>,
+    ) -> impl Iterator<Item = (FrameLocation<'a>, Rectangle<f64, Logical>)> {
+        let working_area = self.get_working_area(monitor.output()).to_f64();
+        monitor
+            .strip
+            .frames_with_render_geo(working_area.size, viewport)
+            .map(move |(frame_idx, frame, slot, screen_x)| {
+                let location = FrameLocation {
+                    monitor,
+                    frame_idx,
+                    floating: false,
+                    frame,
+                };
+                let loc = working_area.loc + Point::from((screen_x, 0.));
+                (location, Rectangle::new(loc, slot.size))
+            })
+    }
+
+    /// `monitor`'s visible floats with their output-local slots, topmost first.
+    pub(crate) fn visible_floats<'a>(
+        &'a self,
+        monitor: &'a Monitor,
+    ) -> impl Iterator<Item = (FrameLocation<'a>, Rectangle<f64, Logical>)> {
         monitor
             .floats_with_render_geo()
-            .filter(move |(frame, _)| self.float_visible(monitor, frame))
+            .filter(move |(location, _)| self.float_visible(monitor, location.frame))
     }
 
     /// Entry id of the layout entry under a point.
     pub fn layout_entry_id_under(&self, pos: Point<f64, Logical>) -> Option<LayoutEntryId> {
         let (monitor, output_geo) = self.monitor_at(pos)?;
-        let (entry, _) = self
-            .frame_under(monitor, output_geo, pos, true, |_| true)?
-            .hit?;
+        let frames = self.frames_in_render_order(monitor);
+        let (entry, _) = self.frame_under(frames, output_geo, pos, |_| true)?.hit?;
         Some(entry.id)
     }
 
@@ -1289,7 +1260,7 @@ impl Ewm {
         strip
             .frames_with_render_geo(
                 working_area.size.to_f64(),
-                geometry.strip_viewport(working_area),
+                Some(geometry.strip_viewport(working_area)),
             )
             .find(|(_, _, rect, _)| rect.contains(in_strip))
             .map(|(idx, _, rect, _)| (idx, in_strip - rect.loc))
@@ -1314,7 +1285,7 @@ impl Ewm {
             monitor
                 .floats_with_render_geo()
                 .find(|(_, rect)| rect.contains(in_content))
-                .map(|(frame, rect)| (frame.surface_id, rect))
+                .map(|(location, rect)| (location.frame.surface_id, rect))
         });
         if let Some((frame_id, rect)) = floating_frame {
             self.set_focus_frame(

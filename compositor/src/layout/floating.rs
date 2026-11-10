@@ -697,10 +697,6 @@ impl FloatingSpace {
             .map(|(frame, data)| (frame, Self::slot(self.output, frame, data)))
     }
 
-    pub fn frames_with_data(&self) -> impl Iterator<Item = (&Frame, &Data)> {
-        self.frames.iter().zip(self.data.iter())
-    }
-
     pub fn frames_with_data_mut(&mut self) -> impl Iterator<Item = (&Frame, &mut Data)> {
         self.frames.iter().zip(self.data.iter_mut())
     }

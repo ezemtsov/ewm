@@ -536,13 +536,10 @@ struct Layers {
     background: Vec<ContentRenderElement>,
 }
 
-/// The working area, its origin and the output size in physical pixels, and the strip viewport.
+/// The working area and the strip viewport.
 struct FrameGeo {
     working_area: Rectangle<i32, Logical>,
-    working_area_origin: Point<i32, Physical>,
-    view_size: Size<f64, Logical>,
     strip_viewport: Rectangle<f64, Logical>,
-    output_phys: Size<i32, Physical>,
 }
 
 /// What every view of a pass is drawn with, its frame's place aside.
@@ -679,29 +676,6 @@ impl<'a> OutputRender<'a> {
             scale: self.scale,
             blur: self.blur,
         }
-    }
-
-    /// A frame's own surface in `clip`, its blur behind it.
-    fn push_frame_surface(
-        &mut self,
-        window: &smithay::desktop::Window,
-        clip: Rectangle<i32, Physical>,
-        alpha: f32,
-    ) {
-        let (loc, scale) = (clip.loc, self.scale);
-        push_window(&mut self.content, self.renderer, window, loc, scale, alpha);
-        push_view_background_effect(
-            &mut self.content,
-            None,
-            window,
-            ViewBox {
-                loc,
-                element_scale: Scale::from(1.),
-                output_scale: scale,
-                clip,
-            },
-            self.blur,
-        );
     }
 
     /// The cursor goes on top, kept apart from the content.
@@ -847,63 +821,40 @@ impl<'a> OutputRender<'a> {
         let working_area = self.ewm.get_working_area(self.output);
         FrameGeo {
             working_area,
-            working_area_origin: working_area.loc.to_physical_precise_round(self.scale),
-            view_size: Size::<f64, Logical>::from((
-                working_area.size.w as f64,
-                working_area.size.h as f64,
-            )),
             strip_viewport: self.geometry.strip_viewport(working_area),
-            output_phys: self.rect.size.to_physical_precise_round(self.scale),
         }
     }
 
     /// The floats in view, closing ones on top: their views, then each frame's own surface and
     /// shadow unless a fullscreen view covers them.
-    fn floats(&mut self, geo: &FrameGeo) {
-        let scale = self.scale;
-        // Floats in view with their slots, and how far their pin slid them.
+    fn floats(&mut self) {
         let float_viewport = self
             .geometry
             .to_content_rect(Rectangle::from_size(self.rect.size.to_f64()));
-        let floats: Vec<(u64, Rectangle<f64, Logical>, f64)> = self
-            .ewm
-            .layout
-            .monitor_of(self.output)
-            .map_or(Vec::new(), |monitor| {
-                self.ewm
-                    .visible_floats(monitor)
-                    .filter(|(_, slot)| float_viewport.overlaps(*slot))
-                    .map(|(frame, slot)| (frame.surface_id, slot, monitor.pin_offset(frame)))
-                    .collect()
-            });
         let views = self.views();
-        let Some(floating) = self.ewm.layout.floating(self.output) else {
+        let ewm = self.ewm;
+        let Some(monitor) = ewm.layout.monitor_of(self.output) else {
             return;
         };
 
         // Draw the closing frames on top of the other frames.
-        for (pos, closing) in floating.closing_frames().iter().rev() {
+        for (pos, closing) in monitor.floating.closing_frames().iter().rev() {
             self.content
                 .push(ContentRenderElement::Texture(closing.render(*pos)));
         }
 
-        for (frame, data) in floating.frames_with_data() {
-            let Some(&(_, frame_rect, dx)) =
-                floats.iter().find(|(id, _, _)| *id == frame.surface_id)
-            else {
+        let floats = ewm
+            .visible_floats(monitor)
+            .filter(|(_, slot)| float_viewport.overlaps(*slot));
+        for (location, frame_rect) in floats {
+            let frame = location.frame;
+            let Some((_, data)) = monitor.floating.frame_with_data(frame.surface_id) else {
                 continue;
             };
-            push_closing_views(
-                &mut self.content,
-                &frame.closing_views,
-                data.render_pos() + Point::from((dx, 0.)),
-            );
-            let slot = Rectangle::new(
-                Point::<f64, Logical>::from((dx, 0.)).to_physical_precise_round(scale),
-                geo.output_phys,
-            );
-            let frame_box = frame_rect.to_physical_precise_round(scale);
-            if self.push_frame(&views, frame, frame_rect.loc, frame_box, slot) {
+            // A pinned float slides with its frame.
+            let pos = data.render_pos() + Point::from((location.slot_x(), 0.));
+            push_closing_views(&mut self.content, &frame.closing_views, pos);
+            if self.push_frame(&views, location, frame_rect) {
                 data.shadow()
                     .render(self.renderer, frame_rect.loc, &mut |shadow| {
                         self.content.push(ContentRenderElement::Shadow(shadow));
@@ -912,22 +863,28 @@ impl<'a> OutputRender<'a> {
         }
     }
 
-    /// `frame`'s views over its own surface in `frame_box`, so that no other frame comes between
-    /// them. A fullscreen view fills the `slot`, its siblings and frame hide under it once its
-    /// backdrop is opaque. True when the frame's own surface drew, which a float's shadow follows.
+    /// The frame at `location` in `frame_rect`, its views over its own surface so that no other
+    /// frame comes between them. A fullscreen view fills an output-sized slot at the frame's
+    /// strip slot, its siblings and frame hide under it once its backdrop is opaque. True when the
+    /// frame's own surface drew, which a float's shadow follows.
     fn push_frame(
         &mut self,
         views: &ViewCommon<'_>,
-        frame: &strip::Frame,
-        origin: Point<f64, Logical>,
-        frame_box: Rectangle<i32, Physical>,
-        slot: Rectangle<i32, Physical>,
+        location: FrameLocation<'_>,
+        frame_rect: Rectangle<f64, Logical>,
     ) -> bool {
+        let scale = self.scale;
+        let frame = location.frame;
+        let frame_box = frame_rect.to_physical_precise_round(scale);
         let frame_surface = views.surfaces.get(&frame.surface_id);
+        let slot_loc = Point::<f64, Logical>::from((location.slot_x(), 0.));
         let space = FrameSpace {
-            origin,
-            bounds: frame_bounds(frame_surface, frame_box, self.scale),
-            slot,
+            origin: frame_rect.loc,
+            bounds: frame_bounds(frame_surface, frame_box, scale),
+            slot: Rectangle::new(
+                slot_loc.to_physical_precise_round(scale),
+                self.rect.size.to_physical_precise_round(scale),
+            ),
         };
         let covered = views.push_frame_views(&mut self.content, self.renderer, frame, space);
         // A frame created hidden (sized, then shown) has no buffer yet and draws nothing at its
@@ -935,33 +892,37 @@ impl<'a> OutputRender<'a> {
         let Some(surface) = frame_surface.filter(|surface| !covered && surface.has_buffer()) else {
             return false;
         };
-        self.push_frame_surface(&surface.window, frame_box, surface.open_alpha());
+        let (window, loc) = (&surface.window, frame_box.loc);
+        let alpha = surface.open_alpha();
+        push_window(&mut self.content, self.renderer, window, loc, scale, alpha);
+        let view = ViewBox {
+            loc,
+            element_scale: Scale::from(1.),
+            output_scale: scale,
+            clip: frame_box,
+        };
+        push_view_background_effect(&mut self.content, None, window, view, self.blur);
         true
     }
 
     /// The strip frames in view, the active one alone or the rest as `active` says, else all.
     /// Frames slide by the strip's view offset, layer surfaces stay put.
     fn strip(&mut self, geo: &FrameGeo, active: Option<bool>) {
-        let scale = self.scale;
         let views = self.views();
-        let Some(strip) = self.ewm.layout.strip(self.output) else {
+        let ewm = self.ewm;
+        let Some(monitor) = ewm.layout.monitor_of(self.output) else {
             return;
         };
-        let active_idx = strip.active_idx();
-        for (_, frame, frame_rect, screen_x) in strip
-            .frames_with_render_geo(geo.view_size, geo.strip_viewport)
-            .filter(|(idx, ..)| active.is_none_or(|active| active == (*idx == active_idx)))
-        {
-            let frame_offset: Point<i32, Physical> =
-                Point::<f64, Logical>::from((screen_x, 0.0)).to_physical_precise_round(scale);
-            let frame_box = Rectangle::new(
-                geo.working_area_origin + frame_offset,
-                frame_rect.size.to_physical_precise_round(scale),
-            );
-            let origin = geo.working_area.loc.to_f64() + Point::from((screen_x, 0.));
-            push_closing_views(&mut self.content, &frame.closing_views, origin);
-            let slot = Rectangle::new(frame_offset, geo.output_phys);
-            self.push_frame(&views, frame, origin, frame_box, slot);
+        let active_idx = monitor.strip.active_idx();
+        let frames = ewm
+            .strip_frames_in_render_order(monitor, Some(geo.strip_viewport))
+            .filter(|(location, _)| {
+                active.is_none_or(|active| active == (location.frame_idx == active_idx))
+            });
+        for (location, frame_rect) in frames {
+            let closing = &location.frame.closing_views;
+            push_closing_views(&mut self.content, closing, frame_rect.loc);
+            self.push_frame(&views, location, frame_rect);
         }
     }
 
@@ -1048,7 +1009,7 @@ impl Ewm {
                 .monitor_of(output)
                 .map_or(Vec::new(), |monitor| {
                     self.visible_floats(monitor)
-                        .map(|(frame, slot)| {
+                        .map(|(FrameLocation { frame, .. }, slot)| {
                             let alpha = self
                                 .surfaces
                                 .get(&frame.surface_id)
@@ -1143,7 +1104,7 @@ pub fn collect_render_elements_for_output(
     pass.window_popups();
     pass.zoomed_layer_popups(&[Layer::Bottom, Layer::Background]);
     let geo = pass.frame_geo();
-    pass.floats(&geo);
+    pass.floats();
     // The active frame's fullscreen view covers the top layer, the other frames stay under it.
     if above_top_layer {
         pass.strip(&geo, Some(true));

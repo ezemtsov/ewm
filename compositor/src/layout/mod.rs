@@ -289,13 +289,18 @@ impl Monitor {
     /// Floats with their slots, pinned ones sliding with their frame, topmost first.
     pub(crate) fn floats_with_render_geo(
         &self,
-    ) -> impl Iterator<Item = (&strip::Frame, Rectangle<f64, Logical>)> {
-        self.floating
-            .frames_with_render_geo()
-            .map(|(frame, mut slot)| {
-                slot.loc.x += self.pin_offset(frame);
-                (frame, slot)
-            })
+    ) -> impl Iterator<Item = (FrameLocation<'_>, Rectangle<f64, Logical>)> {
+        let floats = self.floating.frames_with_render_geo().enumerate();
+        floats.map(|(frame_idx, (frame, mut slot))| {
+            slot.loc.x += self.pin_offset(frame);
+            let location = FrameLocation {
+                monitor: self,
+                frame_idx,
+                floating: true,
+                frame,
+            };
+            (location, slot)
+        })
     }
 
     /// Span the fullscreen slots over the output, or over `working_area` while it has no mode.
@@ -1421,7 +1426,7 @@ impl Layout {
         // Measured against the drawn slot, so a sliding frame grabs without a jump.
         let Some((_, rect)) = monitor
             .floats_with_render_geo()
-            .find(|(frame, _)| frame.surface_id == id)
+            .find(|(location, _)| location.frame.surface_id == id)
         else {
             return false;
         };
