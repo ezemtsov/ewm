@@ -5,6 +5,7 @@ use smithay::desktop::{
     PopupUngrabStrategy, WindowSurfaceType, find_popup_root_surface, get_popup_toplevel_coords,
     layer_map_for_output,
 };
+use smithay::input::pointer::Focus;
 use smithay::output::Output;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgToplevelState;
 use smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration;
@@ -136,34 +137,24 @@ impl XdgShellHandler for State {
             }
         };
 
-        // Install the grab on the seat so a click outside the popup dismisses it.
-        if let Some(keyboard) = seat.get_keyboard() {
-            if keyboard.is_grabbed()
-                && !(keyboard.has_grab(serial)
-                    || keyboard.has_grab(grab.previous_serial().unwrap_or(serial)))
-            {
-                grab.ungrab(PopupUngrabStrategy::All);
-                return;
-            }
-            self.flush_deferred_keys(grab.current_grab().as_ref());
-            keyboard.set_focus(self, grab.current_grab(), serial);
-            keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
+        let keyboard = seat.get_keyboard().unwrap();
+        let pointer = seat.get_pointer().unwrap();
+
+        let keyboard_grab_mismatches = keyboard.is_grabbed()
+            && !(keyboard.has_grab(serial)
+                || grab.previous_serial().is_some_and(|s| keyboard.has_grab(s)));
+        let pointer_grab_mismatches = pointer.is_grabbed()
+            && !(pointer.has_grab(serial)
+                || grab.previous_serial().is_some_and(|s| pointer.has_grab(s)));
+        if keyboard_grab_mismatches || pointer_grab_mismatches {
+            grab.ungrab(PopupUngrabStrategy::All);
+            return;
         }
-        if let Some(pointer) = seat.get_pointer() {
-            if pointer.is_grabbed()
-                && !(pointer.has_grab(serial)
-                    || pointer.has_grab(grab.previous_serial().unwrap_or_else(|| grab.serial())))
-            {
-                grab.ungrab(PopupUngrabStrategy::All);
-                return;
-            }
-            pointer.set_grab(
-                self,
-                PopupPointerGrab::new(&grab),
-                serial,
-                smithay::input::pointer::Focus::Keep,
-            );
-        }
+
+        self.flush_deferred_keys(grab.current_grab().as_ref());
+        keyboard.set_focus(self, grab.current_grab(), serial);
+        keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
+        pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
         self.ewm.popup_grab = Some(grab);
     }
 
