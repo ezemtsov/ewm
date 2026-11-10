@@ -1,6 +1,6 @@
 ;;; ewm-surface.el --- Surface buffer management for EWM -*- lexical-binding: t -*-
 
-;; Copyright (C) 2025
+;; Copyright (C) 2026 Evgeny Zemtsov
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;;; Commentary:
