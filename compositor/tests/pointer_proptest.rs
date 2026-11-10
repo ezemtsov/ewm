@@ -22,7 +22,8 @@
 //!       own output and no popup covers it, the hit is that view's surface.
 //!       A frame draws at the strip's screen x and a view at its entry offset
 //!       within it; a fullscreen view hides its frame's other views, and an
-//!       inactive frame's fullscreen view is not drawn at all.
+//!       inactive frame's fullscreen view is not drawn at all. A frame drawn
+//!       above the view's frame masks it where it covers `p`.
 //!
 //! D1  - No focus change mid-drag. A `WarpPointer` during a DnD grab leaves
 //!       `focused_entry_id` untouched, whatever focus-follows-mouse says.
@@ -68,12 +69,21 @@
 //! T1  - A press focuses what is under it. After a `Tap` or a button press at
 //!       `p`, the layout entry under `p` when it landed becomes
 //!       `focused_entry_id`. A press on nothing leaves focus untouched.
+//!
+//! S1  - Views stick to their frame. At every point of a strip without a
+//!       fullscreen view, the hit is a view of the topmost frame holding the
+//!       point or one of its views, that frame's own surface, or nothing,
+//!       never a surface of a frame under it. Frames draw in strip order, the
+//!       first on top, and overlap while a move slides them.
 
 use std::collections::HashSet;
+use std::time::Duration;
 
-use ewm_core::layout::strip::Frame;
+use ewm_core::layout::strip::{Frame, Strip};
 use ewm_core::render::collect_popup_placements;
-use ewm_core::testing::{ClientEvent, Fixture, Popup, TestClient, Toplevel, nz, proptest_cases};
+use ewm_core::testing::{
+    ClientEvent, Fixture, Popup, TestClient, Toplevel, frame_with_entry, nz, proptest_cases,
+};
 use ewm_core::{LayoutEntry, LayoutEntryId};
 use proptest::prelude::*;
 use smithay::reexports::wayland_server::Resource as _;
@@ -142,6 +152,15 @@ enum Op {
     ApplySplitClientLayout {
         output: usize,
     },
+    /// A frame showing the app view, then the frame, which a move left slides over the view.
+    ApplyTwoFrameLayout {
+        output: usize,
+    },
+    /// Move the frame `delta` slots and hold the slide `progress_ms` in until the next op.
+    MoveFrameMidway {
+        delta: i32,
+        progress_ms: u64,
+    },
     WarpPointer {
         x: i32,
         y: i32,
@@ -195,6 +214,9 @@ fn op_strategy() -> impl Strategy<Value = Op> {
         ((0..OUTPUTS.len()), 1usize..=4)
             .prop_map(|(output, n_entries)| { Op::ApplyPlainLayout { output, n_entries } }),
         (0..OUTPUTS.len()).prop_map(|output| Op::ApplySplitClientLayout { output }),
+        (0..OUTPUTS.len()).prop_map(|output| Op::ApplyTwoFrameLayout { output }),
+        (-2i32..=2, 0u64..400)
+            .prop_map(|(delta, progress_ms)| Op::MoveFrameMidway { delta, progress_ms }),
         (-200i32..2200, -200i32..1300).prop_map(|(x, y)| Op::WarpPointer { x, y }),
         (-200i32..2200, -200i32..1300).prop_map(|(x, y)| Op::ProgrammaticWarpPointer { x, y }),
         any::<bool>().prop_map(|pressed| Op::PointerButton { pressed }),
@@ -271,6 +293,8 @@ struct Harness {
     hit_under_press: bool,
     /// The plain entry under the frame's pointer after the last op.
     plain_entry_under_pointer: Option<LayoutEntryId>,
+    /// A frame slide held part-way until the next op.
+    held_move: bool,
 }
 
 impl Harness {
@@ -312,6 +336,7 @@ impl Harness {
             entry_under_press: None,
             hit_under_press: false,
             plain_entry_under_pointer: None,
+            held_move: false,
         };
         // Animations land at once.
         h.fix.ewm().animations_clock.set_complete_instantly(true);
@@ -345,6 +370,13 @@ impl Harness {
 
     fn frame_key(&self) -> SurfaceKey {
         client_surface_key(&self.frame_client, &self.frame_toplevel.surface)
+    }
+
+    /// The key of the toplevel or the frame, whichever has surface id `id`.
+    fn key_of(&self, id: u64) -> Option<SurfaceKey> {
+        (id == self.sid)
+            .then(|| self.toplevel_key())
+            .or_else(|| (id == self.frame_sid).then(|| self.frame_key()))
     }
 
     /// Apply enter/leave/configure events from a drain window to harness state.
@@ -425,6 +457,9 @@ impl Harness {
 }
 
 fn apply_op(h: &mut Harness, op: &Op) {
+    if std::mem::take(&mut h.held_move) {
+        settle_strip_animations(h);
+    }
     // The client answers its last configure first, so what its views show can follow.
     if h.last_configure != h.answered_configure
         && let Some((w, height)) = h.last_configure.filter(|&(w, height)| w > 0 && height > 0)
@@ -491,6 +526,18 @@ fn apply_op(h: &mut Harness, op: &Op) {
         }
         Op::ApplySplitClientLayout { output } => {
             apply_split_client_layout(h, output);
+        }
+        Op::ApplyTwoFrameLayout { output } => {
+            apply_two_frame_layout(h, output);
+        }
+        Op::MoveFrameMidway { delta, progress_ms } => {
+            h.fix.freeze_clock();
+            let clock = h.fix.ewm().animations_clock.clone();
+            let start = clock.now();
+            clock.set_complete_instantly(false);
+            h.fix.ewm().move_frame(h.frame_sid, delta);
+            clock.set(start + Duration::from_millis(progress_ms));
+            h.held_move = true;
         }
         Op::SetClientFullscreen { on } => {
             if on {
@@ -630,7 +677,33 @@ fn apply_split_client_layout(h: &mut Harness, output: usize) {
     );
 }
 
+fn apply_two_frame_layout(h: &mut Harness, output: usize) {
+    let name = OUTPUTS[output].0;
+    if !h.fix.has_output(name) {
+        return;
+    }
+    let app = Frame {
+        focus_id: nz(60_001),
+        ..frame_with_entry(60_000, nz(60_002), h.sid)
+    };
+    let frame = Frame {
+        focus_id: nz(60_011),
+        width: VIEW_W as f64,
+        ..Frame::new(h.frame_sid)
+    };
+    h.fix.tile(name, vec![app, frame]);
+    // A strip keeps the slot the frame already holds.
+    let first = h.fix.strip(name).frames().first();
+    if first.map(|frame| frame.surface_id) == Some(h.frame_sid) {
+        h.fix.ewm().move_frame(h.frame_sid, 1);
+    }
+}
+
 fn settle_strip_animations(h: &mut Harness) {
+    // A held slide stays where its op left it.
+    if h.held_move {
+        return;
+    }
     h.fix.ewm().animations_clock.set_complete_instantly(true);
     for strip in h.fix.ewm().layout.strips_mut() {
         strip.advance();
@@ -643,27 +716,19 @@ struct DrawnView {
     output_geo: Rectangle<i32, Logical>,
     /// Shows its buffer at native size, so pointer coordinates are `p - rect.loc`.
     native: bool,
+    /// The frames drawn above the view's frame.
+    above: Vec<Rectangle<i32, Logical>>,
 }
 
 fn drawn_views(h: &Harness) -> Vec<DrawnView> {
     let ewm = h.fix.ewm_ref();
     let fullscreen_views = ewm.view_rects();
     let mut views = Vec::new();
-    for (out_name, strip) in ewm.layout.strips() {
-        let Some(output) = ewm.space.outputs().find(|o| o.name() == *out_name) else {
-            continue;
-        };
-        let Some(output_geo) = ewm.space.output_geometry(output) else {
-            continue;
-        };
-        let working_area = ewm.get_working_area(output);
+    for (strip, output_geo, working_area) in strips_on_outputs(h) {
+        let mut above = Vec::new();
         for (frame_idx, frame) in strip.frames().iter().enumerate() {
-            let origin = Point::from((
-                output_geo.loc.x
-                    + working_area.loc.x
-                    + strip.screen_x_of_frame(frame_idx).round() as i32,
-                output_geo.loc.y + working_area.loc.y,
-            ));
+            let frame_rect = strip_frame_rect(output_geo, working_area, strip, frame_idx);
+            let origin = frame_rect.loc;
             match frame.fullscreen_entry() {
                 Some(fullscreen) => {
                     if strip.active_idx() != frame_idx {
@@ -682,6 +747,7 @@ fn drawn_views(h: &Harness) -> Vec<DrawnView> {
                         rect,
                         output_geo,
                         native: view.native,
+                        above: above.clone(),
                     });
                 }
                 None => {
@@ -700,13 +766,42 @@ fn drawn_views(h: &Harness) -> Vec<DrawnView> {
                                 .surfaces
                                 .get(&surface)
                                 .is_some_and(|state| state.presented == Some(entry.id)),
+                            above: above.clone(),
                         });
                     }
                 }
             }
+            above.push(frame_rect);
         }
     }
     views
+}
+
+/// Each mapped strip with its output and working area.
+fn strips_on_outputs(
+    h: &Harness,
+) -> impl Iterator<Item = (&Strip, Rectangle<i32, Logical>, Rectangle<i32, Logical>)> {
+    let ewm = h.fix.ewm_ref();
+    ewm.layout.strips().filter_map(|(name, strip)| {
+        let output = ewm.space.outputs().find(|o| o.name() == name)?;
+        let output_geo = ewm.space.output_geometry(output)?;
+        Some((strip, output_geo, ewm.get_working_area(output)))
+    })
+}
+
+/// Where the strip draws frame `idx`, the working area tall.
+fn strip_frame_rect(
+    output_geo: Rectangle<i32, Logical>,
+    working_area: Rectangle<i32, Logical>,
+    strip: &Strip,
+    idx: usize,
+) -> Rectangle<i32, Logical> {
+    let loc = Point::from((
+        output_geo.loc.x + working_area.loc.x + strip.screen_x_of_frame(idx).round() as i32,
+        output_geo.loc.y + working_area.loc.y,
+    ));
+    let width = strip.frames()[idx].width as i32;
+    Rectangle::new(loc, Size::from((width, working_area.size.h)))
 }
 
 /// The one drawn view under `p` on its own output, if exactly one is.
@@ -720,15 +815,11 @@ fn drawn_view_under(views: &[DrawnView], p: Point<f64, Logical>) -> Option<&Draw
     }
 }
 
-fn popup_covers(h: &Harness, p: Point<f64, Logical>) -> bool {
+fn popup_rects(h: &Harness) -> Vec<Rectangle<i32, Logical>> {
     collect_popup_placements(h.fix.ewm_ref(), world_rect(), None)
         .iter()
-        .any(|placement| {
-            rect_contains_f64(
-                Rectangle::new(placement.location, placement.geometry.size),
-                p,
-            )
-        })
+        .map(|placement| Rectangle::new(placement.location, placement.geometry.size))
+        .collect()
 }
 
 fn check_e1(h: &Harness) -> Result<(), TestCaseError> {
@@ -806,14 +897,13 @@ fn check_e3(h: &Harness) -> Result<(), TestCaseError> {
     let Some(view) = drawn_view_under(&views, p) else {
         return Ok(());
     };
-    if popup_covers(h, p) {
+    let popups = popup_rects(h);
+    if popups.iter().any(|rect| rect_contains_f64(*rect, p))
+        || view.above.iter().any(|rect| rect_contains_f64(*rect, p))
+    {
         return Ok(());
     }
-    let expected = if view.surface == h.sid {
-        h.toplevel_key()
-    } else if view.surface == h.frame_sid {
-        h.frame_key()
-    } else {
+    let Some(expected) = h.key_of(view.surface) else {
         return Ok(());
     };
     let ewm = h.fix.ewm_ref();
@@ -827,6 +917,68 @@ fn check_e3(h: &Harness) -> Result<(), TestCaseError> {
         view.rect,
         hit,
     );
+    Ok(())
+}
+
+fn check_s1(h: &Harness) -> Result<(), TestCaseError> {
+    let ewm = h.fix.ewm_ref();
+    let popups = popup_rects(h);
+    for (strip, output_geo, working_area) in strips_on_outputs(h) {
+        let frames = strip.frames();
+        if frames
+            .iter()
+            .any(|frame| frame.fullscreen_entry().is_some())
+        {
+            continue;
+        }
+        let rects: Vec<_> = (0..frames.len())
+            .map(|idx| strip_frame_rect(output_geo, working_area, strip, idx))
+            .collect();
+        let xs = (output_geo.loc.x..output_geo.loc.x + output_geo.size.w).step_by(50);
+        for x in xs {
+            for y in (output_geo.loc.y..output_geo.loc.y + output_geo.size.h).step_by(100) {
+                let p = Point::from((x as f64 + 0.5, y as f64 + 0.5));
+                if popups.iter().any(|rect| rect_contains_f64(*rect, p)) {
+                    continue;
+                }
+                let views_at = |frame: &Frame, rect: Rectangle<i32, Logical>| {
+                    frame
+                        .entries
+                        .iter()
+                        .filter(|entry| {
+                            let loc = rect.loc + Point::from((entry.x, entry.y));
+                            let size = Size::from((entry.w as i32, entry.h as i32));
+                            rect_contains_f64(Rectangle::new(loc, size), p)
+                        })
+                        .filter_map(LayoutEntry::surface_id)
+                        .collect::<Vec<_>>()
+                };
+                let Some((frame, rect, views)) = frames
+                    .iter()
+                    .zip(rects.iter().copied())
+                    .map(|(frame, rect)| (frame, rect, views_at(frame, rect)))
+                    .find(|(_, rect, views)| !views.is_empty() || rect_contains_f64(*rect, p))
+                else {
+                    continue;
+                };
+                let mut allowed: HashSet<SurfaceKey> =
+                    views.into_iter().filter_map(|id| h.key_of(id)).collect();
+                if rect_contains_f64(rect, p) {
+                    allowed.extend(h.key_of(frame.surface_id));
+                }
+                let hit = server_hit_key(ewm, ewm.surface_under_point(p).as_ref().map(|(s, _)| s));
+                prop_assert!(
+                    hit.as_ref().is_none_or(|key| allowed.contains(key)),
+                    "S1: {:?} lies in frame {} at {:?}, which allows {:?}, but the hit-test found {:?}",
+                    p,
+                    frame.surface_id,
+                    rect,
+                    allowed,
+                    hit,
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1133,6 +1285,7 @@ fn assert_invariants(h: &mut Harness, last_op: &Op) -> Result<(), TestCaseError>
     check_e1(h)?;
     check_e2(h)?;
     check_e3(h)?;
+    check_s1(h)?;
     match *last_op {
         Op::WarpPointer { x, y } => {
             let p = Point::from((x as f64, y as f64));
@@ -1322,6 +1475,18 @@ fn a_release_after_a_programmatic_warp_into_fullscreen() {
             fullscreen_mask: 27956049,
         },
         Op::PointerButton { pressed: false },
+    ])
+    .unwrap();
+}
+
+#[test]
+fn a_frame_sliding_over_the_view_of_its_neighbour() {
+    check_ops(&[
+        Op::ApplyTwoFrameLayout { output: 0 },
+        Op::MoveFrameMidway {
+            delta: -1,
+            progress_ms: 120,
+        },
     ])
     .unwrap();
 }

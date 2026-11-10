@@ -40,6 +40,13 @@ pub(crate) fn leave_output_for_window(window: &Window, output: &Output) {
     }
 }
 
+/// The topmost frame under a point, its rect, and the view of it hit.
+struct FrameHit<'a> {
+    frame: &'a strip::Frame,
+    rect: Rectangle<i32, Logical>,
+    hit: Option<LayoutEntryHit<'a>>,
+}
+
 impl Ewm {
     /// Bake `id` for its close animation: a frame into its record, a surface into every frame
     /// showing it.
@@ -250,7 +257,8 @@ impl Ewm {
     ) -> impl Iterator<Item = LayoutEntryLocation<'_>> {
         let locations = |floating| {
             self.mapped_monitors()
-                .flat_map(move |monitor| monitor.entry_locations_in(floating))
+                .flat_map(move |monitor| monitor.frame_locations_in(floating))
+                .flat_map(FrameLocation::entries)
         };
         locations(false)
             .chain(locations(true))
@@ -391,56 +399,46 @@ impl Ewm {
             .map(|frame| (frame.surface_id, floating::ResizeEdge::BOTTOM_RIGHT))
     }
 
-    /// Topmost entry on `monitor` under `pos` that `predicate` accepts.
-    fn layout_entry_in<'a>(
+    /// The topmost frame on `monitor` holding `pos` or a view under it that `predicate` accepts,
+    /// with its rect and that view. Floats come first when `with_floats`, and a frame occludes the
+    /// frames under it, as drawn.
+    fn frame_under<'a>(
         &self,
         monitor: &'a Monitor,
         output_geo: Rectangle<i32, Logical>,
         pos: Point<f64, Logical>,
+        with_floats: bool,
         mut predicate: impl FnMut(&LayoutEntry) -> bool,
-    ) -> Option<LayoutEntryHit<'a>> {
-        // Floats first, topmost first, and a float's slot occludes the strip.
+    ) -> Option<FrameHit<'a>> {
+        let working_area = self.get_working_area(monitor.output());
         let floats = monitor
             .frame_locations_in(true)
-            .zip(monitor.floats_with_render_geo());
-        for (location, (_, slot)) in floats {
-            if !self.float_visible(monitor, location.frame) {
-                continue;
-            }
-            let slot = Self::on_output(output_geo, slot);
-            for location in location.entries() {
-                let entry = location.entry;
-                if !self.view_visible(location) || !predicate(entry) {
-                    continue;
-                }
-                let rect = self.entry_rect_at(location, output_geo, slot.loc);
-                if Self::rect_contains_f64(rect, pos) {
-                    return Some((entry, rect));
-                }
-            }
-            if Self::rect_contains_f64(slot, pos) {
-                return None;
-            }
-        }
-        self.tiled_entry_under_matching(monitor, pos, predicate)
-    }
-
-    /// Hit-test `pos` against a monitor's tiled entries only (no floating overlay).
-    fn tiled_entry_under_matching<'a>(
-        &self,
-        monitor: &'a Monitor,
-        pos: Point<f64, Logical>,
-        mut predicate: impl FnMut(&LayoutEntry) -> bool,
-    ) -> Option<LayoutEntryHit<'a>> {
-        monitor
-            .entry_locations_in(false)
-            .filter(|location| predicate(location.entry))
-            // Primary clicks miss in the letterbox.
-            .filter(|location| self.view_visible(*location))
-            .find_map(|location| {
-                let rect = self.drawn_rect(location)?;
-                Self::rect_contains_f64(rect, pos).then_some((location.entry, rect))
+            .zip(monitor.floats_with_render_geo())
+            .filter(|(location, _)| with_floats && self.float_visible(monitor, location.frame))
+            .map(|(location, (_, slot))| (location, Self::on_output(output_geo, slot)));
+        let tiled = monitor.frame_locations_in(false).map(|location| {
+            let rect = Self::frame_rect(
+                output_geo,
+                working_area,
+                &monitor.strip,
+                location.frame_idx,
+                location.frame,
+            );
+            (location, rect)
+        });
+        floats.chain(tiled).find_map(|(location, rect)| {
+            let hit = location
+                .entries()
+                // Primary clicks miss in the letterbox.
+                .filter(|view| self.view_visible(*view) && predicate(view.entry))
+                .map(|view| (view.entry, self.entry_rect_at(view, output_geo, rect.loc)))
+                .find(|(_, view_rect)| Self::rect_contains_f64(*view_rect, pos));
+            (hit.is_some() || Self::rect_contains_f64(rect, pos)).then_some(FrameHit {
+                frame: location.frame,
+                rect,
+                hit,
             })
+        })
     }
 
     /// The tiled entry whose rect contains a floating frame's center, for spatial reattach.
@@ -458,8 +456,10 @@ impl Ewm {
         let center: Point<f64, Logical> = Point::from((pos.x + size.w / 2.0, pos.y + size.h / 2.0));
         let output_geo = self.layout.output_rect(monitor.output())?;
         let center = output_geo.loc.to_f64() + center;
-        self.tiled_entry_under_matching(monitor, center, |_| true)
-            .map(|(entry, _)| entry.id)
+        let (entry, _) = self
+            .frame_under(monitor, output_geo, center, false, |_| true)?
+            .hit?;
+        Some(entry.id)
     }
 
     /// Hit-test layout toplevel/subsurfaces under a global position. Falls
@@ -468,12 +468,23 @@ impl Ewm {
     /// identical to rendering.
     pub fn layout_surface_under(&self, pos: Point<f64, Logical>) -> Option<SurfaceHit> {
         let (monitor, output_geo) = self.monitor_at(pos)?;
-        let working_area = self.get_working_area(monitor.output());
-        self.layout_entry_in(monitor, output_geo, pos, |entry| {
-            entry.surface_id().is_some()
-        })
-        .and_then(|hit| self.surface_under_layout_entry(pos, hit))
-        .or_else(|| self.surface_under_frame(monitor, output_geo, working_area, pos))
+        let FrameHit { frame, rect, hit } =
+            self.frame_under(monitor, output_geo, pos, true, |entry| {
+                entry.surface_id().is_some()
+            })?;
+        hit.and_then(|hit| self.surface_under_layout_entry(pos, hit))
+            .or_else(|| {
+                // The frame's own surface hides under its fullscreen view.
+                if frame.fullscreen_entry().is_some() || !Self::rect_contains_f64(rect, pos) {
+                    return None;
+                }
+                let origin = rect.loc.to_f64();
+                Self::surface_under_non_popup_window(
+                    self.window(frame.surface_id)?,
+                    pos - origin,
+                    origin,
+                )
+            })
     }
 
     fn surface_under_layout_entry(
@@ -486,37 +497,6 @@ impl Ewm {
         let (_, scale) = surface.contents_rect(entry, rect.size, rect.loc.to_f64())?;
         let pos_in_window = (pos - rect.loc.to_f64()).downscale(scale);
         Self::surface_under_non_popup_window(&surface.window, pos_in_window, pos - pos_in_window)
-    }
-
-    /// Find the frame on `monitor` containing `pos`, returning the frame surface itself.
-    fn surface_under_frame(
-        &self,
-        monitor: &Monitor,
-        output_geo: Rectangle<i32, Logical>,
-        working_area: Rectangle<i32, Logical>,
-        pos: Point<f64, Logical>,
-    ) -> Option<SurfaceHit> {
-        let strip = &monitor.strip;
-        // The frame's own surface hides under its fullscreen view.
-        let own = |frame: &strip::Frame| {
-            frame
-                .fullscreen_entry()
-                .is_none()
-                .then_some(frame.surface_id)
-        };
-        // Floats sit above the strip.
-        let floats = self
-            .visible_floats(monitor)
-            .map(|(frame, rect)| (own(frame), Self::on_output(output_geo, rect)));
-        let tiled = strip.frames().iter().enumerate().map(|(frame_idx, frame)| {
-            let rect = Self::frame_rect(output_geo, working_area, strip, frame_idx, frame);
-            (own(frame), rect)
-        });
-        let (id, rect) = floats
-            .chain(tiled)
-            .find(|&(_, rect)| Self::rect_contains_f64(rect, pos))?;
-        let origin = rect.loc.to_f64();
-        Self::surface_under_non_popup_window(self.window(id?)?, pos - origin, origin)
     }
 
     fn surface_under_non_popup_window(
@@ -692,8 +672,10 @@ impl Ewm {
     /// Entry id of the layout entry under a point.
     pub fn layout_entry_id_under(&self, pos: Point<f64, Logical>) -> Option<LayoutEntryId> {
         let (monitor, output_geo) = self.monitor_at(pos)?;
-        self.layout_entry_in(monitor, output_geo, pos, |_| true)
-            .map(|(entry, _)| entry.id)
+        let (entry, _) = self
+            .frame_under(monitor, output_geo, pos, true, |_| true)?
+            .hit?;
+        Some(entry.id)
     }
 
     /// Whether `id` shows on output `name`, as a view or as an Emacs frame.

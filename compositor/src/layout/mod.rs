@@ -368,12 +368,6 @@ impl Monitor {
             .chain(self.frame_locations_in(true))
     }
 
-    /// The tiled or the floating entries with their frames.
-    fn entry_locations_in(&self, floating: bool) -> impl Iterator<Item = LayoutEntryLocation<'_>> {
-        self.frame_locations_in(floating)
-            .flat_map(FrameLocation::entries)
-    }
-
     /// Every entry with its frame, tiled then floating.
     fn entry_locations(&self) -> impl Iterator<Item = LayoutEntryLocation<'_>> {
         self.frame_locations().flat_map(FrameLocation::entries)
