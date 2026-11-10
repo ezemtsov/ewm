@@ -1,3 +1,5 @@
+//! Ported from niri's `handlers/mod.rs`: input, selection, activation, screencopy, idle and gamma.
+
 pub mod background_effect;
 mod compositor;
 mod layer_shell;

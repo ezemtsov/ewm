@@ -1,6 +1,6 @@
 //! org.gnome.Mutter.ScreenCast D-Bus interface implementation
 //!
-//! Based on niri's `dbus/mutter_screen_cast.rs`.
+//! Ported from niri's `dbus/mutter_screen_cast.rs`.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};

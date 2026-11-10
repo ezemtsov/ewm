@@ -1,3 +1,6 @@
+//! Ported from niri's `handlers/compositor.rs`: the subsurface, cursor, DnD icon and lock paths.
+//! Ported from niri's `window/mod.rs`, `compute_open_floating`.
+
 use std::time::Instant;
 
 use smithay::desktop::Window;

@@ -1,7 +1,7 @@
 //! wlr-foreign-toplevel-management-v1 protocol implementation
 //!
 //! Exposes toplevel windows to external tools (taskbars, window switchers, etc.)
-//! Based on niri's implementation.
+//! Ported from niri's `protocols/foreign_toplevel.rs`.
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};

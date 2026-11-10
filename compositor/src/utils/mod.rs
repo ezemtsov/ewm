@@ -3,6 +3,8 @@
 //! Precise coordinate conversions at fractional scales.
 //! The fractional-scale protocol has N/120 precision, so coordinates must be carefully
 //! rounded to avoid subpixel drift.
+//!
+//! Ported from niri's `utils/mod.rs`: the time, coordinate, size and surface helpers.
 
 pub mod region;
 pub mod reply;

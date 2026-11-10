@@ -2,6 +2,8 @@
 //!
 //! The collector serves the DRM backend, screencopy and screen casts alike.
 //!
+//! Ported from niri's `niri.rs`: cursor, DnD icon, lock and layer elements, screencopy rendering.
+//!
 //! # Design Invariants
 //!
 //! 1. **Per-output rendering**: Elements are collected per output, only those within its geometry,

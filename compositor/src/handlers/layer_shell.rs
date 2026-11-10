@@ -1,3 +1,5 @@
+//! Ported from niri's `handlers/layer_shell.rs`, without the layer rules.
+
 use smithay::desktop::{PopupKind, layer_map_for_output};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::compositor::with_states;

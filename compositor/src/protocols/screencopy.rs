@@ -1,6 +1,6 @@
 //! wlr-screencopy protocol implementation
 //!
-//! Ported from niri's screencopy protocol implementation. Provides support for
+//! Ported from niri's `protocols/screencopy.rs`. Provides support for
 //! the wlr-screencopy-unstable-v1 protocol, allowing clients like `grim` to
 //! capture screenshots.
 

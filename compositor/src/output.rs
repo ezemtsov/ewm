@@ -1,4 +1,7 @@
 //! Outputs: their arrival, geometry, order and working areas.
+//!
+//! Ported from niri's `niri.rs`: repositioning, removal, resize, lookup by resource and direction.
+//! Ported from niri's `input/mod.rs`, the pointer clamp.
 
 use std::collections::HashMap;
 use std::mem;

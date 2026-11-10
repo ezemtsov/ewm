@@ -1,7 +1,7 @@
 //! wlr-output-management-unstable-v1 protocol implementation
 //!
 //! Allows tools like wlr-randr and kanshi to query and configure outputs.
-//! Ported from niri's implementation, adapted to ewm's types.
+//! Ported from niri's `protocols/output_management.rs`, adapted to ewm's types.
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;

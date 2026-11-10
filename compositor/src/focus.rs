@@ -1,4 +1,6 @@
 //! Keyboard focus: setting it, reading it, and the layer and activation rules around it.
+//!
+//! Ported from niri's `niri.rs`, the layer-shell keyboard focus.
 
 use std::time::Instant;
 

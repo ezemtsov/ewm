@@ -2,6 +2,9 @@
 //!
 //! Frame positions derive from per-frame widths via `column_x`. The viewport's
 //! left edge is `column_x(active_idx) + view_offset.current()`.
+//!
+//! Ported from niri's `input/swipe_tracker.rs`.
+//! Ported from niri's `layout/scrolling.rs`: view offset, view gesture and frame move animations.
 
 use std::collections::{HashSet, VecDeque};
 use std::mem;

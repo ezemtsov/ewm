@@ -7,6 +7,8 @@
 //! reads the full layout and urgent state from `Ewm`, diffs against
 //! protocol mirrors, and sends only changes. Clients always get current state
 //! because `refresh()` runs after bind.
+//!
+//! Ported from niri's `protocols/ext_workspace.rs`.
 
 use std::collections::HashMap;
 

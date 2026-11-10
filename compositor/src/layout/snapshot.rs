@@ -1,4 +1,6 @@
 //! Contents baked to a texture while they were still mapped.
+//!
+//! Ported from niri's `layout/closing_window.rs`, the contents texture.
 
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::{Kind, RenderElement};

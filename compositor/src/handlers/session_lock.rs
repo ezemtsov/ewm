@@ -1,4 +1,6 @@
 //! Session lock protocol, ext-session-lock-v1.
+//!
+//! Ported from niri's `niri.rs` and `handlers/mod.rs`, the lock state machine and handler.
 
 use std::mem;
 use std::time::Duration;

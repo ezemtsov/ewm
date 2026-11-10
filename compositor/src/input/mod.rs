@@ -255,6 +255,7 @@ impl Default for ScrollTrackers {
     fn default() -> Self {
         Self {
             wheel: [ScrollTracker::new(120), ScrollTracker::new(120)],
+            // 10 is copied from Clutter: DISCRETE_SCROLL_STEP.
             finger: [ScrollTracker::new(10), ScrollTracker::new(10)],
         }
     }
@@ -2190,10 +2191,12 @@ fn detect_device_type(device: &libinput::Device) -> Option<DeviceType> {
         return Some(DeviceType::Touch);
     }
 
+    // According to Mutter code, this setting is specific to touchpads.
     if device.config_tap_finger_count() > 0 {
         return Some(DeviceType::Touchpad);
     }
 
+    // This is how Mutter tells apart mice.
     let mut is_trackball = false;
     let mut is_trackpoint = false;
     if let Some(udev_device) = unsafe { device.udev_device() } {

@@ -1,4 +1,7 @@
 //! Per-output floating Emacs frame space. Durable positions stored as a working-area fraction.
+//!
+//! Ported from niri's `layout/floating.rs`: position data, stacking, moves and interactive resize.
+//! Ported from niri's `utils/mod.rs`, `ResizeEdge`.
 
 use std::iter::zip;
 
@@ -167,7 +170,7 @@ impl Data {
     fn recompute_logical_pos(&mut self) {
         let mut logical_pos = Self::scale_by_working_area(self.working_area, self.pos);
 
-        // Keep at least a Mutter-like sliver reachable on-screen.
+        // Make sure the frame doesn't go too much off-screen. Numbers taken from Mutter.
         let min_on_screen_hor = f64::clamp(self.size.w / 4.0, 10.0, 75.0);
         let min_on_screen_ver = f64::clamp(self.size.h / 4.0, 10.0, 75.0);
         let max_off_screen_hor = f64::max(0.0, self.size.w - min_on_screen_hor);

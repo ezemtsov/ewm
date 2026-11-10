@@ -1,3 +1,5 @@
+//! Ported from niri's `handlers/xdg_shell.rs`, the popups and pre-commit hook.
+
 use smithay::desktop::{
     LayerSurface as DesktopLayerSurface, PopupKeyboardGrab, PopupKind, PopupPointerGrab,
     PopupUngrabStrategy, WindowSurfaceType, find_popup_root_surface, get_popup_toplevel_coords,

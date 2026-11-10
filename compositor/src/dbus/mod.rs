@@ -1,6 +1,6 @@
 //! D-Bus interfaces for xdg-desktop-portal integration
 //!
-//! Ported from niri's D-Bus integration architecture.
+//! Ported from niri's `dbus/mod.rs`.
 //!
 //! Implements:
 //! - org.gnome.Mutter.ScreenCast for screen sharing

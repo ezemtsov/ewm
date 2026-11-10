@@ -3,7 +3,7 @@
 //! Provides the window list that xdg-desktop-portal-gnome uses to populate
 //! the window picker dialog when OBS (or other apps) request window capture.
 //!
-//! Based on niri's `dbus/gnome_shell_introspect.rs`.
+//! Ported from niri's `dbus/gnome_shell_introspect.rs`.
 
 use std::collections::HashMap;
 

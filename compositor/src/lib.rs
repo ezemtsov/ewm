@@ -2,6 +2,9 @@
 //!
 //! Wayland compositor core library.
 //!
+//! Ported from niri's `niri.rs`: the redraw loop, frame callbacks, primary scanout, dmabuf and
+//! presentation feedback, pointer outputs and constraints.
+//!
 //! # Design Invariants
 //!
 //! 1. **Surfaces and views are distinct**: A Wayland surface is a client-owned object, a view is
