@@ -76,6 +76,7 @@ optional = true
 
 [dependencies.sd-notify]
 version = "0.4.5"
+features = ["fdstore"]
 
 # Wayland client (for self-connecting as input method)
 [dependencies.wayland-client]

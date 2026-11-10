@@ -1616,6 +1616,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b943eadf71d8b69e661330cb0e2656e31040acf21ee7708e2c238a0ec6af2bf4"
 dependencies = [
  "libc",
+ "sendfd",
 ]
 
 [[package]]
@@ -1638,6 +1639,15 @@ name = "semver-parser"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "388a1df253eca08550bef6c72392cfe7c30914bf41df5269b68cbd6ff8f570a3"
+
+[[package]]
+name = "sendfd"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c8fa82bbd0ce6c16273ec6c310d3973f8b8f8665ecfe0ca02a49b3ea61b2418c"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "serde"

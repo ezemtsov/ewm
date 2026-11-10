@@ -129,9 +129,8 @@ unit, the documented meaning of both in `systemd.service(5)`.
 `RestartMode=direct` keeps the unit out of the inactive state while it
 restarts, the one `systemctl --user --wait start` of `ewm-session` returns
 only when the unit has ended, and `graphical-session.target` stays up
-throughout. After each exit the unit holds a `handle-lid-switch` lock for 8 s
-from `ExecStopPost`, logind would suspend a closed laptop in the gap before
-the next instance, and the hold expires on its own when the start is broken.
+throughout. The compositor keeps its `handle-lid-switch` lock in the fd store
+of the unit, which holds it across a restart and drops it at a stop.
 The start limit stays at the systemd default of five starts in ten seconds. A
 NixOS switch leaves the unit alone, `nix/service.nix` marks it
 `restartIfChanged = false` with `enableDefaultPath = false`, the drop-in this

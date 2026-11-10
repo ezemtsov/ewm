@@ -23,7 +23,5 @@ Restart=on-failure
 RestartForceExitStatus=15
 RestartMode=direct
 
-# With the lid closed a session restart leaves the compositor without
-# a lid inhibitor, logind would suspend the laptop before the next
-# instance starts. Holding the inhibitor 8 s after a stop prevents it.
-ExecStopPost=-systemd-run --user --quiet --collect systemd-inhibit --what=handle-lid-switch --who=ewm --why='the lid stays with the compositor across a restart' sleep 8
+# Holds the lid inhibitor of the compositor while the unit restarts in place, a stop empties it.
+FileDescriptorStoreMax=1

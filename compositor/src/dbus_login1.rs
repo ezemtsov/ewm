@@ -1,9 +1,10 @@
 //! The logind session.
 
 use std::env;
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd, OwnedFd};
 
 use futures_util::StreamExt;
+use sd_notify::NotifyState::{Custom, FdName, FdStore, FdStoreRemove};
 use smithay::reexports::calloop::channel::Sender;
 use tracing::{info, warn};
 use zbus::blocking::{Connection, Proxy};
@@ -13,7 +14,7 @@ pub enum Login1ToEwm {
     WakeFromSleep,
 }
 
-/// Logind connection holding the lid-switch inhibitor, released when dropped.
+/// Logind connection holding the lid-switch inhibitor.
 pub struct Login1 {
     manager: Proxy<'static>,
     session: Proxy<'static>,
@@ -47,6 +48,7 @@ impl Login1 {
         .inspect_err(|e| warn!("Failed to acquire lid switch inhibitor: {e}"))
         .ok()?;
         info!("Acquired logind handle-lid-switch inhibitor");
+        store(&lid_inhibitor);
         let wake_watcher = watch_wake(&manager, to_ewm);
         Some(Self {
             manager,
@@ -126,6 +128,17 @@ fn inhibit(manager: &Proxy<'static>, what: &str, why: &str) -> zbus::Result<Owne
     let reply = manager.call_method("Inhibit", &(what, "ewm", why, "block"))?;
     let fd: zbus::zvariant::OwnedFd = reply.body().deserialize()?;
     Ok(fd.into())
+}
+
+/// Copy the inhibitor into the fd store of ewm.service, which holds the lid across a restart.
+fn store(inhibitor: &OwnedFd) {
+    // Free the one slot, which the copy of the previous instance holds.
+    let _ = sd_notify::notify(false, &[FdStoreRemove, FdName("lid")]);
+    // FDPOLL=0 keeps the stored copy when logind restarts.
+    let message = [FdStore, FdName("lid"), Custom("FDPOLL=0")];
+    if let Err(e) = sd_notify::notify_with_fds(false, &message, &[inhibitor.as_fd()]) {
+        warn!("Failed to store the lid inhibitor: {e}");
+    }
 }
 
 /// Forward logind's end-of-sleep signal to the event loop.
