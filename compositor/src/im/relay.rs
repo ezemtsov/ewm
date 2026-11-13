@@ -34,11 +34,17 @@ pub enum ImEvent {
 pub fn connect(stream: UnixStream) -> Channel<ImEvent> {
     let (event_tx, event_rx) = channel();
 
-    thread::spawn(move || {
-        if let Err(e) = run_relay(stream, event_tx) {
-            tracing::warn!("IM relay error: {}", e);
-        }
-    });
+    let res = thread::Builder::new()
+        .name("EWM IM Relay".to_owned())
+        .spawn(move || {
+            if let Err(e) = run_relay(stream, event_tx) {
+                tracing::warn!("IM relay error: {}", e);
+            }
+        });
+
+    if let Err(err) = res {
+        tracing::warn!("error spawning the IM relay thread: {err:?}");
+    }
 
     event_rx
 }

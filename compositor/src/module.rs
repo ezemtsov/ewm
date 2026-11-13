@@ -43,7 +43,7 @@ use std::sync::{Mutex, OnceLock, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 use elisp::Value as Data;
 use elisp_emacs::Lisp;
 use emacs::{Env, Result, Value, defun};
@@ -1057,31 +1057,34 @@ fn start(cursor_theme: Option<String>, cursor_size: i64) -> Result<bool> {
 
     // Spawn compositor thread - frames are created via output_detected events
     // (Emacs receives events and creates frames with ewm--create-frame-for-output)
-    let handle = thread::spawn(move || {
-        tracing::info!("Compositor thread starting");
+    let handle = thread::Builder::new()
+        .name("EWM Compositor".to_owned())
+        .spawn(move || {
+            tracing::info!("Compositor thread starting");
 
-        // Catch panics so they don't crash Emacs
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_drm(cursor)));
+            // Catch panics so they don't crash Emacs
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_drm(cursor)));
 
-        match result {
-            Ok(Ok(())) => {
-                tracing::info!("Compositor thread exiting normally");
+            match result {
+                Ok(Ok(())) => {
+                    tracing::info!("Compositor thread exiting normally");
+                }
+                Ok(Err(e)) => {
+                    tracing::error!("Compositor error: {:#}", e);
+                }
+                Err(panic) => {
+                    let msg = if let Some(s) = panic.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else if let Some(s) = panic.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "Unknown panic".to_string()
+                    };
+                    tracing::error!("Compositor panicked: {}", msg);
+                }
             }
-            Ok(Err(e)) => {
-                tracing::error!("Compositor error: {:#}", e);
-            }
-            Err(panic) => {
-                let msg = if let Some(s) = panic.downcast_ref::<&str>() {
-                    s.to_string()
-                } else if let Some(s) = panic.downcast_ref::<String>() {
-                    s.clone()
-                } else {
-                    "Unknown panic".to_string()
-                };
-                tracing::error!("Compositor panicked: {}", msg);
-            }
-        }
-    });
+        })
+        .context("failed to spawn the compositor thread")?;
 
     state.thread = Some(handle);
     tracing::info!("Compositor started");

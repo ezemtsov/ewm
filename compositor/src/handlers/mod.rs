@@ -143,17 +143,23 @@ impl SelectionHandler for State {
         user_data: &Self::SelectionUserData,
     ) {
         let buf = user_data.clone();
-        std::thread::spawn(move || {
-            use std::io::Write;
+        let res = std::thread::Builder::new()
+            .name("EWM Sel Writer".to_owned())
+            .spawn(move || {
+                use std::io::Write;
 
-            use smithay::reexports::rustix::fs::{OFlags, fcntl_setfl};
-            if let Err(err) = fcntl_setfl(&fd, OFlags::empty()) {
-                warn!("error clearing flags on selection fd: {err:?}");
-            }
-            if let Err(err) = std::fs::File::from(fd).write_all(&buf) {
-                warn!("error writing selection: {err:?}");
-            }
-        });
+                use smithay::reexports::rustix::fs::{OFlags, fcntl_setfl};
+                if let Err(err) = fcntl_setfl(&fd, OFlags::empty()) {
+                    warn!("error clearing flags on selection fd: {err:?}");
+                }
+                if let Err(err) = std::fs::File::from(fd).write_all(&buf) {
+                    warn!("error writing selection: {err:?}");
+                }
+            });
+
+        if let Err(err) = res {
+            warn!("error spawning a thread to write the selection: {err:?}");
+        }
     }
 }
 

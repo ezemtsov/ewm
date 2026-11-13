@@ -3058,21 +3058,27 @@ impl State {
             let mime = "text/plain;charset=utf-8".to_string();
             if let Ok(()) = request_data_device_client_selection(&state.ewm.seat, mime, write_fd) {
                 let tx = state.ewm.worker_event_tx.clone();
-                std::thread::spawn(move || {
-                    use std::io::Read;
-                    let _ = read_end.set_read_timeout(Some(Duration::from_secs(5)));
-                    let mut read_end = read_end;
-                    let mut buf = Vec::new();
-                    if let Err(e) = read_end.read_to_end(&mut buf) {
-                        warn!("error reading client selection: {e:?}");
-                        return;
-                    }
-                    if let Ok(text) = String::from_utf8(buf)
-                        && !text.is_empty()
-                    {
-                        let _ = tx.send(Event::SelectionChanged { text });
-                    }
-                });
+                let res = std::thread::Builder::new()
+                    .name("EWM Sel Reader".to_owned())
+                    .spawn(move || {
+                        use std::io::Read;
+                        let _ = read_end.set_read_timeout(Some(Duration::from_secs(5)));
+                        let mut read_end = read_end;
+                        let mut buf = Vec::new();
+                        if let Err(e) = read_end.read_to_end(&mut buf) {
+                            warn!("error reading client selection: {e:?}");
+                            return;
+                        }
+                        if let Ok(text) = String::from_utf8(buf)
+                            && !text.is_empty()
+                        {
+                            let _ = tx.send(Event::SelectionChanged { text });
+                        }
+                    });
+
+                if let Err(err) = res {
+                    warn!("error spawning a thread to read the selection: {err:?}");
+                }
             }
         });
     }
