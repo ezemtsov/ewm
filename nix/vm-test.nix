@@ -2,6 +2,7 @@
 # The compositor needs the host GPU, run the driver outside the sandbox with
 # KVM and a render node.
 {
+  lib,
   stdenv,
   testers,
   qemu_kvm,
@@ -11,6 +12,7 @@
   writeShellApplication,
   writeText,
   withSkia,
+  emacsPackage ? null,
 }:
 let
   # Mesa from this nixpkgs, the host GL stack may link another glibc.
@@ -37,6 +39,9 @@ let
         programs.ewm = {
           enable = true;
           inherit withSkia;
+          emacsPackage = lib.mkIf (emacsPackage != null) (
+            emacsPackage.pkgs.withPackages (_: [ config.programs.ewm.ewmPackage ])
+          );
         };
         services.greetd = {
           enable = true;

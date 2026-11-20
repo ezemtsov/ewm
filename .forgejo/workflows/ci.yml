@@ -48,7 +48,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [pgtk, pwayl]
+        variant: [pgtk, pwayl, pwayl32]
     defaults:
       run:
         working-directory: ${{ env.CI_STATE }}/${{ matrix.variant }}

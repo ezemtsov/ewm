@@ -24,12 +24,17 @@
         inherit (pkgs) emacs31-pwayl emacs32-pwayl;
         # Run outside the sandbox, see nix/vm-test.nix.
         session-test-pwayl = pkgs.callPackage ./nix/vm-test.nix { withSkia = true; };
+        session-test-pwayl32 = pkgs.callPackage ./nix/vm-test.nix {
+          withSkia = true;
+          emacsPackage = pkgs.emacs32-pwayl;
+        };
         session-test-pgtk = pkgs.callPackage ./nix/vm-test.nix { withSkia = false; };
       });
 
       checks = perSystem (pkgs: {
         ewm-pgtk = pkgs.ewm;
         ewm-pwayl = pkgs.ewm.override { emacsPackage = pkgs.emacs31-pwayl; };
+        ewm-pwayl32 = pkgs.ewm.override { emacsPackage = pkgs.emacs32-pwayl; };
       });
 
       devShells = perSystem (
@@ -43,6 +48,7 @@
           ci = shell [ pkgs.rustfmt ];
           ci-pgtk = shell [ pkgs.emacs-pgtk ];
           ci-pwayl = shell [ pkgs.emacs31-pwayl ];
+          ci-pwayl32 = shell [ pkgs.emacs32-pwayl ];
         }
       );
     };
