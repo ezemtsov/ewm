@@ -69,7 +69,7 @@ in
         then emacs31-pwayl.pkgs.withPackages (_: [ ewmPackage ])
         else pkgs.emacs-pgtk.pkgs.withPackages (_: [ ewmPackage ]);
       description = "Emacs package to use. Defaults to a pgtk build, or emacs31-pwayl when withSkia is set. Must carry the EWM package.";
-      example = "pkgs.emacs31-pwayl";
+      example = lib.literalExpression "pkgs.emacs32-pwayl.pkgs.withPackages (_: [ config.programs.ewm.ewmPackage ])";
     };
 
     ewmPackage = lib.mkOption {

@@ -2,4 +2,5 @@
 final: _prev: {
   ewm = final.callPackage ./default.nix { };
   emacs31-pwayl = final.callPackage ./emacs.nix { };
+  emacs32-pwayl = final.callPackage ./emacs.nix { release = "32"; };
 }
