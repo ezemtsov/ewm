@@ -1144,6 +1144,10 @@ fn check_pp2(h: &Harness) -> Result<(), TestCaseError> {
             (p.location.x + p.geometry.size.w / 2) as f64,
             (p.location.y + p.geometry.size.h / 2) as f64,
         ));
+        // A frame scrolled off its output takes its popup along.
+        if ewm.space.output_under(centre).next().is_none() {
+            continue;
+        }
         let hit = ewm.surface_under_point(centre);
         let hit_id = server_hit_key(ewm, hit.as_ref().map(|(s, _)| s));
         prop_assert!(
@@ -1475,6 +1479,21 @@ fn a_release_after_a_programmatic_warp_into_fullscreen() {
             fullscreen_mask: 27956049,
         },
         Op::PointerButton { pressed: false },
+    ])
+    .unwrap();
+}
+
+#[test]
+fn a_frame_popup_scrolled_off_the_output() {
+    check_ops(&[
+        Op::ApplyLayout {
+            output: 0,
+            n_views: 2,
+            fullscreen_mask: 798981,
+        },
+        Op::ApplyTwoFrameLayout { output: 0 },
+        Op::CreateFramePopup { ax: 201, ay: 50 },
+        Op::WarpPointer { x: 400, y: 0 },
     ])
     .unwrap();
 }
